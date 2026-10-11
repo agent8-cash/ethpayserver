@@ -184,6 +184,20 @@ jobs:
       - name: Migration guard self-test
         run: ./scripts/check-migrations.test.sh
 
+      # Deleting a test cannot fail a test run, so a merge that resolves a test
+      # file to an older copy can drop the very tests a change is justified by
+      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # this fails if a named test in them vanishes undeclared. See the script.
+      - name: Cited tests still exist
+        env:
+          BASE_REF: origin/${{ github.base_ref || 'testnet' }}
+        run: |
+          git fetch -q origin "${{ github.base_ref || 'testnet' }}" || true
+          ./scripts/check-test-inventory.sh
+
+      - name: Test inventory guard self-test
+        run: ./scripts/check-test-inventory.test.sh
+
       # A database test helper that returns on a missing or unreachable
       # database makes "ran" and "skipped" the same output. See the script.
       - name: Database tests fail loudly, never skip
