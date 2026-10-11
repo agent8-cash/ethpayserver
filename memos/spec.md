@@ -28,7 +28,8 @@ configured at runtime. Do not add a dependency edge from client to server.
 
 ## What works today
 
-Measured on 2026-09-26 at `142d923`, not assumed:
+A snapshot, measured on 2026-09-26 at `142d923` and not kept current — rerun
+the gate for today's numbers:
 
 - `cargo build --workspace` — clean
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
