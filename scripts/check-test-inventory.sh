@@ -30,7 +30,10 @@
 #
 # Recognised tests: a function following #[test], #[tokio::test],
 # #[sqlx::test], #[rstest] or similar, with any other attributes (such as
-# #[ignore]) in between.
+# #[ignore]) in between. Matching is by name across all tracked .rs files, so
+# a deleted test whose name is also used elsewhere counts as present: that is
+# the price of treating a move as not-a-deletion. A test renamed in place has
+# lost its old name and must be declared with Removes-Test.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -52,18 +55,45 @@ if [ -z "$cited" ]; then
   exit 0
 fi
 
-# Test function names, one per line, read from stdin.
+# Test function names, one per line, read from stdin. An attribute may span
+# several lines (#[sqlx::test(\n migrations = ...\n)]), so it is read until its
+# brackets balance; a test whose attribute is not read to the end is invisible,
+# which is exactly the silent pass this exists to prevent.
 test_names() {
   awk '
+    function emit(line) {
+      if (match(line, /fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/^fn[[:space:]]+/, "", s); print s
+        return 1
+      }
+      return 0
+    }
+    function depth_delta(line,   t, o, c) {
+      t = line; o = gsub(/\[/, "", t); c = gsub(/\]/, "", t); return o - c
+    }
+    depth > 0 {
+      attr = attr " " $0; depth += depth_delta($0)
+      if (depth <= 0) {
+        depth = 0
+        if (attr ~ /^[[:space:]]*#\[([A-Za-z_]+::)*(test|rstest)[]((]/) armed = 1
+        rest = $0; sub(/^[^]]*\]/, "", rest)
+        if (armed && emit(rest)) armed = 0
+      }
+      next
+    }
     /^[[:space:]]*#\[/ {
-      if ($0 ~ /^[[:space:]]*#\[([A-Za-z_]+::)*(test|rstest)[]((]/) armed = 1
+      attr = $0; depth = depth_delta($0)
+      if (depth <= 0) {
+        depth = 0
+        if (attr ~ /^[[:space:]]*#\[([A-Za-z_]+::)*(test|rstest)[]((]/) armed = 1
+        rest = $0; sub(/^[[:space:]]*#\[[^]]*\]/, "", rest)
+        if (armed && emit(rest)) armed = 0
+      }
       next
     }
     /^[[:space:]]*(\/\/.*)?$/ { next }
     {
-      if (armed && match($0, /fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
-        s = substr($0, RSTART, RLENGTH); sub(/^fn[[:space:]]+/, "", s); print s
-      }
+      if (armed) emit($0)
       armed = 0
     }'
 }
@@ -73,14 +103,26 @@ head_names="$(git ls-files -z -- '*.rs' | xargs -0 cat | test_names | sort -u)" 
 fail=0
 while IFS= read -r file; do
   [ -n "$file" ] || continue
+  case "$file" in
+    *.rs) ;;
+    *) echo "::error::Cites-Tests path '$file' is not a .rs file, so nothing would be compared" >&2
+       fail=1; continue ;;
+  esac
   if ! git cat-file -e "$base:$file" 2>/dev/null; then
-    echo "note: $file does not exist at the merge base - nothing to compare"
+    # Absent from the base AND the head is a typo or a rename, not a new file:
+    # "could not look" must not read as "nothing found".
+    if ! git cat-file -e "HEAD:$file" 2>/dev/null; then
+      echo "::error::Cites-Tests path '$file' exists neither at the merge base nor in HEAD" >&2
+      fail=1
+    else
+      echo "note: $file is new since the merge base - nothing to compare"
+    fi
     continue
   fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    printf '%s\n' "$head_names" | grep -qxF -- "$name" && continue
-    printf '%s\n' "$removed" | grep -qxF -- "$name" && {
+    grep -qxF -- "$name" <<<"$head_names" && continue
+    grep -qxF -- "$name" <<<"$removed" && {
       echo "ok: $name removed from $file, and declared"
       continue
     }

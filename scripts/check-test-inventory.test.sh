@@ -77,4 +77,48 @@ printf '// emptied\n' > src/other.rs
 commit "gut uncited file"
 check "tests lost from an uncited file do not fire" 0
 
+# A multi-line attribute must still be read, in the base and in the head.
+git checkout -q base
+git checkout -q -b multiline
+cat > src/db.rs <<'RS'
+#[sqlx::test(
+    migrations = "./migrations"
+)]
+async fn survives_a_multiline_attribute() {}
+
+#[test] fn one_liner_is_seen() {}
+RS
+commit "base with multiline"
+git branch -f base
+echo '// touched' >> src/db.rs
+commit "work
+
+Cites-Tests: src/db.rs"
+check "multi-line attribute test intact passes" 0
+: > src/db.rs
+commit "gut db.rs"
+check "dropped multi-line-attribute test is refused" 1 "survives_a_multiline_attribute"
+check "dropped one-line test is refused" 1 "one_liner_is_seen"
+
+git reset -q --hard HEAD~1
+git commit -q --allow-empty -m "typo
+
+Cites-Tests: src/dbb.rs"
+check "cited path missing everywhere is refused" 1 "neither at the merge base"
+git reset -q --hard HEAD~1
+git commit -q --allow-empty -m "not rust
+
+Cites-Tests: README.md"
+check "cited non-rust path is refused" 1 "not a .rs file"
+git reset -q --hard HEAD~1
+
+# A test renamed in place has lost its old name: it must be declared.
+sed -i 's/survives_a_multiline_attribute/renamed_in_place/' src/db.rs
+commit "rename test"
+check "in-place rename is refused until declared" 1 "survives_a_multiline_attribute"
+git commit -q --allow-empty -m "declared
+
+Removes-Test: survives_a_multiline_attribute"
+check "declared in-place rename passes" 0
+
 [ "$fail" -eq 0 ] && echo "all cases behaved" || exit 1
