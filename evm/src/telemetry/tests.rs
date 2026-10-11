@@ -49,16 +49,46 @@ fn long_prose_is_not_a_mnemonic() {
 fn mnemonic_inside_prose_is_redacted_but_the_prose_is_kept() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_credentials(&format!("the server was handed {m} by mistake"));
-    assert_eq!(
-        out,
-        "the server was handed [redacted: 12+ BIP-39 word run] by mistake"
-    );
-    // Eleven wordlist members are not a phrase.
+    // Words beside the phrase may go with it: a stretch tolerates one
+    // off-list word, so a neighbour is indistinguishable from a typo.
+    assert!(out.starts_with("the server was"), "{out}");
+    assert!(out.contains("[redacted: 12+ BIP-39 word run]"), "{out}");
+    assert!(!out.contains("sausage"), "{out}");
+    // Eleven words never reach the rule at all.
     let eleven = "legal winner thank year wave sausage worth useful legal winner thank";
     assert_eq!(redact_secrets(eleven), eleven);
     // Multi-line / multi-space separators are still one phrase.
     let spaced = m.replace(' ', "  \n");
     assert!(!redact_secrets(&spaced).contains("sausage"));
+}
+
+/// A mistyped or capitalised word must not let the other eleven through: the
+/// remainder of a phrase is brute-forceable, so the rule fails closed.
+#[test]
+fn phrase_with_one_bad_word_is_still_redacted() {
+    let typo = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
+    let out = redact_secrets(&format!("pasted {typo} here"));
+    assert!(!out.contains("winner") && !out.contains("yellow"), "{out}");
+    assert!(
+        out.starts_with("pasted [redacted") && out.ends_with("here"),
+        "{out}"
+    );
+    let capital = "Legal winner thank year wave sausage worth useful legal winner thank yellow";
+    assert!(!redact_secrets(capital).contains("sausage"));
+    // Non-member at either edge of the twelve.
+    for edge in [
+        "zzzz winner thank year wave sausage worth useful legal winner thank yellow",
+        "legal winner thank year wave sausage worth useful legal winner thank zzzz",
+    ] {
+        assert!(!redact_secrets(edge).contains("sausage"), "{edge}");
+    }
+}
+
+/// Two off-list words in a twelve-word stretch is prose, not a phrase.
+#[test]
+fn twelve_words_with_two_non_members_are_kept() {
+    let s = "legal winner thank year wave sausage worth useful legal zzzz thank qqqq";
+    assert_eq!(redact_secrets(s), s);
 }
 
 #[test]

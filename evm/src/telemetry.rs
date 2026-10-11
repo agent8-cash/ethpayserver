@@ -48,6 +48,10 @@ const PHRASE_PLACEHOLDER: &str = "[redacted: 12+ BIP-39 word run]";
 /// Fewest consecutive BIP-39 words treated as a recovery phrase.
 const MIN_PHRASE_WORDS: usize = 12;
 
+/// Words in a [`MIN_PHRASE_WORDS`]-word stretch allowed to be off the wordlist
+/// (a typo, a capital) before it stops being treated as a recovery phrase.
+const PHRASE_TOLERANCE: usize = 1;
+
 /// Ordered `(pattern, replacement, credential)` redaction rules applied to every
 /// free-text field. `credential` marks the rules that catch material which must
 /// not survive in a process log either; the rest (addresses, emails) are
@@ -91,11 +95,11 @@ fn rules() -> &'static [(Regex, Replace, bool)] {
             // Addresses (40) stay readable there.
             (build(r"0x[0-9a-fA-F]{64,}"), Replace::Text("[redacted-hex]"), true),
             (build(r"\b[0-9a-fA-F]{64}\b"), Replace::Text("[redacted-hex]"), true),
-            // BIP-39 mnemonics: 12+ consecutive lowercase words, of which only
-            // runs of real wordlist members are redacted. Prose of twelve plain
-            // words is not a recovery phrase and must stay readable.
+            // BIP-39 mnemonics: 12+ consecutive words, of which only stretches
+            // that are (nearly) all wordlist members are redacted. Prose of
+            // twelve plain words is not a recovery phrase and must stay readable.
             (
-                build(r"\b(?:[a-z]+\s+){11,}[a-z]+\b"),
+                build(r"\b(?:[A-Za-z]+\s+){11,}[A-Za-z]+\b"),
                 Replace::Phrase,
                 true,
             ),
@@ -160,9 +164,14 @@ fn is_bip39_word(word: &str) -> bool {
         .contains(word)
 }
 
-/// Replace each run of at least [`MIN_PHRASE_WORDS`] consecutive BIP-39 words
-/// in `candidate` (a run of lowercase words) with [`PHRASE_PLACEHOLDER`],
-/// leaving every other word, and the whitespace between them, untouched.
+/// Redact every stretch of [`MIN_PHRASE_WORDS`] words in `candidate` (a run of
+/// words) in which at most [`PHRASE_TOLERANCE`] are not BIP-39 words, replacing
+/// it with [`PHRASE_PLACEHOLDER`] and leaving every other word, and the
+/// whitespace between them, untouched.
+///
+/// The tolerance is what keeps this failing closed: a recovery phrase with one
+/// typo, or one capitalised word, is still almost entirely wordlist members and
+/// leaks the rest if it is let through.
 fn redact_phrases(candidate: &str) -> String {
     // (word, whitespace that follows it)
     let mut tokens: Vec<(&str, &str)> = Vec::new();
@@ -175,21 +184,29 @@ fn redact_phrases(candidate: &str) -> String {
         tokens.push((&rest[..word_end], &rest[word_end..gap_end]));
         rest = &rest[gap_end..];
     }
+    let member: Vec<bool> = tokens
+        .iter()
+        .map(|(w, _)| is_bip39_word(&w.to_ascii_lowercase()))
+        .collect();
+    let mut redact = vec![false; tokens.len()];
+    for start in 0..tokens.len().saturating_sub(MIN_PHRASE_WORDS - 1) {
+        let window = start..start + MIN_PHRASE_WORDS;
+        let misses = member[window.clone()].iter().filter(|m| !**m).count();
+        if misses <= PHRASE_TOLERANCE {
+            redact[window].fill(true);
+        }
+    }
     let mut out = String::with_capacity(candidate.len());
     let mut i = 0;
     while i < tokens.len() {
-        let run = tokens[i..]
-            .iter()
-            .take_while(|(w, _)| is_bip39_word(w))
-            .count();
-        if run >= MIN_PHRASE_WORDS {
+        if redact[i] {
+            let run = redact[i..].iter().take_while(|r| **r).count();
             out.push_str(PHRASE_PLACEHOLDER);
             out.push_str(tokens[i + run - 1].1);
             i += run;
         } else {
-            let (word, gap) = tokens[i];
-            out.push_str(word);
-            out.push_str(gap);
+            out.push_str(tokens[i].0);
+            out.push_str(tokens[i].1);
             i += 1;
         }
     }
