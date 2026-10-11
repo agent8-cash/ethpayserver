@@ -99,7 +99,7 @@ fn rules() -> &'static [(Regex, Replace, bool)] {
             // that are (nearly) all wordlist members are redacted. Prose of
             // twelve plain words is not a recovery phrase and must stay readable.
             (
-                build(r"\b(?:[A-Za-z]+\s+){11,}[A-Za-z]+\b"),
+                build(r"\b(?:[A-Za-z]+(?:\s|\\[nrt])+){11,}[A-Za-z]+\b"),
                 Replace::Phrase,
                 true,
             ),
@@ -112,7 +112,7 @@ fn rules() -> &'static [(Regex, Replace, bool)] {
             // `key: value` / `key=value` for sensitive keys, plus `Bearer <tok>`.
             (
                 build(
-                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b("?\s*[:=]\s*|\s+)("?)[^\s,;"']+"#,
+                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b("?\s*[:=]\s*|\s+)("?)[^\s,;"'}]+"#,
                 ),
                 Replace::Text("$1$2$3[redacted]"),
                 true,
@@ -169,18 +169,34 @@ fn is_bip39_word(word: &str) -> bool {
 /// it with [`PHRASE_PLACEHOLDER`] and leaving every other word, and the
 /// whitespace between them, untouched.
 ///
-/// The tolerance is what keeps this failing closed: a recovery phrase with one
-/// typo, or one capitalised word, is still almost entirely wordlist members and
-/// leaks the rest if it is let through.
+/// The tolerance covers a single typo or capitalised word: the other eleven are
+/// still brute-forceable if let through. Two or more bad words in the same
+/// twelve-word stretch are an accepted gap, the price of leaving plain prose
+/// readable.
 fn redact_phrases(candidate: &str) -> String {
-    // (word, whitespace that follows it)
+    // (word, separator that follows it). A separator is real whitespace or a
+    // JSON-escaped `\n`/`\r`/`\t`, which is how a multi-line phrase reaches a
+    // JSON log line.
+    let sep_len = |s: &str| -> usize {
+        let mut n = 0;
+        loop {
+            let r = &s[n..];
+            if let Some(c) = r.chars().next().filter(|c| c.is_whitespace()) {
+                n += c.len_utf8();
+            } else if r.starts_with("\\n") || r.starts_with("\\r") || r.starts_with("\\t") {
+                n += 2;
+            } else {
+                return n;
+            }
+        }
+    };
     let mut tokens: Vec<(&str, &str)> = Vec::new();
     let mut rest = candidate;
     while !rest.is_empty() {
-        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        let gap_end = rest[word_end..]
-            .find(|c: char| !c.is_whitespace())
-            .map_or(rest.len(), |i| word_end + i);
+        let word_end = (0..=rest.len())
+            .find(|&i| rest.is_char_boundary(i) && (i == rest.len() || sep_len(&rest[i..]) > 0))
+            .unwrap_or(rest.len());
+        let gap_end = word_end + sep_len(&rest[word_end..]);
         tokens.push((&rest[..word_end], &rest[word_end..gap_end]));
         rest = &rest[gap_end..];
     }

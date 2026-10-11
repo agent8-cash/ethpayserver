@@ -707,3 +707,26 @@ fn client_options_carry_the_sample_rate_and_the_scrubbing_transport() {
         "scrub_event must be wired in, or error events ship unscrubbed"
     );
 }
+
+/// In a JSON log line a newline or tab inside a string is the two characters
+/// backslash and `n` / `t`, so a multi-line paste must still read as one phrase.
+#[test]
+fn phrase_split_by_json_escapes_is_redacted() {
+    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    for sep in ["\\n", "\\t", "\\r\\n"] {
+        let line = format!(r#"{{"message":"{}"}}"#, m.replace(' ', sep));
+        let out = redact_credentials(&line);
+        assert!(!out.contains("sausage") && !out.contains("winner"), "{out}");
+        assert!(
+            out.starts_with(r#"{"message":""#) && out.ends_with(r#""}"#),
+            "{out}"
+        );
+    }
+}
+
+/// An unquoted value must not swallow the JSON punctuation that closes it.
+#[test]
+fn key_value_rule_leaves_closing_json_punctuation() {
+    let out = redact_credentials(r#"{"token":12}"#);
+    assert_eq!(out, r#"{"token":[redacted]}"#);
+}
