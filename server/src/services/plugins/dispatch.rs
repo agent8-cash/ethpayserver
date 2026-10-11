@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use auth::UserId;
-use payserver_plugin_api::{PluginId, PluginKind};
+use payserver_plugin_api::{PluginId, PluginKind, StandingBasis};
 use serde::{Deserialize, Serialize};
 
 use super::account_closed::AccountClosedObserver;
@@ -94,29 +94,53 @@ struct WireFilterVerdict {
 /// where the outcome is known: a page render or a deny never reaches it.
 pub const FAIL_OPEN_ALLOW_COUNTER: &str = "ethpayserver_standing_fail_open_allow_total";
 
+/// The plugin that is expected to say what every allow rests on. For it, an
+/// allow with no basis is itself a reason: if a build stopped reporting one
+/// (a regression, or an older artifact loaded), every fail-open would go
+/// uncounted and a zero meaning "healthy" would read the same as a zero
+/// meaning "not reporting".
+const BASIS_REPORTING_PLUGIN: &str = "cash.random.billing";
+
 /// Why an allow rests on missing or old information, or `None` when it rests
-/// on a standing confirmed within `max_age` (or says nothing about standing).
+/// on a standing confirmed within `max_age`, or comes from a plugin that is
+/// not expected to say anything about standing.
 fn fail_open_reason(
+    plugin: &PluginId,
     basis: Option<&serde_json::Value>,
     now: chrono::DateTime<chrono::Utc>,
     max_age: chrono::Duration,
 ) -> Option<(&'static str, Option<chrono::Duration>)> {
-    let basis = basis?;
-    match basis.get("basis").and_then(serde_json::Value::as_str) {
-        Some("never_received") => Some(("unheard", None)),
-        Some("confirmed") => {
-            let heard = basis
-                .get("last_heard_at")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .map(|t| t.with_timezone(&chrono::Utc));
-            match heard {
-                Some(heard) if now - heard <= max_age => None,
-                Some(heard) => Some(("stale", Some(now - heard))),
-                None => Some(("unreadable", None)),
+    let Some(basis) = basis else {
+        // Another plugin's allow is not a standing fail-open.
+        return (plugin.as_str() == BASIS_REPORTING_PLUGIN).then_some(("absent", None));
+    };
+    // Read through the type the plugin serialises, so a basis it cannot
+    // parse is exactly one the two sides no longer agree on.
+    let basis = match serde_json::from_value::<StandingBasis>(basis.clone()) {
+        Ok(basis) => basis,
+        Err(error) => {
+            tracing::warn!(%error, "standing_basis did not parse as the shared type");
+            return Some(("unreadable", None));
+        }
+    };
+    match basis {
+        StandingBasis::NeverReceived => Some(("unheard", None)),
+        StandingBasis::Confirmed { last_heard_at } => {
+            // No parse here, and no "unreadable" arm for a bad instant: the
+            // shared type carries a real timestamp, so a sender cannot emit
+            // one this side would reject. That arm used to file a malformed
+            // timestamp as a disagreement between the two sides, which read
+            // as the sender speaking a dialect rather than sending a bad
+            // value - the exact mislabel the shared type exists to remove.
+            // "unreadable" above still stands, for a basis that genuinely
+            // does not parse as the shared type.
+            let age = now - last_heard_at;
+            if age <= max_age {
+                None
+            } else {
+                Some(("stale", Some(age)))
             }
         }
-        _ => Some(("unreadable", None)),
     }
 }
 
@@ -128,7 +152,7 @@ fn surface_fail_open_allow(
     now: chrono::DateTime<chrono::Utc>,
 ) {
     let max_age = chrono::Duration::days(data_service::DEFAULT_STANDING_MAX_AGE_DAYS);
-    let Some((reason, silent_for)) = fail_open_reason(basis, now, max_age) else {
+    let Some((reason, silent_for)) = fail_open_reason(plugin, basis, now, max_age) else {
         return;
     };
     metrics::counter!(FAIL_OPEN_ALLOW_COUNTER, "reason" => reason).increment(1);

@@ -171,6 +171,10 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buf {
 /// reached an operator: error-level log lines, and the fail-open counter by
 /// reason.
 async fn surfaced_by(answer: &str) -> (FilterVerdict, String, String) {
+    surfaced_by_plugin("cash.random.billing", answer).await
+}
+
+async fn surfaced_by_plugin(id: &str, answer: &str) -> (FilterVerdict, String, String) {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
     let buf = Buf::default();
@@ -184,14 +188,11 @@ async fn surfaced_by(answer: &str) -> (FilterVerdict, String, String) {
 
     let host = host();
     host.register(
-        manifest("cash.random.billing", "filter", None),
+        manifest(id, "filter", None),
         &answering(FILTER_INVOICE_CREATION, answer),
     )
     .unwrap();
-    let filter = PluginInvoiceCreationFilter::new(
-        Arc::clone(&host),
-        PluginId::new("cash.random.billing").unwrap(),
-    );
+    let filter = PluginInvoiceCreationFilter::new(Arc::clone(&host), PluginId::new(id).unwrap());
     let verdict = filter.filter_invoice_creation(a_store()).await;
 
     let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
@@ -230,16 +231,35 @@ async fn an_allow_on_a_standing_older_than_the_bound_is_surfaced() {
     assert!(counters.contains(r#"reason="stale"} 1"#), "{counters}");
 }
 
-/// The control either side of the stale case: a recently confirmed standing,
-/// and an allow that says nothing about standing, raise nothing.
+/// A recently confirmed standing raises nothing.
 #[tokio::test]
-async fn a_recently_confirmed_or_unannotated_allow_is_silent() {
-    for answer in [heard_ago(1), r#"{"allow":true}"#.to_string()] {
-        let (verdict, logged, counters) = surfaced_by(&answer).await;
-        assert_eq!(verdict, FilterVerdict::Allow);
-        assert!(logged.is_empty(), "{logged}");
-        assert!(counters.is_empty(), "{counters}");
-    }
+async fn a_recently_confirmed_allow_is_silent() {
+    let (verdict, logged, counters) = surfaced_by(&heard_ago(1)).await;
+    assert_eq!(verdict, FilterVerdict::Allow);
+    assert!(logged.is_empty(), "{logged}");
+    assert!(counters.is_empty(), "{counters}");
+}
+
+/// The plugin that always reports a basis, answering without one, is counted
+/// rather than read as healthy: otherwise it dropping the field would make
+/// every fail-open invisible.
+#[tokio::test]
+async fn an_allow_with_no_basis_from_the_reporting_plugin_is_surfaced() {
+    let (verdict, logged, counters) = surfaced_by(r#"{"allow":true}"#).await;
+    assert_eq!(verdict, FilterVerdict::Allow);
+    assert!(logged.contains("ERROR"), "no error event: {logged}");
+    assert!(counters.contains(r#"reason="absent"} 1"#), "{counters}");
+}
+
+/// A plugin not expected to report a basis says nothing about standing, so
+/// its allow must not inflate the counter.
+#[tokio::test]
+async fn an_allow_with_no_basis_from_another_plugin_is_silent() {
+    let (verdict, logged, counters) =
+        surfaced_by_plugin("cash.random.permits", r#"{"allow":true}"#).await;
+    assert_eq!(verdict, FilterVerdict::Allow);
+    assert!(logged.is_empty(), "{logged}");
+    assert!(counters.is_empty(), "{counters}");
 }
 
 /// A deny is not a fail-open allow, whatever the basis it carries.
@@ -250,6 +270,75 @@ async fn a_deny_is_silent_even_on_a_never_received_basis() {
     )
     .await;
     assert!(matches!(verdict, FilterVerdict::Deny { .. }));
+    assert!(logged.is_empty(), "{logged}");
+    assert!(counters.is_empty(), "{counters}");
+}
+
+/// A basis this host does not know, or a timestamp that is not RFC 3339, is
+/// filed as unreadable.
+///
+/// Both of these now fail at one place - deserialising the shared type - and
+/// "unreadable" is the honest answer for both, because each really is a
+/// payload the two sides do not agree on. That was not true while the
+/// timestamp was a `String`: such a payload deserialised cleanly and failed a
+/// second parse further in, so a sender that had merely sent a bad value was
+/// reported as one speaking a dialect. A sender holding the shared type can
+/// no longer produce either of these, so reaching this arm means a sender on
+/// a different pin, or something hand-rolling the JSON.
+///
+/// It is not the drift detector: the literals here are typed on this side.
+/// Drift is caught by `what_the_shared_type_serialises_is_never_unreadable`,
+/// which builds the verdict from the type the sender serialises.
+#[tokio::test]
+async fn an_unknown_basis_or_bad_timestamp_is_unreadable() {
+    for answer in [
+        r#"{"allow":true,"standing_basis":{"basis":"never_heard"}}"#,
+        r#"{"allow":true,"standing_basis":{"basis":"confirmed","last_heard_at":"yesterday"}}"#,
+    ] {
+        let (verdict, _, counters) = surfaced_by(answer).await;
+        assert_eq!(verdict, FilterVerdict::Allow);
+        assert!(counters.contains(r#"reason="unreadable"} 1"#), "{counters}");
+    }
+}
+
+/// The sender and this host share one `StandingBasis`; whatever it serialises
+/// to must be read, never filed as unreadable. Renaming a variant or its wire
+/// form in the shared type moves both sides together, and a sender still on
+/// an old pin fails to compile instead of being silently misfiled.
+#[tokio::test]
+async fn what_the_shared_type_serialises_is_never_unreadable() {
+    use payserver_plugin_api::StandingBasis;
+    let stale = chrono::Utc::now()
+        - chrono::Duration::days(data_service::DEFAULT_STANDING_MAX_AGE_DAYS + 1);
+    for (basis, reason) in [
+        (StandingBasis::NeverReceived, "unheard"),
+        (
+            StandingBasis::Confirmed {
+                last_heard_at: stale,
+            },
+            "stale",
+        ),
+    ] {
+        let answer = serde_json::json!({"allow": true, "standing_basis": basis}).to_string();
+        let (_, _, counters) = surfaced_by(&answer).await;
+        assert!(
+            counters.contains(&format!(r#"reason="{reason}"}} 1"#)),
+            "{counters}"
+        );
+    }
+}
+
+/// A standing confirmed within the freshness bound is not a fail-open allow:
+/// the shared type's fresh form must be read, not filed as unreadable.
+#[tokio::test]
+async fn a_fresh_shared_confirmed_basis_raises_nothing() {
+    use payserver_plugin_api::StandingBasis;
+    let basis = StandingBasis::Confirmed {
+        last_heard_at: chrono::Utc::now(),
+    };
+    let answer = serde_json::json!({"allow": true, "standing_basis": basis}).to_string();
+    let (verdict, logged, counters) = surfaced_by(&answer).await;
+    assert_eq!(verdict, FilterVerdict::Allow);
     assert!(logged.is_empty(), "{logged}");
     assert!(counters.is_empty(), "{counters}");
 }

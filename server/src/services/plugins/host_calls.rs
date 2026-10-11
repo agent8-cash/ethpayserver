@@ -196,4 +196,36 @@ impl PluginHostCalls for PluginCalls {
     fn storage_query(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         self.storage_query_impl(request)
     }
+
+    /// Refused: this host does not yet reach an account on a plugin's behalf.
+    /// The trait requires the method so that an implementation cannot hand out
+    /// a merchant-reaching capability by forgetting it; refusing is the
+    /// explicit choice, and the plugin is told so rather than left to assume
+    /// the notice was delivered.
+    fn account_notice(&self, _request: &[u8]) -> Result<Vec<u8>, String> {
+        Err("account_notice is not available on this host".to_string())
+    }
+}
+
+#[cfg(test)]
+mod account_notice_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::Arc;
+
+    use payserver_plugin_api::PluginId;
+    use payserver_plugin_host::PluginHostCalls;
+
+    use super::PluginCalls;
+    use crate::services::plugins::pools::PluginPools;
+
+    /// A refusal that turned into `Ok` would tell the plugin a notice reached
+    /// a merchant when this host has no way to deliver one.
+    #[tokio::test]
+    async fn account_notice_is_refused_not_acknowledged() {
+        let pools = Arc::new(PluginPools::new("postgres://localhost/x".to_string(), 4));
+        let calls = PluginCalls::new(PluginId::new("cash.random.t").unwrap(), pools);
+        let err = calls.account_notice(b"{}").unwrap_err();
+        assert!(err.contains("not available"), "{err}");
+    }
 }

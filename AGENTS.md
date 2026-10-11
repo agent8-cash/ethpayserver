@@ -1,7 +1,8 @@
 # Rules for a coding session
 
 You are one session working on one feature. Read this, then
-`memos/spec.md`, `memos/progress.md`, and `git log --oneline -20`.
+`memos/spec.md`, `git log --oneline -20`, and the ticket you were given. There is
+no session log: the tickets and the commit history carry that context.
 
 ## The loop
 
@@ -20,10 +21,8 @@ You are one session working on one feature. Read this, then
    tempting — an unrelated change in the same commit is indistinguishable from the
    feature when someone bisects.
 3. **Write the test first**, then the code, until `scripts/check.sh` passes.
-4. In `memos/features.json`, change only the `passes` field of your feature.
-5. Add a session entry to `memos/progress.md`.
-6. Commit with `git commit -S`. Message: `F00X: <what changed>`.
-7. Report back: feature id, pass or fail, files changed, and anything the next
+4. Commit with `git commit -S`. Message: `<ticket id>: <what changed>`.
+5. Report back: ticket id, pass or fail, files changed, and anything the next
    session must know.
 
 ## Rules that are not negotiable
