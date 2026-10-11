@@ -9,6 +9,10 @@
 //! A header rather than a body field: no response schema changes, so no
 //! existing client can break on it.
 //!
+//! Only the period-ending condition is carried. The volume-approaching-cap
+//! condition is deferred: the pushed standing holds no volume figures or
+//! warning threshold, so there is nothing here to compare against.
+//!
 //! Three properties are deliberate:
 //!
 //! - **No query per request.** The standing is read at most once per account
@@ -44,6 +48,11 @@ use uuid::Uuid;
 /// How close to the end of the paid period the warning starts.
 pub const WARN_WINDOW_DAYS: i64 = 5;
 
+/// How long after the period ended the "ended" wording keeps appearing. Past
+/// this the account is a long-lapsed one and a warning on every response would
+/// be wallpaper.
+pub const ENDED_NOTICE_DAYS: i64 = 7;
+
 /// How long one account's answer is reused before the standing is read again.
 pub const CACHE_TTL: StdDuration = StdDuration::from_secs(60);
 
@@ -65,7 +74,9 @@ pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<String> {
         return None;
     }
     let ends = standing.paid_through?;
-    if ends > now + Duration::days(WARN_WINDOW_DAYS) {
+    if ends > now + Duration::days(WARN_WINDOW_DAYS)
+        || ends < now - Duration::days(ENDED_NOTICE_DAYS)
+    {
         return None;
     }
     let date = ends.format("%Y-%m-%d");
@@ -100,10 +111,16 @@ impl StandingWarningState {
         {
             return text.clone();
         }
-        // A failed read is not cached and not reported: this is a courtesy
-        // header, and the next request tries again.
-        let held = self.store.get_account_standing(account).await.ok()?;
-        let text = held.and_then(|h| warning_for(&h, Utc::now()));
+        // A failed read is logged and cached as "no warning" for the TTL, so
+        // an unhealthy database costs one read per account per TTL rather
+        // than one per request.
+        let text = match self.store.get_account_standing(account).await {
+            Ok(held) => held.and_then(|h| warning_for(&h, Utc::now())),
+            Err(e) => {
+                tracing::warn!(%account, error = %e, "could not read standing for the account warning header");
+                None
+            }
+        };
         if let Ok(mut cache) = self.cache.lock() {
             if cache.len() >= MAX_CACHE_ENTRIES {
                 cache.clear();
@@ -127,9 +144,15 @@ pub async fn middleware(
     let account = slot.lock().ok().and_then(|g| *g);
     if let Some(account) = account
         && let Some(text) = state.warning(account).await
-        && let Ok(value) = HeaderValue::from_str(&text)
     {
-        response.headers_mut().insert(&X_ACCOUNT_WARNING, value);
+        match HeaderValue::from_str(&text) {
+            Ok(value) => {
+                response.headers_mut().insert(&X_ACCOUNT_WARNING, value);
+            }
+            Err(e) => {
+                tracing::warn!(%account, error = %e, "account warning text is not a valid header value; header omitted");
+            }
+        }
     }
     response
 }
@@ -184,6 +207,17 @@ mod tests {
     }
 
     #[test]
+    fn a_long_lapsed_period_is_silent() {
+        let now = Utc::now();
+        let h = held(
+            true,
+            Some(now - Duration::days(ENDED_NOTICE_DAYS + 1)),
+            None,
+        );
+        assert!(warning_for(&h, now).is_none());
+    }
+
+    #[test]
     fn silent_for_an_account_not_in_good_standing() {
         let now = Utc::now();
         assert!(warning_for(&held(false, Some(now + Duration::days(1)), None), now).is_none());
@@ -200,6 +234,7 @@ mod tests {
     struct Counting {
         row: Option<HeldStanding>,
         reads: AtomicUsize,
+        fail: bool,
     }
 
     #[async_trait]
@@ -212,6 +247,9 @@ mod tests {
         }
         async fn get_account_standing(&self, _: Uuid) -> RepositoryResult<Option<HeldStanding>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(types::RepositoryError::Database("down".into()));
+            }
             Ok(self.row.clone())
         }
     }
@@ -244,7 +282,22 @@ mod tests {
         Arc::new(Counting {
             row,
             reads: AtomicUsize::new(0),
+            fail: false,
         })
+    }
+
+    #[tokio::test]
+    async fn a_failing_store_is_read_once_per_ttl_not_per_request() {
+        let s = Arc::new(Counting {
+            row: None,
+            reads: AtomicUsize::new(0),
+            fail: true,
+        });
+        let app = app(s.clone(), true);
+        for _ in 0..3 {
+            assert!(call(&app).await.headers().get(&X_ACCOUNT_WARNING).is_none());
+        }
+        assert_eq!(s.reads.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
