@@ -1,5 +1,5 @@
 import { test, expect, register, login, logout } from '../fixtures/auth';
-import { resetDatabase, deactivateWatchedAddresses } from '../fixtures/db';
+import { resetDatabase } from '../fixtures/db';
 import { createStoreReadyForInvoices } from '../fixtures/payment-methods';
 import { createInvoice } from '../fixtures/invoices';
 
@@ -38,18 +38,11 @@ test.describe('Account lifecycle (passkey)', () => {
 
     // ---- use ----------------------------------------------------------
     // Real state, so deletion has something to remove and the refusal rule is
-    // actually exercised rather than assumed. An invoice with no recorded
-    // payment must not block deletion - only payments, payouts and refunds do
-    // - but a *pending* one still arms a watched address, and self-service
-    // deletion separately refuses while any address of the account's is still
-    // watched: a customer could still send funds to it. Deactivating the
-    // watch below stands in for that invoice resolving (paying, expiring,
-    // being cancelled) - deletion is meant to succeed once nothing is in
-    // flight, not to be blocked forever by history alone.
+    // actually exercised rather than assumed. An unpaid invoice must NOT block
+    // deletion - only payments, payouts and refunds do.
     const store = `lifecycle-${Date.now()}`;
     await createStoreReadyForInvoices(page, store);
     await createInvoice(page, '0.001');
-    await deactivateWatchedAddresses(store);
 
     // ---- return -------------------------------------------------------
     // Logging out and back in is the step that proves the credential persisted,

@@ -151,35 +151,3 @@ export async function createUserWithApiKey(
     await client.end();
   }
 }
-
-/**
- * Mark every watched address for a store's invoices inactive, as the
- * background cleanup job eventually does once an invoice expires, is paid or
- * is cancelled (`server/src/services/invoice_cleanup.rs`).
- *
- * Self-service account deletion refuses outright while any address is still
- * watched - a pending invoice might still receive a payment, and the account
- * cannot be deleted out from under it. Nothing reachable by a merchant
- * resolves that synchronously: there is no self-service invoice cancellation,
- * and even the admin one only flips the invoice's status, not the watch. In
- * production the address stops being watched on its own once the invoice's
- * real expiry passes and the cleanup job runs; this does the same thing
- * immediately, so a suite proving deletion succeeds does not have to wait out
- * that window.
- */
-export async function deactivateWatchedAddresses(storeName: string): Promise<void> {
-  const client = new Client({ connectionString: DATABASE_URL });
-  await client.connect();
-  try {
-    await client.query(
-      `UPDATE watched_addresses wa
-       SET is_active = FALSE
-       FROM invoices i
-       JOIN stores s ON i.store_id = s.id
-       WHERE wa.invoice_id = i.id AND s.name = $1`,
-      [storeName],
-    );
-  } finally {
-    await client.end();
-  }
-}
