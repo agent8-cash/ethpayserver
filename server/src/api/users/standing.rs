@@ -38,7 +38,8 @@ pub struct StandingResponse {
     pub state: StandingState,
     pub plan_name: Option<String>,
     pub paid_through: Option<DateTime<Utc>>,
-    /// Where to put it right. Always an `https` URL when present.
+    /// Where to put it right. The store's column constraint admits only `https`
+    /// URLs, so this is one whenever present.
     pub checkout_url: Option<String>,
 }
 
@@ -145,6 +146,19 @@ mod tests {
         assert_eq!(far.state, StandingState::Good);
         let open_ended = classify(Some(&held(true, None)), now);
         assert_eq!(open_ended.state, StandingState::Good);
+    }
+
+    #[test]
+    fn the_warning_window_includes_its_boundary() {
+        let now = Utc::now();
+        let on = classify(
+            Some(&held(true, Some(now + Duration::days(WARN_BEFORE_DAYS)))),
+            now,
+        );
+        assert_eq!(on.state, StandingState::Expiring);
+        let past = Duration::days(WARN_BEFORE_DAYS) + Duration::seconds(1);
+        let after = classify(Some(&held(true, Some(now + past))), now);
+        assert_eq!(after.state, StandingState::Good);
     }
 
     #[test]
