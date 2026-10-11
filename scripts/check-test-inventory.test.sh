@@ -112,13 +112,29 @@ Cites-Tests: README.md"
 check "cited non-rust path is refused" 1 "not a .rs file"
 git reset -q --hard HEAD~1
 
-# A test renamed in place has lost its old name: it must be declared.
+# A test renamed in place is not a net deletion.
 sed -i 's/survives_a_multiline_attribute/renamed_in_place/' src/db.rs
 commit "rename test"
-check "in-place rename is refused until declared" 1 "survives_a_multiline_attribute"
+check "in-place rename passes" 0 "rename"
+
+# But a rename plus a real drop is still a net deletion.
+sed -i '/one_liner_is_seen/d' src/db.rs
+commit "drop one"
+check "rename plus a dropped test is refused" 1 "one_liner_is_seen"
 git commit -q --allow-empty -m "declared
 
-Removes-Test: survives_a_multiline_attribute"
-check "declared in-place rename passes" 0
+Removes-Test: one_liner_is_seen"
+check "declared drop passes" 0
+
+# A cited file in which no test is recognised must not read as "nothing lost".
+git checkout -q base
+git checkout -q -b invisible
+printf '#[test_case(1)]\nfn parametrised(_: u8) {}\n' > src/cases.rs
+commit "base with unrecognised attribute"
+git branch -f base
+git commit -q --allow-empty -m "cite
+
+Cites-Tests: src/cases.rs"
+check "cited file with no recognised tests is refused" 1 "no tests recognised"
 
 [ "$fail" -eq 0 ] && echo "all cases behaved" || exit 1

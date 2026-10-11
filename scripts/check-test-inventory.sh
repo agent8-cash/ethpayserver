@@ -26,7 +26,12 @@
 #
 #     Removes-Test: name_of_the_test
 #
-# A declared removal passes; an undeclared one fails and names the test.
+# A declared removal passes; an undeclared one fails and names the test. A
+# file that loses no more tests than it gained (a rename in place) passes: the
+# check is on NET deletion.
+#
+# A cited file in which no test is recognised at the merge base fails, because
+# it means the parser could not see them, not that there was nothing to lose.
 #
 # Recognised tests: a function following #[test], #[tokio::test],
 # #[sqlx::test], #[rstest] or similar, with any other attributes (such as
@@ -119,6 +124,24 @@ while IFS= read -r file; do
     fi
     continue
   fi
+  # Captured, not piped into the loop: a failure inside a process substitution
+  # is lost, and "could not enumerate" must not read as "nothing deleted".
+  if ! base_names="$(git show "$base:$file" | test_names | sort -u)"; then
+    echo "::error file=$file::could not read the tests in $file at the merge base" >&2
+    fail=1; continue
+  fi
+  if [ -z "$base_names" ]; then
+    # A file the parser sees no tests in is a parser miss (an attribute form it
+    # does not know, say), not a file with nothing to lose.
+    echo "::error file=$file::no tests recognised in $file at the merge base, so nothing would be compared" >&2
+    fail=1; continue
+  fi
+  file_head_names=""
+  if git cat-file -e "HEAD:$file" 2>/dev/null; then
+    file_head_names="$(git show "HEAD:$file" | test_names | sort -u)" || { fail=1; continue; }
+  fi
+  # Names gone from the head everywhere and not declared.
+  missing=()
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     grep -qxF -- "$name" <<<"$head_names" && continue
@@ -126,9 +149,21 @@ while IFS= read -r file; do
       echo "ok: $name removed from $file, and declared"
       continue
     }
-    echo "::error file=$file::test '$name' exists at the merge base and is gone from HEAD" >&2
+    missing+=("$name")
+  done <<<"$base_names"
+  # A deletion is a NET deletion: names this file gained are renames (or
+  # replacements) and cover that many missing names. Names alone cannot tell a
+  # rename from a delete plus an add, and firing on renames would get the
+  # check disabled.
+  added="$(comm -13 <(printf '%s\n' "$base_names") <(printf '%s\n' "$file_head_names") | grep -c . )"
+  if [ "${#missing[@]}" -gt "$added" ]; then
+    for name in "${missing[@]}"; do
+      echo "::error file=$file::test '$name' exists at the merge base and is gone from HEAD" >&2
+    done
     fail=1
-  done < <(git show "$base:$file" | test_names | sort -u)
+  elif [ "${#missing[@]}" -gt 0 ]; then
+    echo "note: ${missing[*]} gone from $file, covered by $added test(s) it gained (rename)"
+  fi
 done <<< "$cited"
 
 if [ "$fail" -ne 0 ]; then

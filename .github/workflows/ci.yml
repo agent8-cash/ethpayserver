@@ -190,9 +190,10 @@ jobs:
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
         env:
-          BASE_REF: origin/${{ github.base_ref || 'testnet' }}
+          BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
         run: |
-          git fetch -q origin "${{ github.base_ref || 'testnet' }}" || true
+          export BASE_REF="origin/$BASE_BRANCH"
+          git fetch -q origin "$BASE_BRANCH" || true
           ./scripts/check-test-inventory.sh
 
       - name: Test inventory guard self-test
