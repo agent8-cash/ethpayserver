@@ -236,7 +236,7 @@ ethpayserver/
 ├── mcp-server/        # MCP tools for AI agents (ethpay-mcp binary)
 ├── loadtest/          # Goose-based load test scenarios
 ├── e2e/               # Playwright suite, against the server + the client image
-└── memos/             # Project documentation and notes
+└── memos/             # Product spec and standing decisions (no session log)
 ```
 
 The web frontend is **not** here. It lives in
