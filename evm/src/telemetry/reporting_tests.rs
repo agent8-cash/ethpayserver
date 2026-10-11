@@ -471,3 +471,27 @@ fn log_sink_redacts_credentials_but_keeps_addresses() {
         assert!(out.contains(&addr), "json={json}: address redacted: {out}");
     }
 }
+
+/// A multi-line phrase in a `?`-formatted field is Debug-escaped, and the JSON
+/// layer escapes the backslash again, so the line carries `\\n` between words.
+#[test]
+fn log_sink_redacts_multiline_debug_field_phrase() {
+    let words = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
+    for multiline in [words.replace(' ', "\n"), words.replace(' ', ",")] {
+        for json in [false, true] {
+            let sink = SharedBuf::default();
+            let dispatcher = tracing::Dispatch::new(build_subscriber_to(
+                sink.clone(),
+                tracing_subscriber::EnvFilter::new("info"),
+                json,
+                tracing::Level::ERROR,
+            ));
+            tracing::dispatcher::with_default(&dispatcher, || {
+                tracing::error!(input = ?multiline, "rejected");
+            });
+            let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+            assert!(!out.contains("winner"), "json={json}: phrase leaked: {out}");
+            assert!(!out.contains("yellow"), "json={json}: phrase leaked: {out}");
+        }
+    }
+}

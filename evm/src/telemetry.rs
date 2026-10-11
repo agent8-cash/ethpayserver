@@ -94,9 +94,11 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
             // wordlist. Membership is deliberately not checked: a wordlist
             // would let other languages, typos and non-BIP-39 seeds through,
             // and a destroyed log line costs less than a leaked seed. Words
-            // may be separated by JSON-escaped whitespace as well as real.
+            // may be separated by real or escaped whitespace (a Debug-formatted value
+            // inside a JSON line escapes the backslash twice), or by commas and
+            // numbering, as a pasted list would be.
             (
-                build(r"\b(?:[\p{L}\p{M}]+(?:\s|\\[nrt])+){11,}[\p{L}\p{M}]+\b"),
+                build(r"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt]|[,;.:)\d])+){11,}[\p{L}\p{M}]+\b"),
                 PHRASE_PLACEHOLDER,
                 true,
             ),

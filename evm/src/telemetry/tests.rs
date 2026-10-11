@@ -727,7 +727,7 @@ fn phrase_split_by_json_escapes_is_redacted_even_with_a_typo() {
     let clean = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let typo = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
     for m in [clean, typo] {
-        for sep in ["\\n", "\\t", "\\r\\n"] {
+        for sep in ["\\n", "\\t", "\\r\\n", "\\\\n", ", ", ". 1 "] {
             for lead in ["", "\\n", "\\n\\n"] {
                 let line = format!(r#"{{"message":"{lead}{}"}}"#, m.replace(' ', sep));
                 let out = redact_credentials(&line);
