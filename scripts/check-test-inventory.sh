@@ -26,9 +26,8 @@
 #
 #     Removes-Test: name_of_the_test
 #
-# A declared removal passes; an undeclared one fails and names the test. A
-# file that loses no more tests than it gained (a rename in place) passes: the
-# check is on NET deletion.
+# A declared removal passes; an undeclared one fails and names the test, even
+# if the file also gained tests.
 #
 # A cited file in which no test is recognised at the merge base fails, because
 # it means the parser could not see them, not that there was nothing to lose.
@@ -151,18 +150,14 @@ while IFS= read -r file; do
     }
     missing+=("$name")
   done <<<"$base_names"
-  # A deletion is a NET deletion: names this file gained are renames (or
-  # replacements) and cover that many missing names. Names alone cannot tell a
-  # rename from a delete plus an add, and firing on renames would get the
-  # check disabled.
-  added="$(comm -13 <(printf '%s\n' "$base_names") <(printf '%s\n' "$file_head_names") | grep -c . )"
-  if [ "${#missing[@]}" -gt "$added" ]; then
+  # Every missing name is a deletion. Gaining tests does not excuse losing
+  # one: a change justified by tests normally adds some, and a bad merge that
+  # drops a landed test must not be covered by them.
+  if [ "${#missing[@]}" -gt 0 ]; then
     for name in "${missing[@]}"; do
       echo "::error file=$file::test '$name' exists at the merge base and is gone from HEAD" >&2
     done
     fail=1
-  elif [ "${#missing[@]}" -gt 0 ]; then
-    echo "note: ${missing[*]} gone from $file, covered by $added test(s) it gained (rename)"
   fi
 done <<< "$cited"
 

@@ -112,19 +112,32 @@ Cites-Tests: README.md"
 check "cited non-rust path is refused" 1 "not a .rs file"
 git reset -q --hard HEAD~1
 
-# A test renamed in place is not a net deletion.
+# A test renamed in place has lost its old name: declare it.
 sed -i 's/survives_a_multiline_attribute/renamed_in_place/' src/db.rs
 commit "rename test"
-check "in-place rename passes" 0 "rename"
+check "undeclared in-place rename is refused" 1 "survives_a_multiline_attribute"
+git commit -q --allow-empty -m "declared
 
-# But a rename plus a real drop is still a net deletion.
+Removes-Test: survives_a_multiline_attribute"
+check "declared rename passes" 0
+
+# Gaining a test must not excuse silently losing another.
 sed -i '/one_liner_is_seen/d' src/db.rs
-commit "drop one"
-check "rename plus a dropped test is refused" 1 "one_liner_is_seen"
+printf '#[test]\nfn brand_new() {}\n' >> src/db.rs
+commit "drop one, add one"
+check "a dropped test is not covered by an added one" 1 "one_liner_is_seen"
 git commit -q --allow-empty -m "declared
 
 Removes-Test: one_liner_is_seen"
 check "declared drop passes" 0
+
+# A cited file that is new in the branch has nothing to compare.
+printf '#[test]\nfn fresh() {}\n' > src/fresh.rs
+commit "new file"
+git commit -q --allow-empty -m "cite new
+
+Cites-Tests: src/fresh.rs"
+check "cited file new since the merge base passes" 0 "new since the merge base"
 
 # A cited file in which no test is recognised must not read as "nothing lost".
 git checkout -q base

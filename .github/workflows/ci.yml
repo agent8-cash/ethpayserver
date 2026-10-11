@@ -193,7 +193,7 @@ jobs:
           BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
         run: |
           export BASE_REF="origin/$BASE_BRANCH"
-          git fetch -q origin "$BASE_BRANCH" || true
+          git fetch -q origin "$BASE_BRANCH"
           ./scripts/check-test-inventory.sh
 
       - name: Test inventory guard self-test
