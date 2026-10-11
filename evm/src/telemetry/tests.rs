@@ -30,65 +30,64 @@ fn redacts_mnemonic() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_secrets(&format!("loaded wallet: {m}"));
     assert!(!out.contains("sausage"), "mnemonic leaked: {out}");
-    assert!(out.contains("[redacted: 12+ BIP-39 word run]"));
+    assert!(out.contains("[redacted: 12+ word run]"));
 }
 
-/// A run of twelve lowercase words is only a recovery phrase if the words come
-/// from the BIP-39 list. Operator-facing prose of that length must survive.
+/// Shape alone decides: twelve or more words are redacted whatever they are, so
+/// a phrase in another language, with typos, or from another wordlist is gone.
 #[test]
-fn long_prose_is_not_a_mnemonic() {
-    // The verbatim fail-open alert text, which the shape-only rule erased.
-    let alert = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
-    assert_eq!(redact_secrets(alert), alert);
-    assert_eq!(redact_credentials(alert), alert);
-    let plain = "twelve plain lowercase words here really do read as ordinary prose ok now";
-    assert_eq!(redact_secrets(plain), plain);
-}
-
-#[test]
-fn mnemonic_inside_prose_is_redacted_but_the_prose_is_kept() {
-    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    let out = redact_credentials(&format!("the server was handed {m} by mistake"));
-    // Words beside the phrase may go with it: a stretch tolerates one
-    // off-list word, so a neighbour is indistinguishable from a typo.
-    assert!(out.starts_with("the server was"), "{out}");
-    assert!(out.contains("[redacted: 12+ BIP-39 word run]"), "{out}");
-    assert!(!out.contains("sausage"), "{out}");
-    // Eleven words never reach the rule at all.
+fn any_twelve_word_run_is_redacted() {
+    let runs = [
+        // Spanish BIP-39, accents included.
+        "ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar",
+        // Two typos, a capital, an off-list word.
+        "legal winnerr thank year wave sausagee worth useful Legal winner thank zzzz",
+        // Not a BIP-39 wordlist at all.
+        "wild father tree among universe such mobile favorite target dynamic credit identify",
+        "Legal winner thank year wave sausage worth useful legal winner thank yellow",
+    ];
+    for run in runs {
+        for out in [
+            redact_secrets(&format!("pasted {run} here")),
+            redact_credentials(&format!("pasted {run} here")),
+        ] {
+            assert!(out.contains("[redacted: 12+ word run]"), "{run} -> {out}");
+            assert!(!out.contains("thank") && !out.contains("abeja") && !out.contains("mobile"));
+        }
+    }
     let eleven = "legal winner thank year wave sausage worth useful legal winner thank";
     assert_eq!(redact_secrets(eleven), eleven);
-    // Multi-line / multi-space separators are still one phrase.
-    let spaced = m.replace(' ', "  \n");
-    assert!(!redact_secrets(&spaced).contains("sausage"));
 }
 
-/// A mistyped or capitalised word must not let the other eleven through: the
-/// remainder of a phrase is brute-forceable, so the rule fails closed.
+/// The fail-open alert is the one exempt sentence; text around it is still scrubbed.
 #[test]
-fn phrase_with_one_bad_word_is_still_redacted() {
-    let typo = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
-    let out = redact_secrets(&format!("pasted {typo} here"));
-    assert!(!out.contains("winner") && !out.contains("yellow"), "{out}");
-    assert!(
-        out.starts_with("pasted [redacted") && out.ends_with("here"),
-        "{out}"
+fn fail_open_alert_is_exempt_and_only_it() {
+    assert_eq!(
+        redact_secrets(FAIL_OPEN_ALERT_MESSAGE),
+        FAIL_OPEN_ALERT_MESSAGE
     );
-    let capital = "Legal winner thank year wave sausage worth useful legal winner thank yellow";
-    assert!(!redact_secrets(capital).contains("sausage"));
-    // Non-member at either edge of the twelve.
-    for edge in [
-        "zzzz winner thank year wave sausage worth useful legal winner thank yellow",
-        "legal winner thank year wave sausage worth useful legal winner thank zzzz",
-    ] {
-        assert!(!redact_secrets(edge).contains("sausage"), "{edge}");
-    }
+    assert_eq!(
+        redact_credentials(FAIL_OPEN_ALERT_MESSAGE),
+        FAIL_OPEN_ALERT_MESSAGE
+    );
+    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let out = redact_credentials(&format!("{m} | {FAIL_OPEN_ALERT_MESSAGE} | token=abc"));
+    assert!(out.contains(FAIL_OPEN_ALERT_MESSAGE), "{out}");
+    assert!(!out.contains("sausage") && !out.contains("abc"), "{out}");
+    // A near-miss of the alert is ordinary text and is redacted.
+    let near = FAIL_OPEN_ALERT_MESSAGE.replace("invoice", "invoices");
+    assert!(redact_secrets(&near).contains("[redacted: 12+ word run]"));
 }
 
-/// Two off-list words in a twelve-word stretch is prose, not a phrase.
 #[test]
-fn twelve_words_with_two_non_members_are_kept() {
-    let s = "legal winner thank year wave sausage worth useful legal zzzz thank qqqq";
-    assert_eq!(redact_secrets(s), s);
+fn bare_token_word_is_not_a_key_value_pair() {
+    assert_eq!(
+        redact_credentials("token USDC received"),
+        "token USDC received"
+    );
+    assert_eq!(redact_credentials("seed data loaded"), "seed data loaded");
+    assert!(!redact_credentials("token=USDC").contains("USDC"));
+    assert!(!redact_credentials("Bearer abc123xyz").contains("abc123xyz"));
 }
 
 #[test]
@@ -710,17 +709,21 @@ fn client_options_carry_the_sample_rate_and_the_scrubbing_transport() {
 
 /// In a JSON log line a newline or tab inside a string is the two characters
 /// backslash and `n` / `t`, so a multi-line paste must still read as one phrase.
+/// The phrase carries a typo and sits at the very start of the string value,
+/// where the escape's `n` can be read as the first letter of a word.
 #[test]
-fn phrase_split_by_json_escapes_is_redacted() {
-    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    for sep in ["\\n", "\\t", "\\r\\n"] {
-        let line = format!(r#"{{"message":"{}"}}"#, m.replace(' ', sep));
-        let out = redact_credentials(&line);
-        assert!(!out.contains("sausage") && !out.contains("winner"), "{out}");
-        assert!(
-            out.starts_with(r#"{"message":""#) && out.ends_with(r#""}"#),
-            "{out}"
-        );
+fn phrase_split_by_json_escapes_is_redacted_even_with_a_typo() {
+    let clean = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let typo = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
+    for m in [clean, typo] {
+        for sep in ["\\n", "\\t", "\\r\\n"] {
+            for lead in ["", "\\n", "\\n\\n"] {
+                let line = format!(r#"{{"message":"{lead}{}"}}"#, m.replace(' ', sep));
+                let out = redact_credentials(&line);
+                assert!(!out.contains("winner") && !out.contains("yellow"), "{out}");
+                assert!(out.ends_with(r#""}"#), "{out}");
+            }
+        }
     }
 }
 

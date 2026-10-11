@@ -162,7 +162,8 @@ fn surface_fail_open_allow(
         reason,
         silent_for_secs = silent_for.map(|d| d.num_seconds()),
         max_age_secs = max_age.num_seconds(),
-        "invoice creation allowed on a standing that was never received or is older than the freshness bound"
+        "{}",
+        evm::telemetry::FAIL_OPEN_ALERT_MESSAGE
     );
 }
 
