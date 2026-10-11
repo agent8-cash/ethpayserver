@@ -1,6 +1,6 @@
 # Receiving an account's standing
 
-Status: design. No code in this document's change.
+Status: slice 1 (the receiver) is built; later slices are design.
 
 An external service decides whether each account is in good standing and
 pushes that decision to this server. The receiver (slice 1 below) is
