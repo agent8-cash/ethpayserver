@@ -65,6 +65,13 @@ check "declared removal passes" 0
 
 git reset -q --hard HEAD~2
 
+# The stacked #[tokio::test] + #[ignore] + async fn form is the common one for
+# integration tests; losing such a test must be seen too.
+sed -i '/^#\[tokio::test\]$/,/^async fn push_failing_reaches_sentry/d' src/alerting.rs
+commit "drop async ignored test"
+check "dropped stacked-attribute async test is refused" 1 "push_failing_reaches_sentry"
+git reset -q --hard HEAD~1
+
 # Moving a test to another file is not a deletion.
 sed -i '/^fn keeps_newer_version/d' src/alerting.rs
 sed -i '0,/^#\[test\]$/{//d}' src/alerting.rs  # its now-dangling attribute

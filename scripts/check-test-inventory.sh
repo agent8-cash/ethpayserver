@@ -135,10 +135,6 @@ while IFS= read -r file; do
     echo "::error file=$file::no tests recognised in $file at the merge base, so nothing would be compared" >&2
     fail=1; continue
   fi
-  file_head_names=""
-  if git cat-file -e "HEAD:$file" 2>/dev/null; then
-    file_head_names="$(git show "HEAD:$file" | test_names | sort -u)" || { fail=1; continue; }
-  fi
   # Names gone from the head everywhere and not declared.
   missing=()
   while IFS= read -r name; do
