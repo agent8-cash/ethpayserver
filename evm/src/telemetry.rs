@@ -43,6 +43,10 @@ const PHRASE_PLACEHOLDER: &str = "[redacted: 12+ word run]";
 /// use this constant so the exemption and the alert cannot drift apart.
 pub const FAIL_OPEN_ALERT_MESSAGE: &str = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
 
+/// Stand-in for the exempt alert while rules run; a plain word so it counts
+/// towards a surrounding run.
+const ALERT_STAND_IN: &str = "ALERTSTANDIN";
+
 /// Ordered `(pattern, replacement, credential)` redaction rules applied to every
 /// free-text field. `credential` marks the rules that catch material which must
 /// not survive in a process log either; the rest (addresses, emails) are
@@ -142,14 +146,16 @@ pub fn redact_credentials(input: &str) -> String {
 }
 
 fn redact_with(input: &str, credentials_only: bool) -> String {
-    // The exempt alert sentence is cut out first and each side scrubbed on its
-    // own, so the matcher never sees it and never has to infer anything about it.
+    // The exempt alert sentence is swapped for a single stand-in word, so the
+    // matcher never sees it and never has to infer anything about it. A word
+    // rather than a cut keeps a phrase that straddles the alert one contiguous
+    // run: splitting the input around it would leave two halves under twelve
+    // words each, and the exemption would become a way to smuggle a phrase past
+    // the rule. Whatever the rules redact takes the stand-in with it.
     if input.contains(FAIL_OPEN_ALERT_MESSAGE) {
-        return input
-            .split(FAIL_OPEN_ALERT_MESSAGE)
-            .map(|part| redact_with(part, credentials_only))
-            .collect::<Vec<_>>()
-            .join(FAIL_OPEN_ALERT_MESSAGE);
+        let masked = input.replace(FAIL_OPEN_ALERT_MESSAGE, ALERT_STAND_IN);
+        return redact_with(&masked, credentials_only)
+            .replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
     }
     let mut out = std::borrow::Cow::Borrowed(input);
     for (re, replacement, credential) in rules() {

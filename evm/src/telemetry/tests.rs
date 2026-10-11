@@ -79,6 +79,17 @@ fn fail_open_alert_is_exempt_and_only_it() {
     assert!(redact_secrets(&near).contains("[redacted: 12+ word run]"));
 }
 
+/// A phrase split around the alert sentence must not escape by being cut in two.
+#[test]
+fn phrase_straddling_the_alert_is_still_redacted() {
+    let input = format!(
+        "legal winner thank year wave sausage {FAIL_OPEN_ALERT_MESSAGE} worth useful legal winner thank yellow"
+    );
+    for out in [redact_secrets(&input), redact_credentials(&input)] {
+        assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
+    }
+}
+
 #[test]
 fn bare_token_word_is_not_a_key_value_pair() {
     assert_eq!(
