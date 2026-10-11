@@ -1,0 +1,65 @@
+[
+  {
+    "id": "F001",
+    "desc": "A watch present in the monitor but not expected by the database, or expected and not held, is detected and counted. Report both directions separately; the missing-watch direction means a payment can arrive uncredited and is the expensive one.",
+    "test": "reconciler reports a seeded stale watch and a removed live watch, each distinctly",
+    "passes": true,
+    "notes": "The authoritative set is in Redis under the watch key prefix, hydrated on monitor startup, and already readable by an existing reader that SCANs rather than enumerating. Diff the database against Redis, never against the monitor's in-memory map - that is the component reporting on itself. Acceptance is red-before-green: a check for a condition that is hard to produce by accident must be shown going red on purpose. THE DIFF KEY IS THE FULL TUPLE, NOT THE ADDRESS: the reader returns address, invoice, chain and an optional token, and the same address is watched separately per asset. Comparing on address alone would silently miss a missing token watch on an address that still holds its native watch - which is the direction that loses a payment. The test needs TEST_REDIS_URL as well as DATABASE_URL."
+  },
+  {
+    "id": "F002",
+    "desc": "Post-delete unwatch failures are visible. The account-deletion path used to make orphaned watches impossible by refusing the delete; it now clears them after the commit instead, which is best-effort.",
+    "test": "counter increments when the unwatch cannot be published, and when no monitor is wired",
+    "passes": true,
+    "notes": "Covered by tests as of this branch. Both branches of the counter were shown red on purpose before they were green - the per-address path where the unwatch command cannot be published, and the no-monitor-wired path - each by commenting out its own increment, and each ablation reddened only its own test. Reachability is a separate ignored test driving the real self-service delete handler against a real database with no monitor wired, because a unit test on the counter proves nothing about the path a merchant takes. Note what a zero does NOT mean, which is pinned as a named test rather than only a doc comment: the unwatch succeeds when the command is PUBLISHED, not acknowledged, so a command published to a channel nobody is subscribed to increments nothing. A third silent path is deliberate - a watch row the parser rejects is skipped uncounted, because the realistic instance is a non-EVM chain this process never held. F001 is the real answer; this is the cheap signal."
+  },
+  {
+    "id": "F003",
+    "desc": "Oversized files blocking merges are split along the behaviours they cover. Test-only growth moves to a child module so the parent shrinks and nothing becomes public.",
+    "test": "the line-limit check passes for the affected files with their tests intact",
+    "passes": false,
+    "notes": "Do not move unit tests into the integration test directory: that restricts them to the public API and would force a private helper public. A gate must never be the reason something becomes pub. Do not enrol these in the ratchet - that mechanism is for a file new to the base, not an existing file getting worse."
+  },
+  {
+    "id": "F004",
+    "desc": "A merged pull request's tracker ticket is closed as part of merging, so the queue does not re-dispatch finished work.",
+    "test": "a merged ticket is not selected by the picker on the next tick",
+    "passes": false,
+    "notes": "Observed cost: one ticket was dispatched six times after its work had merged, and the agent correctly reported a no-op each time while the wrapper reported failure. The park bound eventually caught it. Fixing the cause is cheaper than relying on the bound."
+  },
+  {
+    "id": "F005",
+    "desc": "A correct no-op is distinguishable from a failure. A session that finds nothing to do exits successfully and says so.",
+    "test": "a run against already-complete work exits zero and is not reported as failed",
+    "passes": false,
+    "notes": "Currently 'produced no commit' is an error, so doing the right thing on finished work looks identical to breaking. Same conflation as could-not-look versus found-nothing, which is the most repeated defect in this codebase."
+  },
+  {
+    "id": "F006",
+    "desc": "The scheduled health check reports a MISSED run, not only a failing one, so a check that stops being scheduled is noticed.",
+    "test": "a deliberately failed check-in produces an alert that reaches a person",
+    "passes": false,
+    "notes": "The check now runs and reports; whether a MISSED check-in reaches anyone is untested. A monitor only ever observed succeeding has not been shown capable of alerting. Test by failing it on purpose."
+  },
+  {
+    "id": "F007",
+    "desc": "A merchant can rotate a store's extended public key through the interface rather than only by hand-crafted request.",
+    "test": "rotation via the documented endpoint updates derivation and leaves existing invoices resolvable",
+    "passes": false,
+    "notes": "DO NOT START THIS: IT IS ALREADY IMPLEMENTED AND OPEN AS A PULL REQUEST. Check the open pull requests for xpub rotation before writing anything - the branch carries a rotation endpoint, documentation, and an integration test named for invoice derivation after rotation, which is this feature's stated test. It is open rather than merged because it was behind its base, not because it is unfinished. Help it land instead of rebuilding it. THIS ROW EXISTS AS A WARNING BECAUSE THE MISTAKE ALREADY HAPPENED ONCE: F001 was built and merged while an open pull request had been implementing the same reconciler since that morning, and the duplicate is the version now on the branch. BEFORE STARTING ANY FEATURE HERE, SEARCH THE OPEN PULL REQUESTS FOR ITS SUBJECT - not for its ticket id, which a harness feature does not have. One listing is cheaper than a day of duplicated work. SENSITIVE: key derivation. Existing addresses must remain resolvable after rotation or funds already in flight become uncreditable."
+  },
+  {
+    "id": "F008",
+    "desc": "Backups are stored off the machine that holds the database, with an upload-only credential.",
+    "test": "a restore from the offsite copy reproduces live row counts",
+    "passes": false,
+    "notes": "The local backup exists and has been restored successfully with matching row counts. Offsite does not. This became materially more important once irreversible account deletion shipped: restore-from-backup is now the only undo, and the copy lives on the same box as the database. The credential must be write-only - hiding a file is a form of deletion, so retention must be enforced by lifecycle rule rather than by trusting the key."
+  },
+  {
+    "id": "F009",
+    "desc": "A watch the database expects and nobody holds is re-established automatically. A watch held that the database does not expect is reported, never removed automatically.",
+    "test": "a seeded missing watch is re-established on the next pass; a seeded stale watch is reported and still held afterwards",
+    "passes": false,
+    "notes": "This is the failsafe the divergence question was answered with, and F001's detection is its input - do not rebuild the comparison. THE TWO DIRECTIONS ARE NOT SYMMETRIC AND THE CODE MUST NOT TREAT THEM SO: re-establishing a watch is idempotent and cheap, while removing one is an external side effect with no rollback, so a comparison that is wrong in that direction stops watching an address about to be paid into - turning a wasted resource into a lost payment. Re-establish missing, report stale, and let a person remove. The test for the stale direction must assert the watch is STILL HELD after the pass, or it cannot fail if someone later adds automatic removal. One benign case must not trip it: cleanup unwatches before it deactivates the database row, so a watch reads as missing between those two steps while everything is behaving - such an entry belongs to an invoice that is no longer pending, which is how it is told apart from the case that costs a payment. Needs DATABASE_URL and TEST_REDIS_URL."
+  }
+]

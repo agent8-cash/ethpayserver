@@ -26,6 +26,13 @@ payserver-client      frontend, its own repository
 The client never depends on a payserver — it talks to whichever one is
 configured at runtime. Do not add a dependency edge from client to server.
 
+`memos/features.json` is no longer part of the session loop and is not kept
+current. It is retained because its open rows (`passes: false`) carry design
+constraints that live nowhere else, for example that a stale watch is reported
+and never auto-removed, and that the reconciler diff key is the full tuple, not
+the address. Check any row against the code and open pull requests before acting
+on it.
+
 ## What works today
 
 A snapshot, measured on 2026-09-26 at `142d923` and not kept current — rerun

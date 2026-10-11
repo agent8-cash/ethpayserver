@@ -111,8 +111,9 @@ are **disabled**: `flow-monitor`, `health-testnet` and `db-backup-testnet`.
 Only the end-to-end dead-man's-switch (`e2e-testnet`) is live. So a failing or
 missing `health-monitor.yml` check-in, and a missed database backup, **do not
 page anyone through Sentry today**; the red Actions run is the only trace, and
-nobody is watching that tab. Treat prompt outage detection as the host timer
-described below, not these monitors.
+nobody is watching that tab. The host timer described below is the intended
+path for prompt outage detection, but it is unverified from this repository,
+so do not assume any alarm reaches a person.
 
 A check-in to a disabled monitor still returns success. `flow-monitor` has
 never recorded a check-in at all: the `http=202` it receives means Sentry's
