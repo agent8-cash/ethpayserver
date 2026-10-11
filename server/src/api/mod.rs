@@ -38,6 +38,7 @@ pub mod plugins;
 pub mod rate_limit;
 pub mod rates;
 pub mod refunds;
+pub mod standing_warning;
 pub mod stores;
 pub mod users;
 pub mod webhook_deliveries;
@@ -456,6 +457,15 @@ where
     // handler that was reached via a deprecated-but-in-grace key gets the
     // `X-API-Key-Deprecated` header stamped automatically.
     app = app.layer(axum::middleware::from_fn(api_key_deprecation::middleware));
+
+    // Expiry warning header — stamped on responses to authenticated requests
+    // from an account whose paid period is about to end.
+    app = app.layer(axum::middleware::from_fn_with_state(
+        Arc::new(standing_warning::StandingWarningState::new(
+            state.data_service.clone(),
+        )),
+        standing_warning::middleware,
+    ));
 
     // HTTP request metrics (innermost layer = runs closest to handlers)
     app = app.layer(axum::middleware::from_fn(http_metrics::middleware));
