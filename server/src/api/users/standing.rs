@@ -167,4 +167,38 @@ mod tests {
         let r = classify(Some(&held(true, Some(now - Duration::days(1)))), now);
         assert_eq!(r.state, StandingState::Expiring);
     }
+
+    /// The banner must never contradict the invoice gate: a merchant shown
+    /// anything but `Lapsed` must be let through, and a `Lapsed` one refused,
+    /// whatever the paid-through date and however long the sender has been
+    /// silent. A past paid-through date on a good standing is allowed by the
+    /// gate, so it is only a warning here.
+    #[test]
+    fn lapsed_exactly_when_the_invoice_gate_denies() {
+        let now = Utc::now();
+        let max_age = Duration::days(data_service::DEFAULT_STANDING_MAX_AGE_DAYS);
+        for good in [true, false] {
+            for paid_through in [
+                None,
+                Some(now - Duration::days(1)),
+                Some(now + Duration::days(3)),
+                Some(now + Duration::days(30)),
+            ] {
+                for silence in [Duration::zero(), max_age + Duration::days(1)] {
+                    let mut h = held(good, paid_through);
+                    h.last_heard_at = now - silence;
+                    let shown = classify(Some(&h), now).state;
+                    let denied = matches!(
+                        data_service::decide_and_surface(Uuid::nil(), Some(&h), now, max_age),
+                        data_service::StandingDecision::Deny { .. }
+                    );
+                    assert_eq!(
+                        shown == StandingState::Lapsed,
+                        denied,
+                        "good={good} paid_through={paid_through:?} silence={silence:?}"
+                    );
+                }
+            }
+        }
+    }
 }
