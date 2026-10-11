@@ -440,11 +440,10 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
     }
 }
 
-/// The scrubber used to guard only the Sentry hooks, so a secret echoed into a
-/// log line reached the process log untouched. The sink the binaries write to
-/// must redact too, in both output formats: phrases, key=value secrets (also as
-/// quoted JSON fields) and key-shaped hex with or without 0x. Addresses stay
-/// readable for operators.
+/// Every log sink redacts credentials, not only the Sentry hooks. The sink the
+/// binaries write to is checked in both output formats: phrases, key=value
+/// secrets (also as quoted JSON fields) and key-shaped hex with or without 0x.
+/// Addresses stay readable for operators.
 #[test]
 fn log_sink_redacts_credentials_but_keeps_addresses() {
     let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
