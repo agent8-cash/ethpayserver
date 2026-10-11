@@ -1,9 +1,12 @@
-//! The fail-open alert must reach error reporting intact. The telemetry
-//! scrubber erases any run of twelve lowercase words, so an alert whose text
-//! is one long sentence arrives as a bare placeholder and says nothing.
+//! The fail-open alert must reach error reporting intact. Its text is a long
+//! plain sentence; the telemetry scrubber must not mistake it for a recovery
+//! phrase, or the alert arrives as a bare placeholder and says nothing.
 
 use super::*;
 use tracing_subscriber::prelude::*;
+
+/// The alert text exactly as `surface_fail_open_allow` emits it.
+const FAIL_OPEN_MESSAGE: &str = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
 
 #[test]
 fn fail_open_message_survives_the_telemetry_scrubber() {

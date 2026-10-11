@@ -120,15 +120,6 @@ fn fail_open_reason(
     }
 }
 
-/// The text of the fail-open alert.
-///
-/// Punctuation, not just wording, keeps it under twelve consecutive lowercase
-/// words: the telemetry scrubber replaces any such run with a placeholder
-/// (it cannot tell prose from a recovery phrase), and the alert's whole title
-/// was being erased. `fail_open_message_survives_the_telemetry_scrubber` holds
-/// this in place.
-const FAIL_OPEN_MESSAGE: &str = "invoice creation allowed without a fresh standing: never received, or older than the freshness bound";
-
 /// Surface a fail-open allow at error level plus a counter.
 fn surface_fail_open_allow(
     plugin: &PluginId,
@@ -147,8 +138,7 @@ fn surface_fail_open_allow(
         reason,
         silent_for_secs = silent_for.map(|d| d.num_seconds()),
         max_age_secs = max_age.num_seconds(),
-        "{}",
-        FAIL_OPEN_MESSAGE
+        "invoice creation allowed on a standing that was never received or is older than the freshness bound"
     );
 }
 

@@ -30,7 +30,35 @@ fn redacts_mnemonic() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_secrets(&format!("loaded wallet: {m}"));
     assert!(!out.contains("sausage"), "mnemonic leaked: {out}");
-    assert!(out.contains("[redacted-mnemonic]"));
+    assert!(out.contains("[redacted: 12+ BIP-39 word run]"));
+}
+
+/// A run of twelve lowercase words is only a recovery phrase if the words come
+/// from the BIP-39 list. Operator-facing prose of that length must survive.
+#[test]
+fn long_prose_is_not_a_mnemonic() {
+    // The verbatim fail-open alert text, which the shape-only rule erased.
+    let alert = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
+    assert_eq!(redact_secrets(alert), alert);
+    assert_eq!(redact_credentials(alert), alert);
+    let plain = "twelve plain lowercase words here really do read as ordinary prose ok now";
+    assert_eq!(redact_secrets(plain), plain);
+}
+
+#[test]
+fn mnemonic_inside_prose_is_redacted_but_the_prose_is_kept() {
+    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let out = redact_credentials(&format!("the server was handed {m} by mistake"));
+    assert_eq!(
+        out,
+        "the server was handed [redacted: 12+ BIP-39 word run] by mistake"
+    );
+    // Eleven wordlist members are not a phrase.
+    let eleven = "legal winner thank year wave sausage worth useful legal winner thank";
+    assert_eq!(redact_secrets(eleven), eleven);
+    // Multi-line / multi-space separators are still one phrase.
+    let spaced = m.replace(' ', "  \n");
+    assert!(!redact_secrets(&spaced).contains("sausage"));
 }
 
 #[test]

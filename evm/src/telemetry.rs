@@ -28,16 +28,33 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use coins_bip39::Wordlist;
 use regex::Regex;
 use sentry::protocol::{Context, Event, Log, Map, Value};
+
+/// What a matched rule is replaced with.
+enum Replace {
+    /// A fixed replacement template (may use `$1`-style groups).
+    Text(&'static str),
+    /// Keep only the runs of BIP-39 words inside the match; see [`redact_phrases`].
+    Phrase,
+}
+
+/// Placeholder for a run of twelve or more BIP-39 words. It names what was
+/// matched, not what was inferred: the matcher cannot know a seed phrase was
+/// present, only that the text has the shape of one.
+const PHRASE_PLACEHOLDER: &str = "[redacted: 12+ BIP-39 word run]";
+
+/// Fewest consecutive BIP-39 words treated as a recovery phrase.
+const MIN_PHRASE_WORDS: usize = 12;
 
 /// Ordered `(pattern, replacement, credential)` redaction rules applied to every
 /// free-text field. `credential` marks the rules that catch material which must
 /// not survive in a process log either; the rest (addresses, emails) are
 /// telemetry-only, because operators need them readable in the log.
 /// Compiled once and reused for the life of the process.
-fn rules() -> &'static [(Regex, &'static str, bool)] {
-    static RULES: OnceLock<Vec<(Regex, &'static str, bool)>> = OnceLock::new();
+fn rules() -> &'static [(Regex, Replace, bool)] {
+    static RULES: OnceLock<Vec<(Regex, Replace, bool)>> = OnceLock::new();
     RULES.get_or_init(|| {
         // `unwrap` is safe: these are constant, test-covered patterns.
         #[allow(clippy::unwrap_used)]
@@ -46,7 +63,7 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
             // JSON Web Tokens (header.payload.signature).
             (
                 build(r"eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+"),
-                "[redacted-jwt]",
+                Replace::Text("[redacted-jwt]"),
                 true,
             ),
             // RPC provider URLs carry the API key in the path (Alchemy
@@ -62,28 +79,30 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                 build(
                     r"((?:https?|wss?)://[A-Za-z0-9.\-]+(?::[0-9]+)?(?:/[A-Za-z0-9._\-]{1,15})*/)[A-Za-z0-9._\-]{16,}",
                 ),
-                "${1}[redacted-rpc-key]",
+                Replace::Text("${1}[redacted-rpc-key]"),
                 true,
             ),
             // 0x-prefixed hex of address length or longer: addresses (40),
             // private keys / tx hashes / block hashes (64), signatures (130).
-            (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]", false),
+            (build(r"0x[0-9a-fA-F]{40,}"), Replace::Text("[redacted-hex]"), false),
             // 64+ hex chars, 0x-prefixed or bare, is the shape of a private key
             // and of a transaction hash alike; nothing in the text tells them
             // apart, so the process log loses hashes rather than risk a key.
             // Addresses (40) stay readable there.
-            (build(r"0x[0-9a-fA-F]{64,}"), "[redacted-hex]", true),
-            (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]", true),
-            // BIP-39 mnemonics: 12+ consecutive lowercase words.
+            (build(r"0x[0-9a-fA-F]{64,}"), Replace::Text("[redacted-hex]"), true),
+            (build(r"\b[0-9a-fA-F]{64}\b"), Replace::Text("[redacted-hex]"), true),
+            // BIP-39 mnemonics: 12+ consecutive lowercase words, of which only
+            // runs of real wordlist members are redacted. Prose of twelve plain
+            // words is not a recovery phrase and must stay readable.
             (
                 build(r"\b(?:[a-z]+\s+){11,}[a-z]+\b"),
-                "[redacted-mnemonic]",
+                Replace::Phrase,
                 true,
             ),
             // Email addresses (customer PII).
             (
                 build(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
-                "[redacted-email]",
+                Replace::Text("[redacted-email]"),
                 false,
             ),
             // `key: value` / `key=value` for sensitive keys, plus `Bearer <tok>`.
@@ -91,7 +110,7 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                 build(
                     r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b("?\s*[:=]\s*|\s+)("?)[^\s,;"']+"#,
                 ),
-                "$1$2$3[redacted]",
+                Replace::Text("$1$2$3[redacted]"),
                 true,
             ),
         ]
@@ -123,10 +142,58 @@ fn redact_with(input: &str, credentials_only: bool) -> String {
             continue;
         }
         if re.is_match(&out) {
-            out = std::borrow::Cow::Owned(re.replace_all(&out, *replacement).into_owned());
+            out = std::borrow::Cow::Owned(match replacement {
+                Replace::Text(text) => re.replace_all(&out, *text).into_owned(),
+                Replace::Phrase => re
+                    .replace_all(&out, |caps: &regex::Captures| redact_phrases(&caps[0]))
+                    .into_owned(),
+            });
         }
     }
     out.into_owned()
+}
+
+fn is_bip39_word(word: &str) -> bool {
+    static WORDS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    WORDS
+        .get_or_init(|| coins_bip39::English::get_all().iter().copied().collect())
+        .contains(word)
+}
+
+/// Replace each run of at least [`MIN_PHRASE_WORDS`] consecutive BIP-39 words
+/// in `candidate` (a run of lowercase words) with [`PHRASE_PLACEHOLDER`],
+/// leaving every other word, and the whitespace between them, untouched.
+fn redact_phrases(candidate: &str) -> String {
+    // (word, whitespace that follows it)
+    let mut tokens: Vec<(&str, &str)> = Vec::new();
+    let mut rest = candidate;
+    while !rest.is_empty() {
+        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let gap_end = rest[word_end..]
+            .find(|c: char| !c.is_whitespace())
+            .map_or(rest.len(), |i| word_end + i);
+        tokens.push((&rest[..word_end], &rest[word_end..gap_end]));
+        rest = &rest[gap_end..];
+    }
+    let mut out = String::with_capacity(candidate.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let run = tokens[i..]
+            .iter()
+            .take_while(|(w, _)| is_bip39_word(w))
+            .count();
+        if run >= MIN_PHRASE_WORDS {
+            out.push_str(PHRASE_PLACEHOLDER);
+            out.push_str(tokens[i + run - 1].1);
+            i += run;
+        } else {
+            let (word, gap) = tokens[i];
+            out.push_str(word);
+            out.push_str(gap);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Recursively redact secrets inside a JSON value (used for `extra` / breadcrumb

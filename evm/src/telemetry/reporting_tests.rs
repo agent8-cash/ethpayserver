@@ -239,18 +239,29 @@ fn parity_with_shared_scrubber() {
         "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
         "secretariat: not a secret keyword",
         "seed abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        "twelve plain lowercase words here really do trip the mnemonic rule ok now",
         "façade ↔ merchant@example.com ↔ 0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "token",
         "token=",
     ];
+    // The shared scrubber still labels a phrase with its older placeholder.
+    let relabel = |s: String| s.replace("[redacted: 12+ BIP-39 word run]", "[redacted-mnemonic]");
     for input in CORPUS {
         assert_eq!(
-            redact_secrets(input),
+            relabel(redact_secrets(input)),
             scrub::redact_secrets(input),
             "shared `scrub` diverged from the audited regex table on: {input}"
         );
     }
+}
+
+/// Known, deliberate divergence: `scrub` (browser-side, no wordlist) still
+/// erases any twelve-word lowercase run, which is the safe direction to be
+/// wrong in. It must follow this table before the case moves into the corpus.
+#[test]
+fn shared_scrubber_is_stricter_on_unlisted_word_runs() {
+    let prose = "twelve plain lowercase words here really do read as ordinary prose ok now";
+    assert_eq!(redact_secrets(prose), prose);
+    assert_ne!(scrub::redact_secrets(prose), prose);
 }
 
 #[test]
@@ -436,7 +447,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
 /// readable for operators.
 #[test]
 fn log_sink_redacts_credentials_but_keeps_addresses() {
-    let phrase = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+    let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let key_hex = "ab".repeat(32);
     let addr = format!("0x{}", "cd".repeat(20));
     for json in [false, true] {
@@ -454,10 +465,13 @@ fn log_sink_redacts_credentials_but_keeps_addresses() {
         });
         let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
         assert!(
-            !out.contains("alpha bravo"),
+            !out.contains("sausage"),
             "json={json}: phrase leaked: {out}"
         );
-        assert!(out.contains("[redacted-mnemonic]"), "json={json}: {out}");
+        assert!(
+            out.contains("[redacted: 12+ BIP-39 word run]"),
+            "json={json}: {out}"
+        );
         assert!(!out.contains("supersecretvalue"), "json={json}: {out}");
         assert!(!out.contains("fieldsecretvalue"), "json={json}: {out}");
         assert!(
