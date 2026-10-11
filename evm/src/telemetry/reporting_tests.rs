@@ -235,15 +235,14 @@ fn parity_with_shared_scrubber() {
         "https://telemetry.example.com/api/random.cash/envelope/",
         "no store for merchant@example.com or a@b.co.uk or bad@b.c",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",
-        "api-key: k1 apikey:k2 API_KEY = k3 passwd:\tk5",
+        "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
+        "twelve plain lowercase words here really do read as ordinary prose ok now",
         "secretariat: not a word with a key after it",
         "seed abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "façade ↔ merchant@example.com ↔ 0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "token",
         "token=",
     ];
-    // Known divergence: this table requires a `:`/`=` after a key word, so bare
-    // prose (`token USDC received`) survives; the shared scrubber is stricter.
     // The shared scrubber still labels a phrase with its older placeholder.
     let relabel = |s: String| s.replace("[redacted: 12+ word run]", "[redacted-mnemonic]");
     for input in CORPUS {
@@ -253,6 +252,28 @@ fn parity_with_shared_scrubber() {
             "shared `scrub` diverged from the audited regex table on: {input}"
         );
     }
+}
+
+/// Known divergence, in the open so it cannot widen unnoticed: the shared
+/// scrubber only knows lowercase words split by whitespace, so a capitalised or
+/// quoted-list phrase passes it. It is the browser-side copy; this table is
+/// what every server sink uses.
+#[test]
+fn shared_scrubber_is_weaker_on_non_lowercase_phrases() {
+    let phrase =
+        "Legal, Winner, Thank, Year, Wave, Sausage, Worth, Useful, Legal, Winner, Thank, Yellow";
+    assert_ne!(redact_secrets(phrase), phrase);
+    assert_eq!(scrub::redact_secrets(phrase), phrase);
+}
+
+/// Known divergence in the other direction: the shared scrubber's key rule
+/// swallows the scheme word of `Authorization: Bearer <token>` and leaves the
+/// token itself. This table removes it.
+#[test]
+fn shared_scrubber_leaves_a_bearer_token_this_table_removes() {
+    let line = "Authorization: Bearer rc_live_opaque123";
+    assert!(!redact_secrets(line).contains("rc_live_opaque123"));
+    assert!(scrub::redact_secrets(line).contains("rc_live_opaque123"));
 }
 
 #[test]
@@ -493,5 +514,91 @@ fn log_sink_redacts_multiline_debug_field_phrase() {
             assert!(!out.contains("winner"), "json={json}: phrase leaked: {out}");
             assert!(!out.contains("yellow"), "json={json}: phrase leaked: {out}");
         }
+    }
+}
+
+/// A phrase is a run of words however it is punctuated: a Debug-formatted
+/// `Vec<String>` (quotes, brackets), hyphens, slashes, pipes. In the JSON sink
+/// the quotes arrive escaped. One word is a typo, so no wordlist would match.
+#[test]
+fn log_sink_redacts_phrase_in_any_separator_form() {
+    let words = [
+        "legal", "winner", "thank", "year", "wave", "sausagee", "worth", "useful", "legal",
+        "winner", "thank", "yellow",
+    ];
+    let list = words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let forms = [
+        format!("{list:?}"),
+        words.join("-"),
+        words.join("/"),
+        words.join("|"),
+        words.join(" - "),
+    ];
+    for form in forms {
+        for json in [false, true] {
+            let sink = SharedBuf::default();
+            let dispatcher = tracing::Dispatch::new(build_subscriber_to(
+                sink.clone(),
+                tracing_subscriber::EnvFilter::new("info"),
+                json,
+                tracing::Level::ERROR,
+            ));
+            tracing::dispatcher::with_default(&dispatcher, || {
+                tracing::error!(input = ?form, "rejected");
+                tracing::error!("rejected {form}");
+            });
+            let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+            for w in ["winner", "yellow", "sausagee"] {
+                assert!(
+                    !out.contains(w),
+                    "json={json} form={form}: leaked {w}: {out}"
+                );
+            }
+        }
+    }
+}
+
+/// An ordinary text-mode line (timestamp, level, target, then a message of a
+/// few plain words) must not read as a phrase: the log is the evidence.
+#[test]
+fn log_sink_keeps_ordinary_lines_readable() {
+    let sink = SharedBuf::default();
+    let dispatcher = tracing::Dispatch::new(build_subscriber_to(
+        sink.clone(),
+        tracing_subscriber::EnvFilter::new("info"),
+        false,
+        tracing::Level::ERROR,
+    ));
+    tracing::dispatcher::with_default(&dispatcher, || {
+        tracing::warn!(target: "server::services::plugins::dispatch", "retrying the upstream call after a slow reply");
+        tracing::info!("token USDC received for the invoice");
+    });
+    let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        out.contains("retrying the upstream call after a slow reply"),
+        "{out}"
+    );
+    assert!(out.contains("token USDC received for the invoice"), "{out}");
+    assert!(!out.contains("redacted"), "{out}");
+}
+
+/// A quoted value inside a message is escaped by the JSON layer
+/// (`token: \"abc\"`); the secret must go with it.
+#[test]
+fn log_sink_redacts_escaped_quoted_values() {
+    for json in [false, true] {
+        let sink = SharedBuf::default();
+        let dispatcher = tracing::Dispatch::new(build_subscriber_to(
+            sink.clone(),
+            tracing_subscriber::EnvFilter::new("info"),
+            json,
+            tracing::Level::ERROR,
+        ));
+        tracing::dispatcher::with_default(&dispatcher, || {
+            tracing::info!("sent token: \"hunter2abc\" and password hunter3xyz");
+        });
+        let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(!out.contains("hunter2abc"), "json={json}: {out}");
+        assert!(!out.contains("hunter3xyz"), "json={json}: {out}");
     }
 }

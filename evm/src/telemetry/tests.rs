@@ -71,7 +71,7 @@ fn fail_open_alert_is_exempt_and_only_it() {
         FAIL_OPEN_ALERT_MESSAGE
     );
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    let out = redact_credentials(&format!("{m} | {FAIL_OPEN_ALERT_MESSAGE} | token=abc"));
+    let out = redact_credentials(&format!("{m}: {FAIL_OPEN_ALERT_MESSAGE}: token=abc"));
     assert!(out.contains(FAIL_OPEN_ALERT_MESSAGE), "{out}");
     assert!(!out.contains("sausage") && !out.contains("abc"), "{out}");
     // A near-miss of the alert is ordinary text and is redacted.

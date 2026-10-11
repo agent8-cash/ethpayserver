@@ -93,12 +93,17 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
             // Recovery phrases: 12+ consecutive words of any case, script or
             // wordlist. Membership is deliberately not checked: a wordlist
             // would let other languages, typos and non-BIP-39 seeds through,
-            // and a destroyed log line costs less than a leaked seed. Words
-            // may be separated by real or escaped whitespace (a Debug-formatted value
-            // inside a JSON line escapes the backslash twice), or by commas and
-            // numbering, as a pasted list would be.
+            // and a destroyed log line costs less than a leaked seed. Words may
+            // be separated by real or escaped whitespace, quotes (a Debug-
+            // formatted `Vec<String>`, which a JSON line escapes again), commas,
+            // brackets, hyphens, slashes, pipes or numbering, as a pasted list
+            // would be. `:` and `_` are not separators, so a log line's
+            // `target::path` and `field=value` pairs break a run instead of
+            // joining the timestamp and target to the message.
             (
-                build(r"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt]|[,;.:)\d])+){11,}[\p{L}\p{M}]+\b"),
+                build(
+                    r#"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt"]|[,;.)(\[\]{}"'|/\-\d])+){11,}[\p{L}\p{M}]+\b"#,
+                ),
                 PHRASE_PLACEHOLDER,
                 true,
             ),
@@ -115,12 +120,25 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                 "Bearer [redacted]",
                 true,
             ),
-            // `key: value` / `key=value` for sensitive keys. A bare word with
-            // only whitespace after it is not a pair: `token USDC received` is
+            // The words that name a credential and nothing else may take their
+            // value after plain whitespace (`private-key <hex>`, `password
+            // hunter2`). Ahead of the pair rule, and refusing a value that opens
+            // with a separator, so `API_KEY = x` is left to the pair rule.
+            (
+                build(
+                    r#"(?i)\b(api[_-]?key|password|passwd|private[_-]?key|authorization)\b(\s+)[^\s,;"'}\\:=][^\s,;"'}\\]*"#,
+                ),
+                "$1$2[redacted]",
+                true,
+            ),
+            // `key: value` / `key=value` for sensitive keys. A JSON line escapes
+            // a quoted value (`token: \"abc\"`), so both the opening quote and
+            // the value stop at a backslash. A bare word with only whitespace
+            // after it is not a pair for these: `token USDC received` is
             // ordinary vocabulary here, so a separator is required.
             (
                 build(
-                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization)\b("?\s*[:=]\s*)("?)[^\s,;"'}]+"#,
+                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)[^\s,;"'}\\]+"#,
                 ),
                 "$1$2$3[redacted]",
                 true,
