@@ -99,21 +99,39 @@ Between deploys, coverage is `.github/workflows/health-monitor.yml`: it runs
 `pay.random.cash` every 5 minutes on a GitHub-hosted runner, asserts
 `postgres`, `redis`, `monitor.data_fresh` and every `rpcs.*.status`, and checks
 in to a Sentry Cron Monitor (`SENTRY_CRON_HEALTH_TESTNET_URL` /
-`SENTRY_CRON_HEALTH_MAINNET_URL`) so a missed or failing check pages through
-Sentry's alerting rather than sitting unread in the Actions tab. The scheduled
+`SENTRY_CRON_HEALTH_MAINNET_URL`), intended so that a missed or failing check pages through
+Sentry's alerting rather than sitting unread in the Actions tab (but see the
+next paragraphs: most of those monitors are currently disabled). The scheduled
 e2e workflow's dead-man's-switch moved onto the same vendor, checking in to
 `SENTRY_CRON_E2E_URL`.
 
-Both Sentry URLs are **required**, not optional. A watchdog that quietly skips
-the check-in when its secret is unset would pass, deploy, and run indefinitely
-detecting real outages while paging nobody — a dashboard nobody is watching is
-not alerting, and neither is a red Actions run nobody has that tab open for.
-Until the two monitors below exist and the secrets are set,
-`health-monitor.yml` fails on **every** run — loudly, in the Actions tab, on a
-5-minute cycle — rather than silently degrading to a no-op. That is
-deliberate: it is the loudest signal code in this repo can produce for "the
-alert path is not wired up yet," short of actually wiring it up, which needs
-a human with Sentry dashboard access this repository does not have.
+**What actually alerts, as of 2026-10-11.** Cron Monitors cost a paid seat
+each, and the project does not have seats for all of them. Of the four, three
+are **disabled**: `flow-monitor`, `health-testnet` and `db-backup-testnet`.
+Only the end-to-end dead-man's-switch (`e2e-testnet`) is live. So a failing or
+missing `health-monitor.yml` check-in, and a missed database backup, **do not
+page anyone through Sentry today**; the red Actions run is the only trace, and
+nobody is watching that tab. The host timer described below is the intended
+path for prompt outage detection, but it is unverified from this repository,
+so do not assume any alarm reaches a person.
+
+A check-in to a disabled monitor still returns success. `flow-monitor` has
+never recorded a check-in at all: the `http=202` it receives means Sentry's
+ingest endpoint accepted the request, not that a check-in landed on a monitor.
+Do not read a 2xx from a check-in URL as proof an alarm is wired.
+
+Until 2026-10-11 the project's alert rule fired once per issue and never
+again, so `e2e-testnet` sat in a failed state for 18 days without a second
+notification. The rule now re-notifies; if you change alert rules, re-check
+that a still-failing monitor keeps alerting.
+
+The scripts still require the URLs (`SENTRY_CRON_HEALTH_TESTNET_URL`,
+`SENTRY_CRON_HEALTH_MAINNET_URL`, `SENTRY_CRON_E2E_URL`) and fail when one is
+unset, rather than skipping the check-in: a watchdog that quietly skips its
+report would pass while paging nobody. That requirement is about the code, and
+it is not evidence an enabled monitor sits behind each URL. Re-enabling a
+monitor needs a paid seat and a person with Sentry dashboard access, which
+this repository does not have.
 
 `rpcs.*.status` alone misses a chain whose indexer has wedged while the RPC
 connection itself stays up — `status: ok` with `last_block` frozen. Each job
