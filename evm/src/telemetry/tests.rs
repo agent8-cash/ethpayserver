@@ -49,7 +49,7 @@ fn any_twelve_word_run_is_redacted() {
     for run in runs {
         for out in [
             redact_secrets(&format!("pasted {run} here")),
-            redact_credentials(&format!("pasted {run} here")),
+            redact_secrets(&format!("pasted {run} here")),
         ] {
             assert!(out.contains("[redacted: 12+ word run]"), "{run} -> {out}");
             assert!(!out.contains("thank") && !out.contains("abeja") && !out.contains("mobile"));
@@ -67,11 +67,11 @@ fn fail_open_alert_is_exempt_and_only_it() {
         FAIL_OPEN_ALERT_MESSAGE
     );
     assert_eq!(
-        redact_credentials(FAIL_OPEN_ALERT_MESSAGE),
+        redact_secrets(FAIL_OPEN_ALERT_MESSAGE),
         FAIL_OPEN_ALERT_MESSAGE
     );
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    let out = redact_credentials(&format!("{m}: {FAIL_OPEN_ALERT_MESSAGE}: token=abc"));
+    let out = redact_secrets(&format!("{m}: {FAIL_OPEN_ALERT_MESSAGE}: token=abc"));
     assert!(out.contains(FAIL_OPEN_ALERT_MESSAGE), "{out}");
     assert!(!out.contains("sausage") && !out.contains("abc"), "{out}");
     // A near-miss of the alert is ordinary text and is redacted.
@@ -85,20 +85,17 @@ fn phrase_straddling_the_alert_is_still_redacted() {
     let input = format!(
         "legal winner thank year wave sausage {FAIL_OPEN_ALERT_MESSAGE} worth useful legal winner thank yellow"
     );
-    for out in [redact_secrets(&input), redact_credentials(&input)] {
+    for out in [redact_secrets(&input), redact_secrets(&input)] {
         assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
     }
 }
 
 #[test]
 fn bare_token_word_is_not_a_key_value_pair() {
-    assert_eq!(
-        redact_credentials("token USDC received"),
-        "token USDC received"
-    );
-    assert_eq!(redact_credentials("seed data loaded"), "seed data loaded");
-    assert!(!redact_credentials("token=USDC").contains("USDC"));
-    assert!(!redact_credentials("Bearer abc123xyz").contains("abc123xyz"));
+    assert_eq!(redact_secrets("token USDC received"), "token USDC received");
+    assert_eq!(redact_secrets("seed data loaded"), "seed data loaded");
+    assert!(!redact_secrets("token=USDC").contains("USDC"));
+    assert!(!redact_secrets("Bearer abc123xyz").contains("abc123xyz"));
 }
 
 #[test]
@@ -730,7 +727,7 @@ fn phrase_split_by_json_escapes_is_redacted_even_with_a_typo() {
         for sep in ["\\n", "\\t", "\\r\\n", "\\\\n", ", ", ". 1 "] {
             for lead in ["", "\\n", "\\n\\n"] {
                 let line = format!(r#"{{"message":"{lead}{}"}}"#, m.replace(' ', sep));
-                let out = redact_credentials(&line);
+                let out = redact_secrets(&line);
                 assert!(!out.contains("winner") && !out.contains("yellow"), "{out}");
                 assert!(out.ends_with(r#""}"#), "{out}");
             }
@@ -741,6 +738,32 @@ fn phrase_split_by_json_escapes_is_redacted_even_with_a_typo() {
 /// An unquoted value must not swallow the JSON punctuation that closes it.
 #[test]
 fn key_value_rule_leaves_closing_json_punctuation() {
-    let out = redact_credentials(r#"{"token":12}"#);
+    let out = redact_secrets(r#"{"token":12}"#);
     assert_eq!(out, r#"{"token":[redacted]}"#);
+}
+
+/// Words are separated by more than an ASCII space: pasting from a rendered
+/// page brings non-breaking spaces, and invisible separators are free to add.
+/// The plain-space row is the control: if it stops redacting, the rule has gone
+/// inert and the other rows passing means nothing.
+#[test]
+fn phrase_is_redacted_whatever_separates_its_words() {
+    let words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let separators = [
+        ("ordinary space (control)", " "),
+        ("invisible separator U+2063", "\u{2063}"),
+        ("zero-width space U+200B", "\u{200B}"),
+        ("space + invisible separator", " \u{2063}"),
+        ("non-breaking space U+00A0", "\u{00A0}"),
+        ("zero-width joiner U+200D", "\u{200D}"),
+        ("word joiner U+2060", "\u{2060}"),
+        ("byte-order mark U+FEFF", "\u{FEFF}"),
+    ];
+    for (name, sep) in separators {
+        let out = redact_secrets(&format!("pasted {}", words.replace(' ', sep)));
+        assert!(
+            out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
+            "{name}: {out}"
+        );
+    }
 }

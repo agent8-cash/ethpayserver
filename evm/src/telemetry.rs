@@ -47,13 +47,10 @@ pub const FAIL_OPEN_ALERT_MESSAGE: &str = "invoice creation allowed on a standin
 /// towards a surrounding run.
 const ALERT_STAND_IN: &str = "ALERTSTANDIN";
 
-/// Ordered `(pattern, replacement, credential)` redaction rules applied to every
-/// free-text field. `credential` marks the rules that catch material which must
-/// not survive in a process log either; the rest (addresses, emails) are
-/// telemetry-only, because operators need them readable in the log.
-/// Compiled once and reused for the life of the process.
-fn rules() -> &'static [(Regex, &'static str, bool)] {
-    static RULES: OnceLock<Vec<(Regex, &'static str, bool)>> = OnceLock::new();
+/// Ordered `(pattern, replacement)` redaction rules applied to every free-text
+/// field. Compiled once and reused for the life of the process.
+fn rules() -> &'static [(Regex, &'static str)] {
+    static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     RULES.get_or_init(|| {
         // `unwrap` is safe: these are constant, test-covered patterns.
         #[allow(clippy::unwrap_used)]
@@ -63,7 +60,6 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
             (
                 build(r"eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+"),
                 "[redacted-jwt]",
-                true,
             ),
             // RPC provider URLs carry the API key in the path (Alchemy
             // `/v2/<key>`, Infura `/v3/<key>`, QuickNode `/<token>/`), which no
@@ -79,17 +75,15 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                     r"((?:https?|wss?)://[A-Za-z0-9.\-]+(?::[0-9]+)?(?:/[A-Za-z0-9._\-]{1,15})*/)[A-Za-z0-9._\-]{16,}",
                 ),
                 "${1}[redacted-rpc-key]",
-                true,
             ),
             // 0x-prefixed hex of address length or longer: addresses (40),
             // private keys / tx hashes / block hashes (64), signatures (130).
-            (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]", false),
+            (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]"),
             // 64+ hex chars, 0x-prefixed or bare, is the shape of a private key
             // and of a transaction hash alike; nothing in the text tells them
-            // apart, so the process log loses hashes rather than risk a key.
-            // Addresses (40) stay readable there.
-            (build(r"0x[0-9a-fA-F]{64,}"), "[redacted-hex]", true),
-            (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]", true),
+            // apart, so the error report loses hashes rather than risk a key.
+            (build(r"0x[0-9a-fA-F]{64,}"), "[redacted-hex]"),
+            (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]"),
             // Recovery phrases: 12+ consecutive words of any case, script or
             // wordlist. Membership is deliberately not checked: a wordlist
             // would let other languages, typos and non-BIP-39 seeds through,
@@ -102,23 +96,20 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
             // joining the timestamp and target to the message.
             (
                 build(
-                    r#"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt"]|[,;.)(\[\]{}"'|/\-\d])+){11,}[\p{L}\p{M}]+\b"#,
+                    r#"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt"]|[,;.)(\[\]{}"'|/\-\d\x{00AD}\x{200B}-\x{200F}\x{2060}-\x{2064}\x{FEFF}])+){11,}[\p{L}\p{M}]+\b"#,
                 ),
                 PHRASE_PLACEHOLDER,
-                true,
             ),
             // Email addresses (customer PII).
             (
                 build(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
                 "[redacted-email]",
-                false,
             ),
             // `Bearer <tok>`: the scheme word is only a credential marker when a
             // token follows it.
             (
                 build(r#"(?i)\bbearer\s+[^\s,;"'}]+"#),
                 "Bearer [redacted]",
-                true,
             ),
             // The words that name a credential and nothing else may take their
             // value after plain whitespace (`private-key <hex>`, `password
@@ -129,7 +120,6 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                     r#"(?i)\b(api[_-]?key|password|passwd|private[_-]?key|authorization)\b(\s+)[^\s,;"'}\\:=][^\s,;"'}\\]*"#,
                 ),
                 "$1$2[redacted]",
-                true,
             ),
             // `key: value` / `key=value` for sensitive keys. A JSON line escapes
             // a quoted value (`token: \"abc\"`), so both the opening quote and
@@ -141,7 +131,6 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
                     r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)[^\s,;"'}\\]+"#,
                 ),
                 "$1$2$3[redacted]",
-                true,
             ),
         ]
     })
@@ -153,19 +142,6 @@ fn rules() -> &'static [(Regex, &'static str, bool)] {
 /// secret. Patterns intentionally err on the side of over-redaction.
 #[must_use]
 pub fn redact_secrets(input: &str) -> String {
-    redact_with(input, false)
-}
-
-/// The subset of [`redact_secrets`] that applies to the process log: keys,
-/// tokens, mnemonics, credentialed URLs and key-length hex (which is
-/// indistinguishable from a transaction hash), but not 40-char addresses or
-/// emails, which operators read in the log and which telemetry alone hides.
-#[must_use]
-pub fn redact_credentials(input: &str) -> String {
-    redact_with(input, true)
-}
-
-fn redact_with(input: &str, credentials_only: bool) -> String {
     // The exempt alert sentence is swapped for a single stand-in word, so the
     // matcher never sees it and never has to infer anything about it. A word
     // rather than a cut keeps a phrase that straddles the alert one contiguous
@@ -174,14 +150,10 @@ fn redact_with(input: &str, credentials_only: bool) -> String {
     // the rule. Whatever the rules redact takes the stand-in with it.
     if input.contains(FAIL_OPEN_ALERT_MESSAGE) {
         let masked = input.replace(FAIL_OPEN_ALERT_MESSAGE, ALERT_STAND_IN);
-        return redact_with(&masked, credentials_only)
-            .replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
+        return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
     }
     let mut out = std::borrow::Cow::Borrowed(input);
-    for (re, replacement, credential) in rules() {
-        if credentials_only && !credential {
-            continue;
-        }
+    for (re, replacement) in rules() {
         if re.is_match(&out) {
             out = std::borrow::Cow::Owned(re.replace_all(&out, *replacement).into_owned());
         }
@@ -881,106 +853,18 @@ pub fn build_subscriber(
     json: bool,
     sentry_min_level: tracing::Level,
 ) -> Box<dyn tracing::Subscriber + Send + Sync> {
-    build_subscriber_to(std::io::stdout, log_filter, json, sentry_min_level)
-}
-
-/// [`build_subscriber`] with the log sink injectable, so a test can read what
-/// the log would contain. The sink is always wrapped in [`RedactingWriter`]:
-/// scrubbing happens at the layer, so a sink cannot be added that skips it.
-pub fn build_subscriber_to<W>(
-    sink: W,
-    log_filter: tracing_subscriber::EnvFilter,
-    json: bool,
-    sentry_min_level: tracing::Level,
-) -> Box<dyn tracing::Subscriber + Send + Sync>
-where
-    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
-{
     use tracing_subscriber::{Layer, layer::SubscriberExt};
     let registry = tracing_subscriber::registry().with(sentry_layer(sentry_min_level));
-    let sink = RedactingMakeWriter(sink);
     if json {
         Box::new(
             registry.with(
                 tracing_subscriber::fmt::layer()
                     .json()
-                    .with_writer(sink)
                     .with_filter(log_filter),
             ),
         )
     } else {
-        Box::new(
-            registry.with(
-                tracing_subscriber::fmt::layer()
-                    // Colour codes would sit between a field name and its value
-                    // and hide the pair from the key=value rule.
-                    .with_ansi(false)
-                    .with_writer(sink)
-                    .with_filter(log_filter),
-            ),
-        )
-    }
-}
-
-/// Wraps a log sink so everything written to it passes [`redact_credentials`].
-struct RedactingMakeWriter<W>(W);
-
-impl<'a, W: tracing_subscriber::fmt::MakeWriter<'a>> tracing_subscriber::fmt::MakeWriter<'a>
-    for RedactingMakeWriter<W>
-{
-    type Writer = RedactingWriter<W::Writer>;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        RedactingWriter::new(self.0.make_writer())
-    }
-
-    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
-        RedactingWriter::new(self.0.make_writer_for(meta))
-    }
-}
-
-/// Buffers one formatted event and writes it redacted when dropped (or
-/// flushed), so a secret split across `write` calls is still seen whole.
-struct RedactingWriter<W: std::io::Write> {
-    inner: W,
-    buf: Vec<u8>,
-}
-
-impl<W: std::io::Write> RedactingWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            buf: Vec::new(),
-        }
-    }
-
-    fn emit(&mut self) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-        let text = String::from_utf8_lossy(&self.buf);
-        let redacted = redact_credentials(&text);
-        self.buf.clear();
-        self.inner.write_all(redacted.as_bytes())
-    }
-}
-
-impl<W: std::io::Write> std::io::Write for RedactingWriter<W> {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.buf.extend_from_slice(data);
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.emit()?;
-        self.inner.flush()
-    }
-}
-
-impl<W: std::io::Write> Drop for RedactingWriter<W> {
-    fn drop(&mut self) {
-        // A failed log write has nowhere to be reported.
-        let _ = self.emit();
+        Box::new(registry.with(tracing_subscriber::fmt::layer().with_filter(log_filter)))
     }
 }
 
