@@ -458,6 +458,21 @@ where
     // `X-API-Key-Deprecated` header stamped automatically.
     app = app.layer(axum::middleware::from_fn(api_key_deprecation::middleware));
 
+    // ABLATION ONLY, HEADER HALF. A global layer stamping an `x-account-*` header,
+    // which is the exact shape the expiry-warning work takes. The body allow-list is
+    // untouched, so it must stay GREEN while only the header test goes red - that is
+    // what makes this an ablation of the header control specifically. Reverted next.
+    app = app.layer(axum::middleware::from_fn(
+        |req: axum::extract::Request, next: axum::middleware::Next| async move {
+            let mut response = next.run(req).await;
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-account-ablation"),
+                axum::http::HeaderValue::from_static("stamped"),
+            );
+            response
+        },
+    ));
+
     // HTTP request metrics (innermost layer = runs closest to handlers)
     app = app.layer(axum::middleware::from_fn(http_metrics::middleware));
 
