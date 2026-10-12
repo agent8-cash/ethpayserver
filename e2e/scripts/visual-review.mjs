@@ -10,7 +10,10 @@
  *
  * Reads test-results/visual/manifest.json (written by the spec), writes
  * test-results/visual/findings.json ({ findings, errors }) and
- * test-results/visual/report.md. Advisory only: this always exits 0. A model
+ * test-results/visual/report.md. Advisory only: findings never fail it, and a
+ * crash or a model error exits 0. The one exception is a missing key under
+ * E2E_VISUAL_REVIEW=true, which exits 1 — the pipeline is broken, not the page.
+ * A model
  * judging layout will produce false positives, and a check that can fail on
  * a false positive gets disabled — see scripts/health-gate.sh's history for
  * what that looks like.
@@ -25,7 +28,7 @@ import { groupByRoute, renderReport, crashOutputs } from './visual-review-report
 
 const VISUAL_DIR = path.join('test-results', 'visual');
 const MANIFEST_PATH = path.join(VISUAL_DIR, 'manifest.json');
-const MODEL = process.env.VISUAL_REVIEW_MODEL || 'claude-sonnet-5';
+const MODEL = process.env.VISUAL_REVIEW_MODEL || 'claude-sonnet-5-5';
 // Overridable so a test can point this at a local stand-in instead of the
 // real Anthropic API — see visual-review-main.spec.ts.
 const API_URL = process.env.VISUAL_REVIEW_API_URL || 'https://api.anthropic.com/v1/messages';
@@ -149,11 +152,19 @@ async function main() {
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    // Deliberately not an error entry: normal CI runs this script with no
-    // key and no manifest, and that path must stay silent. The scheduled
-    // workflow always sets the secret, so if it is ever missing there the
-    // pipeline itself is broken — the workflow's own "File findings" step
-    // treats a missing findings.json as exactly that signal.
+    // The scheduled workflow sets E2E_VISUAL_REVIEW and always passes the
+    // secret, so an unset key there is a broken pipeline, not a run with
+    // nothing to do: skipping quietly is how the review went unrun with a
+    // green step. Fail the step, and leave an error behind so the report
+    // cannot read as a clean pass. Anywhere else (normal CI has no key and
+    // no manifest) the skip stays silent.
+    if (process.env.E2E_VISUAL_REVIEW === 'true') {
+      errors.push({ route: null, viewport: null, reason: 'ANTHROPIC_API_KEY is not set — the review did not run' });
+      writeOutputs(findings, errors);
+      console.error('ANTHROPIC_API_KEY is not set in a scheduled visual review — failing rather than skipping');
+      process.exitCode = 1;
+      return;
+    }
     console.log('ANTHROPIC_API_KEY unset — skipping visual review');
     return;
   }
