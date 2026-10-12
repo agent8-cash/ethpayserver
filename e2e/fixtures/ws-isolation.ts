@@ -63,6 +63,36 @@ export function expectNothingForeign(label: string, frames: Frame[], ownInvoiceI
   }
 }
 
+/** One socket's evidence: what it heard, and which invoices are its own. */
+export interface SocketEvidence {
+  label: string;
+  frames: Frame[];
+  own: string[];
+}
+
+/**
+ * Decide the isolation result from both sockets, in an order that keeps the
+ * three outcomes apart. A foreign frame is a leak whether or not any own event
+ * ever arrived, so it is checked first and reported as a failure. Only when
+ * nothing leaked does a missing own event matter, and then the isolation
+ * claim is unproven rather than false: that is `NOT VERIFIED`, a state
+ * distinct from a failed isolation check.
+ */
+export function judgeIsolation(evidence: SocketEvidence[]): void {
+  for (const e of evidence) expectNothingForeign(e.label, e.frames, e.own);
+  for (const e of evidence) {
+    try {
+      expectReceived(e.label, e.frames, e.own);
+    } catch (err) {
+      throw new Error(
+        `NOT VERIFIED - isolation could not run: the precondition (the socket receiving its own events) ` +
+          `was not established. No foreign frame was seen, but that proves nothing. ` +
+          `This is not an isolation result. ${(err as Error).message}`,
+      );
+    }
+  }
+}
+
 function describe(frames: Frame[]): string {
   return frames.map((f) => `${f.type}:${f.invoice_id ?? '-'}:${f.status ?? '-'}`).join(', ') || 'nothing';
 }

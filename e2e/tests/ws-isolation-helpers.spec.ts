@@ -13,6 +13,7 @@ import {
   expectNothingForeign,
   expectReceived,
   firstSeen,
+  judgeIsolation,
   type Frame,
 } from '../fixtures/ws-isolation';
 
@@ -64,5 +65,21 @@ test.describe('isolation checks', () => {
     const frames = timeline(['connected'], ['invoice_status', OTHER, 'expired'], ['invoice_status', OWN, 'expired']);
     expect(firstSeen(frames, OTHER)).toBeLessThan(firstSeen(frames, OWN));
     expect(firstSeen(frames, 'inv-absent')).toBe(-1);
+  });
+
+  test('a leak is reported as a failure even when no own event ever arrived', () => {
+    const a = { label: 'A', frames: timeline(['connected'], ['invoice_status', OTHER, 'expired']), own: [OWN] };
+    expect(() => judgeIsolation([a])).toThrow(/outside its stores/);
+    expect(() => judgeIsolation([a])).not.toThrow(/NOT VERIFIED/);
+  });
+
+  test('a silent socket with no leak is NOT VERIFIED, distinct from a failure', () => {
+    const a = { label: 'A', frames: timeline(['connected']), own: [OWN] };
+    expect(() => judgeIsolation([a])).toThrow(/NOT VERIFIED - isolation could not run/);
+  });
+
+  test('a clean socket that heard its own event passes the verdict', () => {
+    const a = { label: 'A', frames: timeline(['connected'], ['invoice_status', OWN, 'expired']), own: [OWN] };
+    expect(() => judgeIsolation([a])).not.toThrow();
   });
 });
