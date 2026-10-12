@@ -110,8 +110,15 @@ export async function openAuthenticatedSocket(sessionToken: string, timeoutMs = 
       }
     });
   });
-  socket.onclose = null;
   socket.onerror = null;
+  // A close after the handshake used to be dropped, so a socket the proxy cut
+  // looked identical to one the server never wrote to. Record it so a timeout
+  // says which it was.
+  let closed: string | null = null;
+  const openedAt = Date.now();
+  socket.onclose = (event: { code?: number }) => {
+    closed = `socket closed by peer after ${Math.round((Date.now() - openedAt) / 1000)}s (code ${event.code ?? '?'})`;
+  };
 
   return {
     frames,
@@ -122,7 +129,7 @@ export async function openAuthenticatedSocket(sessionToken: string, timeoutMs = 
         if (now) return resolve(now);
         const timer = setTimeout(() => {
           waiters.delete(check);
-          reject(new Error(`no frame for invoice ${invoiceId} within ${waitMs}ms; got [${describe(frames)}]`));
+          reject(new Error(`no frame for invoice ${invoiceId} within ${waitMs}ms; got [${describe(frames)}]; ${closed ?? 'socket still open'}`));
         }, waitMs);
         function check() {
           const hit = found();

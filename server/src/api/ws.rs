@@ -150,6 +150,7 @@ pub struct WsBroadcast {
     admins: std::sync::Arc<Channels<()>>,
     revalidate_interval: std::time::Duration,
     send_deadline: std::time::Duration,
+    keepalive_interval: std::time::Duration,
 }
 
 /// How often an open `/ws` socket re-derives which channels it subscribes to.
@@ -173,6 +174,16 @@ pub const DEFAULT_REVALIDATE_INTERVAL: std::time::Duration = std::time::Duration
 /// and refetches.
 pub const DEFAULT_SEND_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often an otherwise idle socket is sent a protocol-level ping.
+///
+/// An expiry or a payment can come minutes after the last frame, and a reverse
+/// proxy in front of the server closes a connection that carries no traffic
+/// for its read timeout (60s by default), silently: the client sees nothing
+/// and is never told. A ping every so often keeps the connection open through
+/// that, and being a control frame it is answered by the browser itself and
+/// never reaches the application.
+pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl WsBroadcast {
     /// Create broadcast channels with the given per-channel capacity.
     pub fn new(capacity: usize) -> Self {
@@ -182,6 +193,7 @@ impl WsBroadcast {
             admins: std::sync::Arc::new(Channels::new(capacity)),
             revalidate_interval: DEFAULT_REVALIDATE_INTERVAL,
             send_deadline: DEFAULT_SEND_DEADLINE,
+            keepalive_interval: KEEPALIVE_INTERVAL,
         }
     }
 
@@ -197,6 +209,12 @@ impl WsBroadcast {
     /// closed. See [`DEFAULT_SEND_DEADLINE`].
     pub fn with_send_deadline(mut self, deadline: std::time::Duration) -> Self {
         self.send_deadline = deadline;
+        self
+    }
+
+    /// Set how often an idle socket is pinged. See [`KEEPALIVE_INTERVAL`].
+    pub fn with_keepalive_interval(mut self, interval: std::time::Duration) -> Self {
+        self.keepalive_interval = interval;
         self
     }
 
@@ -449,7 +467,7 @@ fn sync_listeners(
     }
 }
 
-/// Send one text frame, waiting at most `deadline` for the client to take it.
+/// Send one frame, waiting at most `deadline` for the client to take it.
 ///
 /// `false` means the socket must be closed: the write failed, or the client
 /// did not accept the frame in time. The deadline is what stops a peer that
@@ -458,10 +476,10 @@ fn sync_listeners(
 /// [`DEFAULT_SEND_DEADLINE`].
 async fn send_within(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-    msg: String,
+    msg: Message,
     deadline: std::time::Duration,
 ) -> bool {
-    match tokio::time::timeout(deadline, sender.send(Message::Text(msg.into()))).await {
+    match tokio::time::timeout(deadline, sender.send(msg)).await {
         Ok(Ok(())) => true,
         Ok(Err(_)) => false,
         Err(_) => {
@@ -499,13 +517,19 @@ async fn handle_socket_forwarding(
     )]
     let connected = serde_json::to_string(&StatusUpdate::Connected).unwrap();
     let send_deadline = broadcast.send_deadline;
-    if !send_within(&mut sender, connected, send_deadline).await {
+    if !send_within(&mut sender, Message::Text(connected.into()), send_deadline).await {
         return;
     }
 
     let interval = broadcast.revalidate_interval;
     let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let keepalive_interval = broadcast.keepalive_interval;
+    let mut keepalive = tokio::time::interval_at(
+        tokio::time::Instant::now() + keepalive_interval,
+        keepalive_interval,
+    );
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -522,11 +546,16 @@ async fn handle_socket_forwarding(
                 let Ok(msg) = serde_json::to_string(&update) else { continue };
                 // A client that will not take the frame loses the socket, so
                 // declining to read cannot suspend the check above.
-                if !send_within(&mut sender, msg, send_deadline).await {
+                if !send_within(&mut sender, Message::Text(msg.into()), send_deadline).await {
                     break;
                 }
             }
             Some(()) = lagged_rx.recv() => break,
+            _ = keepalive.tick() => {
+                if !send_within(&mut sender, Message::Ping(Vec::new().into()), send_deadline).await {
+                    break;
+                }
+            }
             // Upkeep, on a socket that happens to be idle: pick up a store
             // joined since the last pass, and stop holding a channel whose
             // entitlement is gone. Delivery is decided above, per event.
