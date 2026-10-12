@@ -4,6 +4,7 @@
 //! for operations on specific stores.
 
 mod crud;
+mod invites;
 mod members;
 mod payment_methods;
 mod settings;
@@ -14,6 +15,7 @@ mod webhooks;
 
 // Re-export all handlers and types for route registration.
 pub use crud::*;
+pub use invites::*;
 pub use members::*;
 pub use payment_methods::*;
 pub use settings::*;

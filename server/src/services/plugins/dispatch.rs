@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use auth::UserId;
-use payserver_plugin_api::{PluginId, PluginKind};
+use payserver_plugin_api::{PluginId, PluginKind, StandingBasis};
 use serde::{Deserialize, Serialize};
 
 use super::account_closed::AccountClosedObserver;
@@ -81,6 +81,89 @@ struct WireFilterVerdict {
     allow: bool,
     #[serde(default)]
     reason: Option<String>,
+    /// What an allow rested on, when the plugin reports it. Held as raw JSON
+    /// so a basis this host does not understand cannot turn an answered
+    /// verdict into "could not run".
+    #[serde(default)]
+    standing_basis: Option<serde_json::Value>,
+}
+
+/// Counter incremented once per invoice-creation allow that rests on a
+/// standing never received or older than the freshness bound, labelled by
+/// `reason`. Unlike the per-read counter in the data layer, it is counted
+/// where the outcome is known: a page render or a deny never reaches it.
+pub const FAIL_OPEN_ALLOW_COUNTER: &str = "ethpayserver_standing_fail_open_allow_total";
+
+/// The plugin that is expected to say what every allow rests on. For it, an
+/// allow with no basis is itself a reason: if a build stopped reporting one
+/// (a regression, or an older artifact loaded), every fail-open would go
+/// uncounted and a zero meaning "healthy" would read the same as a zero
+/// meaning "not reporting".
+const BASIS_REPORTING_PLUGIN: &str = "cash.random.billing";
+
+/// Why an allow rests on missing or old information, or `None` when it rests
+/// on a standing confirmed within `max_age`, or comes from a plugin that is
+/// not expected to say anything about standing.
+fn fail_open_reason(
+    plugin: &PluginId,
+    basis: Option<&serde_json::Value>,
+    now: chrono::DateTime<chrono::Utc>,
+    max_age: chrono::Duration,
+) -> Option<(&'static str, Option<chrono::Duration>)> {
+    let Some(basis) = basis else {
+        // Another plugin's allow is not a standing fail-open.
+        return (plugin.as_str() == BASIS_REPORTING_PLUGIN).then_some(("absent", None));
+    };
+    // Read through the type the plugin serialises, so a basis it cannot
+    // parse is exactly one the two sides no longer agree on.
+    let basis = match serde_json::from_value::<StandingBasis>(basis.clone()) {
+        Ok(basis) => basis,
+        Err(error) => {
+            tracing::warn!(%error, "standing_basis did not parse as the shared type");
+            return Some(("unreadable", None));
+        }
+    };
+    match basis {
+        StandingBasis::NeverReceived => Some(("unheard", None)),
+        StandingBasis::Confirmed { last_heard_at } => {
+            // No parse here, and no "unreadable" arm for a bad instant: the
+            // shared type carries a real timestamp, so a sender cannot emit
+            // one this side would reject. That arm used to file a malformed
+            // timestamp as a disagreement between the two sides, which read
+            // as the sender speaking a dialect rather than sending a bad
+            // value - the exact mislabel the shared type exists to remove.
+            // "unreadable" above still stands, for a basis that genuinely
+            // does not parse as the shared type.
+            let age = now - last_heard_at;
+            if age <= max_age {
+                None
+            } else {
+                Some(("stale", Some(age)))
+            }
+        }
+    }
+}
+
+/// Surface a fail-open allow at error level plus a counter.
+fn surface_fail_open_allow(
+    plugin: &PluginId,
+    account_id: &str,
+    basis: Option<&serde_json::Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let max_age = chrono::Duration::days(data_service::DEFAULT_STANDING_MAX_AGE_DAYS);
+    let Some((reason, silent_for)) = fail_open_reason(plugin, basis, now, max_age) else {
+        return;
+    };
+    metrics::counter!(FAIL_OPEN_ALLOW_COUNTER, "reason" => reason).increment(1);
+    tracing::error!(
+        %plugin,
+        %account_id,
+        reason,
+        silent_for_secs = silent_for.map(|d| d.num_seconds()),
+        max_age_secs = max_age.num_seconds(),
+        "invoice creation allowed on a standing that was never received or is older than the freshness bound"
+    );
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +213,7 @@ impl InvoiceCreationFilter for PluginInvoiceCreationFilter {
             store_id: request.store_id.0.to_string(),
             account_id: request.account_id.0.to_string(),
         };
+        let account_id = wire.account_id.clone();
 
         let outcome: FilterOutcome<WireFilterVerdict> = self
             .host
@@ -137,7 +221,15 @@ impl InvoiceCreationFilter for PluginInvoiceCreationFilter {
             .await;
 
         match outcome {
-            FilterOutcome::Ran(verdict) if verdict.allow => FilterVerdict::Allow,
+            FilterOutcome::Ran(verdict) if verdict.allow => {
+                surface_fail_open_allow(
+                    &self.id,
+                    &account_id,
+                    verdict.standing_basis.as_ref(),
+                    chrono::Utc::now(),
+                );
+                FilterVerdict::Allow
+            }
             FilterOutcome::Ran(verdict) => FilterVerdict::Deny {
                 // The plugin's own words where it gave any: this is its one
                 // chance to tell the merchant what to do about it.

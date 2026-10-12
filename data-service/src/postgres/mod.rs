@@ -22,6 +22,7 @@ mod payout;
 mod refund;
 mod settlement_tolerance;
 pub(crate) mod store_creation;
+mod store_invites;
 mod store_payment_method;
 mod store_settings;
 mod store_token_policy;

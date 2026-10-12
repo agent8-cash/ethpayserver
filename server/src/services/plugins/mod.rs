@@ -89,7 +89,8 @@ pub use filter::{
     run_invoice_creation_filters,
 };
 pub use host_calls::{
-    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredVolume, PluginCalls,
+    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredStanding, DeferredVolume,
+    PluginCalls,
 };
 pub use invoice_issuer::{
     HostInvoiceIssuer, InvoiceCreateRequest, InvoiceIssuerError, PluginHostApi, enforce_own_store,

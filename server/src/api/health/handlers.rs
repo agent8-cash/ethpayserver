@@ -164,9 +164,12 @@ where
     responses(
         (status = 200, description = "Chain health information. Block heights, \
             watched-address counts and failure reasons are included only for \
-            server admins; everyone else gets chain identity and up/down.",
+            server admins; everyone else gets chain identity and up/down. \
+            A monitor that has published no snapshot recently also answers 200, \
+            with an empty list and both flags false - read `data_fresh` rather \
+            than the status code to tell that case from a healthy one.",
             body = ChainsHealthResponse),
-        (status = 503, description = "Health data unavailable"),
+        (status = 503, description = "No chain monitor is configured on this server"),
     )
 )]
 pub async fn chains_health<A>(
@@ -191,7 +194,20 @@ where
     // Read health data from Redis
     match monitor.get_chain_health().await {
         Ok(chains) => {
-            let all_healthy = chains.iter().all(|c| c.is_healthy);
+            // The monitor republishes its snapshot every few seconds under a key
+            // that expires, so an empty list means it has stopped publishing,
+            // not that every chain is well. `all()` alone is vacuously true on it.
+            //
+            // That empty case answers 200 with both flags false, NOT 503. The
+            // body already says "we know nothing", and saying it twice costs
+            // more than it buys: every caller that treats a non-2xx as a failed
+            // request loses the body that explains why. The client's network
+            // panel reads `data_fresh` to render its stale state, so a 503 turns
+            // the one case that branch exists for into a generic request error -
+            // and an environment with no monitor running at all (e2e) sees its
+            // normal state as a hard failure. The 503 above is different: there
+            // the monitor is not configured, so there is no body worth reading.
+            let fresh = super::deep::chains_are_fresh(&chains);
 
             // Everyone may know a chain is down; only an admin may know how far
             // behind it is or which endpoint failed.
@@ -205,8 +221,8 @@ where
                 StatusCode::OK,
                 Json(ChainsHealthResponse {
                     chains: chain_infos,
-                    all_healthy,
-                    data_fresh: true,
+                    all_healthy: fresh,
+                    data_fresh: fresh,
                 }),
             )
         }

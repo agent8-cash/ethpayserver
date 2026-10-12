@@ -19,7 +19,7 @@ use auth::AuthenticationService;
 use data_service::{PaymentOptionReader, PaymentReader};
 use types::{InvoiceId, InvoiceReader, InvoiceStatus};
 
-use super::ws::{StatusUpdate, WsEvent};
+use super::ws::StatusUpdate;
 use crate::state::PgAppState;
 pub use api_types::{CheckoutPaymentInfo, CheckoutResponse};
 
@@ -77,7 +77,7 @@ pub struct CheckoutWsQuery {
 
 /// Public WebSocket handler for checkout status updates.
 ///
-/// No auth required. Only forwards events matching the specified invoice_id.
+/// No auth required. Subscribes to the specified invoice's own channel.
 pub async fn checkout_ws_handler<A>(
     ws: WebSocketUpgrade,
     Query(query): Query<CheckoutWsQuery>,
@@ -96,44 +96,92 @@ where
     let Some(ws_broadcast) = state.ws_broadcast.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let rx = ws_broadcast.subscribe();
+    // Subscribe to this invoice's own channel: no other invoice's update is
+    // ever routed to a public socket.
+    let rx = ws_broadcast.subscribe_invoice(&query.invoice_id);
 
-    ws.on_upgrade(move |socket| handle_checkout_socket(socket, rx, query.invoice_id))
+    ws.on_upgrade(move |socket| handle_checkout_socket(socket, rx))
         .into_response()
+}
+
+/// What an unauthenticated checkout socket may be sent: an invoice's status and
+/// the fields the public checkout response already returns for a payment.
+///
+/// This is deliberately not `StatusUpdate`: knowing an invoice id buys that
+/// invoice's status, not whatever a shared type gains later. A new field has to
+/// be added here on purpose to reach a public socket. The wire format matches
+/// the corresponding `StatusUpdate` variants.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type")]
+enum CheckoutFrame {
+    #[serde(rename = "invoice_status")]
+    InvoiceStatus { invoice_id: String, status: String },
+    #[serde(rename = "payment_update")]
+    PaymentUpdate {
+        payment_id: String,
+        invoice_id: String,
+        status: String,
+        amount: Option<String>,
+    },
+    #[serde(rename = "connected")]
+    Connected,
+}
+
+impl CheckoutFrame {
+    /// The public view of an update, or `None` for one that carries nothing
+    /// about an invoice.
+    fn from_update(update: StatusUpdate) -> Option<Self> {
+        match update {
+            StatusUpdate::InvoiceStatus { invoice_id, status } => {
+                Some(Self::InvoiceStatus { invoice_id, status })
+            }
+            StatusUpdate::PaymentUpdate {
+                payment_id,
+                invoice_id,
+                status,
+                amount,
+            } => Some(Self::PaymentUpdate {
+                payment_id,
+                invoice_id,
+                status,
+                amount,
+            }),
+            StatusUpdate::Connected | StatusUpdate::Ping => None,
+        }
+    }
 }
 
 /// Handle a public checkout WebSocket connection.
 ///
-/// Only forwards StatusUpdate messages matching the given invoice_id.
+/// `rx` is the invoice's own channel, so everything on it is forwarded, but
+/// only as the minimal `CheckoutFrame`.
 async fn handle_checkout_socket(
     socket: WebSocket,
-    mut rx: tokio::sync::broadcast::Receiver<WsEvent>,
-    invoice_id: String,
+    mut rx: tokio::sync::broadcast::Receiver<StatusUpdate>,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
     // Send connected acknowledgement
-    let Ok(connected) = serde_json::to_string(&StatusUpdate::Connected) else {
+    let Ok(connected) = serde_json::to_string(&CheckoutFrame::Connected) else {
         return;
     };
     if sender.send(Message::Text(connected.into())).await.is_err() {
         return;
     }
 
-    let inv_id = invoice_id.clone();
     let mut send_task = tokio::spawn(async move {
-        while let Ok(WsEvent { update, .. }) = rx.recv().await {
-            // Filter: only forward events for this invoice
-            let matches = match &update {
-                StatusUpdate::InvoiceStatus { invoice_id, .. } => invoice_id == &inv_id,
-                StatusUpdate::PaymentUpdate { invoice_id, .. } => invoice_id == &inv_id,
-                StatusUpdate::Ping => true,
-                StatusUpdate::Connected => false,
+        loop {
+            let update = match rx.recv().await {
+                Ok(update) => update,
+                // Dropped updates may include the payment confirmation and the
+                // page cannot know it missed one, so close and let it resync.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+                | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
-            if !matches {
+            let Some(frame) = CheckoutFrame::from_update(update) else {
                 continue;
-            }
-            let msg = match serde_json::to_string(&update) {
+            };
+            let msg = match serde_json::to_string(&frame) {
                 Ok(json) => json,
                 Err(_) => continue,
             };
@@ -162,6 +210,32 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use types::ChainId;
+
+    #[test]
+    fn checkout_frames_keep_the_wire_format_of_the_shared_updates() {
+        let updates = [
+            StatusUpdate::InvoiceStatus {
+                invoice_id: "i".into(),
+                status: "paid".into(),
+            },
+            StatusUpdate::PaymentUpdate {
+                payment_id: "p".into(),
+                invoice_id: "i".into(),
+                status: "confirmed".into(),
+                amount: Some("5".into()),
+            },
+        ];
+        for update in updates {
+            let shared = serde_json::to_value(&update).unwrap();
+            let frame = CheckoutFrame::from_update(update).unwrap();
+            assert_eq!(serde_json::to_value(&frame).unwrap(), shared);
+        }
+        assert_eq!(
+            serde_json::to_value(CheckoutFrame::Connected).unwrap(),
+            serde_json::to_value(StatusUpdate::Connected).unwrap()
+        );
+        assert!(CheckoutFrame::from_update(StatusUpdate::Ping).is_none());
+    }
 
     #[test]
     fn test_checkout_response_serialization() {

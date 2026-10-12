@@ -108,31 +108,58 @@ pub trait AccountStandingStore: Send + Sync {
         account_id: Uuid,
     ) -> RepositoryResult<Option<HeldStanding>>;
 
-    /// Read and decide, logging every fail-open decision at warn so an allow
-    /// that rests on silence is visible rather than just taken.
+    /// Read and decide, surfacing every fail-open decision (see
+    /// [`decide_and_surface`]).
     async fn standing_decision(
         &self,
         account_id: Uuid,
         max_age: Duration,
     ) -> RepositoryResult<StandingDecision> {
         let held = self.get_account_standing(account_id).await?;
-        let decision = decide(held.as_ref(), Utc::now(), max_age);
-        match &decision {
-            StandingDecision::AllowUnheard => {
-                tracing::warn!(%account_id, "standing fail-open: no standing was ever received for this account");
-            }
-            StandingDecision::AllowStale { silent_for } => {
-                tracing::warn!(
-                    %account_id,
-                    silent_for_secs = silent_for.num_seconds(),
-                    max_age_secs = max_age.num_seconds(),
-                    "standing fail-open: sender not heard from within the freshness bound"
-                );
-            }
-            StandingDecision::Allow | StandingDecision::Deny { .. } => {}
-        }
-        Ok(decision)
+        Ok(decide_and_surface(
+            account_id,
+            held.as_ref(),
+            Utc::now(),
+            max_age,
+        ))
     }
+}
+
+/// Counter incremented once per fail-open allow, labelled by `reason`.
+pub const FAIL_OPEN_COUNTER: &str = "ethpayserver_standing_fail_open_total";
+
+/// [`decide`], and make every fail-open allow reach a person.
+///
+/// A fail-open allow lets a possibly-lapsed account keep creating invoices on
+/// the strength of missing or old information. A `warn!` is a breadcrumb that
+/// reaches nobody, so each one is an error-level event (which the error
+/// reporter turns into an alert) and increments [`FAIL_OPEN_COUNTER`] so the
+/// rate can be alarmed on as well. Every caller that reads a standing to
+/// decide anything goes through here, so none can allow silently.
+pub fn decide_and_surface(
+    account_id: Uuid,
+    held: Option<&HeldStanding>,
+    now: DateTime<Utc>,
+    max_age: Duration,
+) -> StandingDecision {
+    let decision = decide(held, now, max_age);
+    match &decision {
+        StandingDecision::AllowUnheard => {
+            metrics::counter!(FAIL_OPEN_COUNTER, "reason" => "unheard").increment(1);
+            tracing::error!(%account_id, "standing fail-open: no standing was ever received for this account, allowing");
+        }
+        StandingDecision::AllowStale { silent_for } => {
+            metrics::counter!(FAIL_OPEN_COUNTER, "reason" => "stale").increment(1);
+            tracing::error!(
+                %account_id,
+                silent_for_secs = silent_for.num_seconds(),
+                max_age_secs = max_age.num_seconds(),
+                "standing fail-open: sender not heard from within the freshness bound, allowing"
+            );
+        }
+        StandingDecision::Allow | StandingDecision::Deny { .. } => {}
+    }
+    decision
 }
 
 #[cfg(test)]

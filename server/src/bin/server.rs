@@ -506,6 +506,16 @@ async fn main() -> Result<()> {
         tracing::info!("plugins may read what many accounts settled in one call");
     }
 
+    // Capability 7: the standing the host stored for an account, read-only.
+    // Needs only the data layer, so it is published unconditionally; a plugin
+    // can read a standing and has no import by which to write one.
+    if plugin_capabilities
+        .standing
+        .publish(state.data_service.clone())
+    {
+        tracing::info!("plugins may read an account's stored standing");
+    }
+
     // Capability 5. `PageHost` is built empty by `AppState::new` and has
     // never had a production renderer registered in it, so every plugin page
     // request 404'd - correct for a host with nothing to draw, and

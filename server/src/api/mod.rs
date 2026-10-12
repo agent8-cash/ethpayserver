@@ -131,6 +131,7 @@ where
         .route("/{store_id}", put(stores::update_store::<A>))
         .route("/{store_id}", delete(stores::delete_store::<A>))
         .route("/{store_id}/unarchive", post(stores::unarchive_store::<A>))
+        .route("/{store_id}/invites", post(stores::create_store_invite::<A>))
         .route("/{store_id}/members", get(stores::list_store_members::<A>))
         .route("/{store_id}/members", post(stores::add_store_member::<A>))
         .route(
@@ -291,10 +292,13 @@ where
         .route("/me/email", post(users::request_email_change::<A>))
         .route("/me/email", delete(users::remove_email::<A>))
         .route("/me/email/status", get(users::get_email_status::<A>))
+        .route("/me/standing", get(users::get_standing::<A>))
         .route(
             "/me/email/confirm",
             post(users::confirm_email_change::<A>),
         )
+        // Redeeming a store invite is what creates the membership.
+        .route("/me/invites/accept", post(stores::accept_store_invite::<A>))
         .route("/api-keys", get(users::list_api_keys::<A>))
         .route("/api-keys", post(users::create_api_key::<A>))
         .route("/api-keys/{id}", delete(users::revoke_api_key::<A>))

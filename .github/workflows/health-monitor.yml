@@ -10,13 +10,27 @@ name: Health monitor (deep)
 # e2e-scheduled.yml: the deploy host cannot be trusted to report on itself
 # being down.
 #
-# Every 5 minutes is the shortest interval GitHub Actions schedules
-# meaningfully — not the 30-60s a real uptime checker gives you. This is the
-# fallback documented in docs/ops.md: it exists to assert on the response
-# body (monitor.data_fresh, per-chain rpc status), which a status-code-only
-# uptime check cannot do. Configure a real Sentry Uptime Check against the
-# same URL for the faster cadence; keep this running regardless, since it is
-# the thing actually reading the body.
+# GitHub scheduled workflows are best-effort. Observed on this workflow: the
+# large majority of scheduled runs are never dispatched, with gaps of hours
+# against a 5-minute cron. Nothing time-sensitive may rely on this schedule.
+#
+# The 5-minute cadence is meant to be held elsewhere: the private
+# central-infrastructure repository defines a one-minute systemd timer that polls the same endpoint.
+# Whether it is enabled on the host is unverified from here; until it is,
+# prompt outage detection is not in place.
+# This workflow remains for manual dispatch and as a second, body-asserting
+# check. Its Sentry cron monitor must therefore be sized to what GitHub
+# actually delivers (hours), or be treated as advisory; it cannot be a
+# 5-minute dead-man's switch. See docs/ops.md.
+#
+# STALL_THRESHOLD is left at 3 checks: it counts delivered runs, so at this
+# cadence a flat chain is flagged late; the host timer bounds stall time.
+#
+# This is a body-asserting secondary check rather than a real uptime checker:
+# it exists to assert on the response body (monitor.data_fresh, per-chain rpc
+# status), which a status-code-only uptime check cannot do. A Sentry Uptime
+# Check against the same URL gives the faster cadence; this stays as the
+# thing that reads the body, when GitHub delivers it.
 #
 # A chain can report rpcs.*.status "ok" while its indexer has stopped
 # advancing — status alone misses that. The actions/cache steps below persist

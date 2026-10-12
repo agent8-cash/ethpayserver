@@ -94,11 +94,14 @@ pub(crate) fn narrow_scope_by_key(
 /// in the deployment. Keep the two cases in the type; do not
 /// reintroduce an in-band marker.
 ///
-/// This is also the membership test behind the live status stream: the
-/// websocket gate (`may_see_store` in `api/ws.rs`) calls it for every event on
-/// every open socket, failing closed on any error. Loosening it here would
-/// widen what open sockets receive, not only what the list endpoints return, so
-/// a change to its semantics needs the websocket tests in
+/// This is also the membership test behind the live status stream, and the
+/// websocket gate calls it (`entitlement_of` in `api/ws.rs`) for every event on
+/// every open socket, immediately before the send - as well as on connect and
+/// on each subscription-upkeep tick. It uses only the `store_id: None` arm; the
+/// `Some(store)` arm is not reached by the socket path. Loosening it here would
+/// widen both who is sent a tenant's live payment events and which channels an
+/// open socket subscribes to, not only what the list endpoints return. A change
+/// to its semantics needs the websocket tests in
 /// `server/tests/ws_store_scope.rs` run alongside the query tests.
 pub(crate) async fn verify_store_access_for_query<D>(
     data_service: &D,

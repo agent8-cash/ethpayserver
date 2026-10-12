@@ -102,7 +102,7 @@ where
 /// the whole auth crate's validation surface for one check. Not exhaustive -
 /// just enough to reject an obviously wrong address before minting a token
 /// and an email for it.
-fn looks_like_an_email(email: &str) -> bool {
+pub(crate) fn looks_like_an_email(email: &str) -> bool {
     let email = email.trim();
     let parts: Vec<&str> = email.split('@').collect();
     let [local, domain] = parts.as_slice() else {

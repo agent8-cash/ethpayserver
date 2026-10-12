@@ -30,13 +30,15 @@ pub mod payout_claims;
 pub mod reorg;
 pub mod settlement_tolerance;
 pub mod store_creation;
+pub mod store_invites;
 pub mod watch_reconciliation;
 pub mod webhook_delivery;
 pub mod webhook_outbox;
 
 pub use account_deletion::{AccountDeletionBlockers, AccountDeletionReader};
 pub use account_standing::{
-    AccountStanding, AccountStandingStore, ApplyOutcome, HeldStanding, StandingDecision,
+    AccountStanding, AccountStandingStore, ApplyOutcome, DEFAULT_STANDING_MAX_AGE_DAYS,
+    FAIL_OPEN_COUNTER, HeldStanding, StandingDecision, decide_and_surface,
 };
 pub use analytics::{PaymentAnalyticsReader, PaymentVolumeBucket, PaymentVolumeQuery};
 pub use chain_cursor::{ChainCursor, ChainCursorReader, ChainCursorWriter};
@@ -54,6 +56,7 @@ pub use settlement_tolerance::{
     DEFAULT_TOLERANCE_PERCENT, MAX_TOLERANCE_PERCENT, SettlementAllowance,
     SettlementToleranceReader, SettlementToleranceWriter,
 };
+pub use store_invites::{InviteAcceptance, StoreInviteWriter};
 pub use watch_reconciliation::{WatchKey, WatchReconciliation, reconcile};
 pub use webhook_delivery::{
     UpsertDeliveryParams, WebhookDeliveryData, WebhookDeliveryReader, WebhookDeliveryStatus,

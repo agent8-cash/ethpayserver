@@ -15,40 +15,8 @@ ignore = [
     "RUSTSEC-2026-0012", # upstream transitive dep (warning)
     "RUSTSEC-2026-0002", # lru unsoundness (via alloy-provider)
     "RUSTSEC-2026-0235", # rkyv 0.7 via rust_decimal's optional `rkyv` feature — not enabled, never compiled
-    # wasmtime 47 via payserver-commons' plugin host. Both advisories are
-    # fuel-accounting bugs: `call_ref` and exception `catch` can drop fuel
-    # accounting, so a guest can burn far more than its budget. The host runs
-    # with fuel metering OFF — it bounds guest execution with
-    # `config.epoch_interruption(true)` and calls `consume_fuel` nowhere — so
-    # there is no fuel budget to escape. The two proposals involved are also
-    # both disabled: the config enables neither `wasm_function_references`
-    # (`call_ref`) nor `wasm_exceptions` (`catch`), and wasmtime defaults them
-    # off.
-    #
-    # REVISIT IF THE HOST EVER ENABLES FUEL. The real fix is a wasmtime bump
-    # (>=48.0.3) in commons' plugin host. The toolchain is already on 1.95;
-    # what remains is the commons `rev` bump here once the commons change has
-    # merged, after which both ignores come out.
-    "RUSTSEC-2026-0315", # wasmtime fuel accounting — fuel metering is not enabled
-    "RUSTSEC-2026-0316", # wasmtime fuel accounting — fuel metering is not enabled
-    # Three more against the same wasmtime 47, all in features this build does
-    # not compile. The plugin host depends on wasmtime with
-    # `default-features = false, features = ["runtime", "cranelift"]`;
-    # `cargo tree -e features -i wasmtime` shows neither `gc`, `component-model`
-    # nor `async` enabled anywhere in the workspace, so the vulnerable code is
-    # absent from the binary rather than merely switched off.
-    #   0326  GC values live across `try_call` are not rooted - needs the GC heap
-    #   0325  mis-typed WebAssembly tag imports corrupt the GC heap - needs the
-    #         GC heap, and the host's linker defines functions only, so a guest
-    #         has no tag import to mistype
-    #   0327  async-lifted component callback result count - needs the component
-    #         model; the host instantiates core `Module`s only
-    # The fix is >=48.0.4 (or >=49.0.2), which is a commons bump, so these come
-    # out with the other two when that lands. scripts/check-wasmtime-ignores.sh
-    # runs in CI and fails if `gc`, `component-model` or `async` is ever enabled
-    # on wasmtime (this reasoning would then be false), and fails once the locked
-    # wasmtime is a fixed release while any of the five ignores remains.
-    "RUSTSEC-2026-0325", # wasmtime mis-typed tag imports - gc feature not compiled
-    "RUSTSEC-2026-0326", # wasmtime GC rooting across try_call - gc feature not compiled
-    "RUSTSEC-2026-0327", # wasmtime component async callback - component model not compiled
+    # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
+    # commons `rev` bump landed, wasmtime is >=48.0.4, and
+    # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
+    # of the five still listed.
 ]
