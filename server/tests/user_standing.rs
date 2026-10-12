@@ -150,39 +150,37 @@ async fn a_merchant_reads_their_own_standing_and_never_anothers() {
     assert_eq!(body["plan_name"], Value::Null);
 }
 
-/// ALLOW-LIST, BOTH SURFACES. The stored standing holds more than this route is
-/// meant to hand back, and more than any response is meant to carry in a header.
-/// Nothing asserted either limit, so a field added to the stored type - or to the
-/// response type that mirrors it - reached the wire by default.
-///
-/// Two separate exposures, which is why one test pins both:
-///
-/// THE BODY. The four names below are the whole of what a merchant reading their
-/// own standing receives, and each is here on purpose: the state, the plan they
-/// are on, when it runs out, where to pay. A fifth arriving silently is the
-/// failure this half prevents. Adding one is fine - amend the list in the same
-/// commit, which is the point.
-///
-/// THE HEADERS. This asserts the EMPTY set, and that is deliberate rather than
-/// vacuous: the warning-header work stamps `x-account-*` on every authenticated
-/// response through a global layer, so landing it turns this assertion red and
-/// the list has to be extended by hand. A header is the broader exposure of the
-/// two - it rides on responses the caller did not ask for, and intermediaries log
-/// headers that they do not log bodies - so the surface that grows without being
-/// named is the one worth pinning before it exists.
-///
-/// The hold is seeded INSIDE the seven-day warning window on purpose. At thirty
-/// days, as the other tests seed it, no warning would be due and this assertion
-/// would stay green through exactly the change it is here to catch.
-#[tokio::test]
-#[ignore]
-async fn the_standing_read_exposes_only_these_fields_and_no_account_headers() {
+/// An authenticated read of the caller's own standing, seeded INSIDE the
+/// seven-day warning window. The window matters: the sibling tests seed thirty
+/// days out, where no expiry warning is ever due, and a response-header
+/// assertion made there would stay green through exactly the change it exists to
+/// catch.
+async fn standing_of_an_expiring_account() -> (HeaderMap, Value) {
     let pg = Arc::new(pg_service().await);
     let (user, key) = seed_user(&pg).await;
     hold(&pg, user, true, "plan-expiring", 2).await;
-
     let (status, headers, body) = get_standing_full(&app(&pg), Some(&key)).await;
     assert_eq!(status, StatusCode::OK);
+    (headers, body)
+}
+
+/// ALLOW-LIST ON THE BODY. The stored standing holds more than this route is
+/// meant to hand back, and nothing asserted the limit, so a field added to the
+/// response type that mirrors it reached the wire by default.
+///
+/// These four names are the whole of what a merchant reading their own standing
+/// receives, and each is here on purpose: the state, the plan they are on, when
+/// it runs out, where to pay. Adding a fifth is fine - amend this list in the
+/// same commit, which is the point.
+///
+/// Separate test from the header allow-list, deliberately. The two were one test
+/// and the ablation proved only the first assertion: a panic on the body list
+/// meant the header list was never reached, so it was an unproven control
+/// sitting behind a proven one.
+#[tokio::test]
+#[ignore]
+async fn the_standing_read_exposes_only_these_four_fields() {
+    let (_, body) = standing_of_an_expiring_account().await;
 
     let mut fields: Vec<&str> = body
         .as_object()
@@ -198,6 +196,21 @@ async fn the_standing_read_exposes_only_these_fields_and_no_account_headers() {
          to this list in the commit that adds it, so that exposing it is a decision \
          someone made rather than a default"
     );
+}
+
+/// ALLOW-LIST ON THE HEADERS, which asserts the EMPTY set. That is deliberate
+/// rather than vacuous: the expiry-warning work stamps `x-account-*` on every
+/// authenticated response through a global layer, so landing it turns this red
+/// and the set has to be extended by hand.
+///
+/// A header is the broader exposure of the two. It rides on responses the caller
+/// never asked for, and intermediaries log headers that they do not log bodies -
+/// so the surface that grows without anyone naming it is the one worth pinning
+/// before it exists.
+#[tokio::test]
+#[ignore]
+async fn the_standing_read_carries_no_account_headers() {
+    let (headers, _) = standing_of_an_expiring_account().await;
 
     let account_headers: Vec<&str> = headers
         .keys()
