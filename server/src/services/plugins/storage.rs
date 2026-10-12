@@ -951,6 +951,45 @@ mod tests {
         storage.uninstall(&id, true).await.unwrap();
     }
 
+    /// The plugin host cannot cancel a thread blocked in a host call, so the
+    /// only bound on a stalled query is the one Postgres enforces on the role.
+    /// A query that sleeps far past the timeout must be cancelled by the
+    /// server, on a connection authenticated as the plugin's own role.
+    #[tokio::test]
+    #[ignore]
+    async fn a_plugin_role_query_is_cancelled_by_the_statement_timeout() {
+        let pool = test_pool().await;
+        let storage = PluginStorage::new(pool);
+        let id = plugin_id("cash.random.rolescope.timeout");
+        let password = generate_role_password().unwrap();
+
+        reset(&storage, &id).await;
+        let migrations = no_migrations();
+        storage.install(&id, migrations.path()).await.unwrap();
+        storage.provision_role(&id, &password).await.unwrap();
+
+        let as_plugin = pool_as_role(&schema_name(&id).unwrap(), &password).await;
+        let started = std::time::Instant::now();
+        let result = sqlx::query("SELECT pg_sleep(30)").execute(&as_plugin).await;
+        let elapsed = started.elapsed();
+
+        let message = result
+            .expect_err("a 30s query must not complete")
+            .to_string();
+        assert!(
+            message.contains("statement timeout"),
+            "expected Postgres to cancel the query, got: {message}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(STATEMENT_TIMEOUT_MS * 3),
+            "query ran {elapsed:?}, far past the {STATEMENT_TIMEOUT_MS}ms role timeout"
+        );
+
+        as_plugin.close().await;
+        storage.drop_role(&id).await.unwrap();
+        storage.uninstall(&id, true).await.unwrap();
+    }
+
     /// Dropping a role that was never created is not an error: uninstall runs
     /// against plugins installed before roles existed.
     #[tokio::test]
