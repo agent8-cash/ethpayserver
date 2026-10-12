@@ -120,11 +120,41 @@ async fn serve_revalidating(
     serve_with(data_service, people, revalidate, DEFAULT_SEND_DEADLINE).await
 }
 
+async fn serve_with_keepalive(
+    data_service: Arc<PgDataService>,
+    people: &[&Person],
+    keepalive: Duration,
+) -> Harness {
+    serve_configured(
+        data_service,
+        people,
+        WsBroadcast::new(64)
+            .with_revalidate_interval(FAST)
+            .with_keepalive_interval(keepalive),
+    )
+    .await
+}
+
 async fn serve_with(
     data_service: Arc<PgDataService>,
     people: &[&Person],
     revalidate: Duration,
     send_deadline: Duration,
+) -> Harness {
+    serve_configured(
+        data_service,
+        people,
+        WsBroadcast::new(64)
+            .with_revalidate_interval(revalidate)
+            .with_send_deadline(send_deadline),
+    )
+    .await
+}
+
+async fn serve_configured(
+    data_service: Arc<PgDataService>,
+    people: &[&Person],
+    broadcast: WsBroadcast,
 ) -> Harness {
     let sessions = Arc::new(Sessions(std::sync::Mutex::new(
         people
@@ -132,11 +162,7 @@ async fn serve_with(
             .map(|p| (p.session, support::user_info(p.user_id)))
             .collect(),
     )));
-    let broadcast = Arc::new(
-        WsBroadcast::new(64)
-            .with_revalidate_interval(revalidate)
-            .with_send_deadline(send_deadline),
-    );
+    let broadcast = Arc::new(broadcast);
     let mut state = PgAppState::new(
         data_service,
         sessions.clone(),
@@ -200,8 +226,13 @@ async fn connect(h: &Harness, person: &Person) -> Socket {
 }
 
 async fn next_update(ws: &mut Socket) -> Option<serde_json::Value> {
-    let msg = tokio::time::timeout(WAIT, ws.next()).await.ok()??.ok()?;
-    serde_json::from_str(msg.to_text().ok()?).ok()
+    loop {
+        let msg = tokio::time::timeout(WAIT, ws.next()).await.ok()??.ok()?;
+        if matches!(msg, Message::Ping(_) | Message::Pong(_)) {
+            continue;
+        }
+        return serde_json::from_str(msg.to_text().ok()?).ok();
+    }
 }
 
 /// Asserts that the server closes the socket (Close frame, error or end of
@@ -690,4 +721,121 @@ async fn a_socket_that_missed_updates_is_closed_so_the_client_resyncs() {
     }
 
     assert_closed(&mut ws_a, "updates were dropped").await;
+}
+
+/// Does nothing; the cleanup service needs a monitor to unwatch with, and
+/// expiry itself never reaches for one.
+struct IdleMonitor;
+
+#[async_trait]
+impl server::services::EVMMonitor for IdleMonitor {
+    async fn watch_address(
+        &self,
+        _: &types::ChainId,
+        _: evm::Address,
+        _: Uuid,
+        _: Option<evm::U256>,
+        _: Option<evm::Address>,
+    ) -> Result<(), server::services::EVMMonitorError> {
+        Ok(())
+    }
+    async fn watch_address_by_chain_id(
+        &self,
+        _: u64,
+        _: evm::Address,
+        _: Uuid,
+        _: Option<evm::U256>,
+        _: Option<evm::Address>,
+    ) -> Result<(), server::services::EVMMonitorError> {
+        Ok(())
+    }
+    async fn unwatch_address(
+        &self,
+        _: &types::ChainId,
+        _: evm::Address,
+        _: Option<evm::Address>,
+    ) -> Result<(), server::services::EVMMonitorError> {
+        Ok(())
+    }
+    async fn unwatch_address_by_chain_id(
+        &self,
+        _: u64,
+        _: evm::Address,
+        _: Option<evm::Address>,
+    ) -> Result<(), server::services::EVMMonitorError> {
+        Ok(())
+    }
+    async fn health_check(&self) -> Result<(), server::services::EVMMonitorError> {
+        Ok(())
+    }
+    async fn get_chain_health(
+        &self,
+    ) -> Result<Vec<evm::monitor::ChainHealth>, server::services::EVMMonitorError> {
+        Ok(vec![])
+    }
+}
+
+/// An invoice that lapses with no payment ever seen must reach the open
+/// socket of its store's owner: this goes through the real expiry path (the
+/// cleanup service against Postgres) and the real `/ws` handler, because the
+/// dashboard learns of an expiry from this frame and from nothing else.
+#[tokio::test]
+#[ignore = "needs DATABASE_URL"]
+async fn an_unpaid_invoice_expiring_reaches_its_owners_socket() {
+    let pg = Arc::new(support::service().await);
+    let owner = Person::new(pg.pool()).await;
+    let (store, _) = tenant(&pg, &owner, "expiry").await;
+    let h = serve(pg.clone(), &[&owner]).await;
+    let mut ws = connect(&h, &owner).await;
+
+    let invoice = types::InvoiceData {
+        id: types::InvoiceId::new(),
+        store_id: sid(&store),
+        currency: "ETH".to_string(),
+        status: types::InvoiceStatus::Pending,
+        amount: "1".to_string(),
+        amount_received: "0".to_string(),
+        created_at: chrono::Utc::now() - chrono::Duration::seconds(10),
+        expires_at: chrono::Utc::now() - chrono::Duration::seconds(5),
+        metadata: None,
+        customer_email: None,
+        extra: None,
+    };
+    types::InvoiceWriter::upsert(&*pg, &invoice).await.unwrap();
+
+    let cleanup: server::services::InvoiceCleanupService<PgDataService, IdleMonitor> =
+        server::services::InvoiceCleanupService::new(
+            pg.clone(),
+            Arc::new(IdleMonitor),
+            server::services::CleanupConfig::default(),
+            None,
+            Some(h.broadcast.clone()),
+        );
+    assert!(cleanup.check_expired().await.unwrap() >= 1);
+
+    let got = next_update(&mut ws).await.expect("an expiry frame");
+    assert_eq!(got["invoice_id"], invoice.id.as_str(), "frame was {got}");
+    assert_eq!(got["status"], "expired");
+}
+
+/// A socket with nothing to say is still sent a ping now and then: a reverse
+/// proxy closes a connection that carries no traffic for its read timeout, and
+/// an expiry can arrive long after the last frame.
+#[tokio::test]
+#[ignore = "needs DATABASE_URL"]
+async fn an_idle_socket_is_pinged() {
+    let pg = Arc::new(support::service().await);
+    let owner = Person::new(pg.pool()).await;
+    let h = serve_with_keepalive(pg.clone(), &[&owner], Duration::from_millis(200)).await;
+    let mut ws = connect(&h, &owner).await;
+
+    let msg = tokio::time::timeout(WAIT, ws.next())
+        .await
+        .expect("a ping within the wait")
+        .expect("socket open")
+        .expect("no error");
+    assert!(
+        matches!(msg, Message::Ping(_)),
+        "expected a ping, got {msg:?}"
+    );
 }
