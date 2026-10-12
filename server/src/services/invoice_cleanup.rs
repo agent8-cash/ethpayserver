@@ -972,4 +972,52 @@ mod tests {
             "the failed unwatch must not be deactivated - it needs to be retried"
         );
     }
+
+    /// An invoice that lapses with no payment ever seen must still tell its
+    /// store's listeners: the dashboard learns of expiry from this frame, not
+    /// by polling.
+    #[tokio::test]
+    async fn expiring_an_unpaid_invoice_publishes_a_frame_to_its_store() {
+        let ds = Arc::new(InMemoryDataService::new());
+        let store_id = StoreId::new();
+        let invoice_id = InvoiceId::new();
+        let invoice = InvoiceData {
+            id: invoice_id.clone(),
+            store_id,
+            currency: "ETH".to_string(),
+            status: InvoiceStatus::Pending,
+            amount: "1".to_string(),
+            amount_received: "0".to_string(),
+            created_at: Utc::now() - chrono::Duration::seconds(10),
+            expires_at: Utc::now() - chrono::Duration::seconds(5),
+            metadata: None,
+            customer_email: None,
+            extra: None,
+        };
+        InvoiceWriter::upsert(&*ds, &invoice).await.unwrap();
+
+        let ws = Arc::new(WsBroadcast::new(16));
+        let mut rx = ws.subscribe_store(store_id);
+        let service: InvoiceCleanupService<InMemoryDataService, RecordingEVMMonitor> =
+            InvoiceCleanupService::new(
+                ds,
+                Arc::new(RecordingEVMMonitor::default()),
+                CleanupConfig::default(),
+                None,
+                Some(ws),
+            );
+
+        assert_eq!(service.check_expired().await.unwrap(), 1);
+
+        match rx.try_recv() {
+            Ok(StatusUpdate::InvoiceStatus {
+                invoice_id: id,
+                status,
+            }) => {
+                assert_eq!(id, invoice_id.as_str());
+                assert_eq!(status, "expired");
+            }
+            other => panic!("expected an expired frame, got {other:?}"),
+        }
+    }
 }
