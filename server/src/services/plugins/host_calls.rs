@@ -176,6 +176,14 @@ impl PluginCalls {
     }
 }
 
+/// Each method here is synchronous and runs on the plugin's thread while it
+/// holds the instance lock. The plugin host bounds a call by wall clock, but it
+/// can only abandon a thread blocked in one of these, never cancel it: the lock
+/// is held until the method returns. So the bound on how long a method may run
+/// is this contract, and each body has to enforce its own. `storage_query` does
+/// (a statement timeout on the plugin's database role). The other methods rely
+/// on the underlying call returning promptly and have no bound of their own, and
+/// no test blocks one, so a stalled one still holds the lock until it returns.
 impl PluginHostCalls for PluginCalls {
     fn invoice_create(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         self.invoice_create_impl(request)
