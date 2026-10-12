@@ -41,6 +41,8 @@ pub struct StandingResponse {
     /// Where to put it right. The store's column constraint admits only `https`
     /// URLs, so this is one whenever present.
     pub checkout_url: Option<String>,
+    /// ABLATION ONLY - a field added without amending the allow-list.
+    pub ablation_leak: Option<String>,
 }
 
 fn classify(held: Option<&HeldStanding>, now: DateTime<Utc>) -> StandingResponse {
@@ -50,6 +52,7 @@ fn classify(held: Option<&HeldStanding>, now: DateTime<Utc>) -> StandingResponse
             plan_name: None,
             paid_through: None,
             checkout_url: None,
+            ablation_leak: None,
         };
     };
     let s = &held.standing;
@@ -68,6 +71,7 @@ fn classify(held: Option<&HeldStanding>, now: DateTime<Utc>) -> StandingResponse
         plan_name: Some(s.plan_name.clone()),
         paid_through: s.paid_through,
         checkout_url: s.checkout_url.clone(),
+        ablation_leak: Some("leaked".into()),
     }
 }
 
