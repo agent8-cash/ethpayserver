@@ -94,14 +94,26 @@ struct WireFilterVerdict {
 /// where the outcome is known: a page render or a deny never reaches it.
 pub const FAIL_OPEN_ALLOW_COUNTER: &str = "ethpayserver_standing_fail_open_allow_total";
 
+/// The plugin that is expected to say what every allow rests on. For it, an
+/// allow with no basis is itself a reason: if a build stopped reporting one
+/// (a regression, or an older artifact loaded), every fail-open would go
+/// uncounted and a zero meaning "healthy" would read the same as a zero
+/// meaning "not reporting".
+const BASIS_REPORTING_PLUGIN: &str = "cash.random.billing";
+
 /// Why an allow rests on missing or old information, or `None` when it rests
-/// on a standing confirmed within `max_age` (or says nothing about standing).
+/// on a standing confirmed within `max_age`, or comes from a plugin that is
+/// not expected to say anything about standing.
 fn fail_open_reason(
+    plugin: &PluginId,
     basis: Option<&serde_json::Value>,
     now: chrono::DateTime<chrono::Utc>,
     max_age: chrono::Duration,
 ) -> Option<(&'static str, Option<chrono::Duration>)> {
-    let basis = basis?;
+    let Some(basis) = basis else {
+        // Another plugin's allow is not a standing fail-open.
+        return (plugin.as_str() == BASIS_REPORTING_PLUGIN).then_some(("absent", None));
+    };
     // Read through the type the plugin serialises, so a basis it cannot
     // parse is exactly one the two sides no longer agree on.
     let basis = match serde_json::from_value::<StandingBasis>(basis.clone()) {
@@ -140,7 +152,7 @@ fn surface_fail_open_allow(
     now: chrono::DateTime<chrono::Utc>,
 ) {
     let max_age = chrono::Duration::days(data_service::DEFAULT_STANDING_MAX_AGE_DAYS);
-    let Some((reason, silent_for)) = fail_open_reason(basis, now, max_age) else {
+    let Some((reason, silent_for)) = fail_open_reason(plugin, basis, now, max_age) else {
         return;
     };
     metrics::counter!(FAIL_OPEN_ALLOW_COUNTER, "reason" => reason).increment(1);
