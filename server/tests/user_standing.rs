@@ -155,6 +155,12 @@ async fn a_merchant_reads_their_own_standing_and_never_anothers() {
 /// days out, where no expiry warning is ever due, and a response-header
 /// assertion made there would stay green through exactly the change it exists to
 /// catch.
+///
+/// The header assertion below is only meaningful because `app()` builds the
+/// PRODUCTION router - `server::api::router(..)` - and every response-header
+/// middleware in this service is applied inside it as a whole-router
+/// `app.layer(..)`, not per-route. So a layer added to production is in this test
+/// too. A bare router assembled here would make that test unable to fail.
 async fn standing_of_an_expiring_account() -> (HeaderMap, Value) {
     let pg = Arc::new(pg_service().await);
     let (user, key) = seed_user(&pg).await;
@@ -198,30 +204,46 @@ async fn the_standing_read_exposes_only_these_four_fields() {
     );
 }
 
-/// ALLOW-LIST ON THE HEADERS, which asserts the EMPTY set. That is deliberate
-/// rather than vacuous: the expiry-warning work stamps `x-account-*` on every
-/// authenticated response through a global layer, so landing it turns this red
-/// and the set has to be extended by hand.
+/// Every header name this response may carry. Anything else is a new exposure
+/// and fails the test below until someone adds it here on purpose.
 ///
-/// A header is the broader exposure of the two. It rides on responses the caller
+/// The list is the transport's own, because that is all this route sends today.
+const ALLOWED_RESPONSE_HEADERS: &[&str] = &["content-length", "content-type"];
+
+/// ALLOW-LIST ON THE HEADERS. The whole set, not a prefix.
+///
+/// It was `starts_with("x-account")` first, and that was a test that could not
+/// fail for the case it was written to catch. The ticket names `Warning` as a
+/// candidate header as readily as an `X-` name, so an implementation stamping
+/// `Warning`, `x-subscription-*` or `x-expiry` would have left it green while its
+/// own doc comment promised the opposite. Worse, the ablation that "proved" it
+/// used `x-account-ablation` - a name chosen to match the filter - so it only
+/// ever demonstrated that the filter matches what the filter matches.
+///
+/// Asserting the complete set removes the implementer's naming choice from the
+/// question: any header this route does not already send fails by default, which
+/// is the property the body allow-list above already has.
+///
+/// A header is the broader of the two exposures. It rides on responses the caller
 /// never asked for, and intermediaries log headers that they do not log bodies -
 /// so the surface that grows without anyone naming it is the one worth pinning
 /// before it exists.
 #[tokio::test]
 #[ignore]
-async fn the_standing_read_carries_no_account_headers() {
+async fn the_standing_read_carries_only_transport_headers() {
     let (headers, _) = standing_of_an_expiring_account().await;
 
-    let account_headers: Vec<&str> = headers
+    let unexpected: Vec<String> = headers
         .keys()
-        .map(axum::http::HeaderName::as_str)
-        .filter(|name| name.starts_with("x-account"))
+        .map(|name| name.as_str().to_ascii_lowercase())
+        .filter(|name| !ALLOWED_RESPONSE_HEADERS.contains(&name.as_str()))
         .collect();
     assert!(
-        account_headers.is_empty(),
-        "no x-account-* response header exists yet, so the set is empty; the first \
-         one to be stamped here must be named in this assertion deliberately, \
-         because a header reaches callers who did not ask for it and logs that a \
-         body does not: {account_headers:?}"
+        unexpected.is_empty(),
+        "this response carries a header that is not in ALLOWED_RESPONSE_HEADERS: \
+         {unexpected:?}. A header reaches callers who did not ask for it, and \
+         intermediaries log headers they do not log bodies, so adding one is a \
+         decision that belongs in the same commit as the list entry - whatever it \
+         is called. If the expiry warning landed, name its headers here."
     );
 }
