@@ -161,36 +161,78 @@ async fn key_and_session_callers_inside_the_window_get_the_header() {
     }
 }
 
-/// THE OTHER DIRECTION, AND THE ONE THAT MAKES THE FIELD WORTH HAVING: warned, with no
-/// route, and a caller can tell WITHOUT READING THE ENGLISH. The warning header is
-/// present (silence would be worse - a merchant told nothing finds out at the moment of
-/// failure) and the checkout header is absent, so anything that later treats a
-/// delivered warning as evidence the merchant could comply can refuse to.
+/// RE-POINTED. This asserted that a routeless account still got a warning, which is
+/// the behaviour the rule forbids - and it passed, so it could not flag the gap. The
+/// reviewer caught it locking in a divergence.
+///
+/// It now asserts the rule: a warning carrying neither an invoice url nor a renewal
+/// action is NOT DELIVERED. No warning header, no checkout header, nothing. There is
+/// no renewal endpoint to name yet, so silence is the only honest answer for an
+/// account with no open invoice - which under on-demand issuance is most of them.
 #[tokio::test]
 #[ignore]
-async fn a_warned_caller_with_no_route_gets_the_warning_and_no_checkout_header() {
+async fn a_caller_with_no_means_to_act_gets_no_warning_at_all() {
     let pg = Arc::new(pg_service().await);
     let (user, key, _) = seed(&pg).await;
     hold_with_route(&pg, user, 2, None).await;
     let response = get(&app(&pg), &key).await;
 
-    let text = response
-        .headers()
-        .get(&X_ACCOUNT_WARNING)
-        .expect("a routeless account is still warned")
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(text.contains("renew your subscription"), "{text}");
     assert!(
-        !text.contains("renew at"),
-        "no route was supplied, so the prose must not imply one: {text}"
+        response.headers().get(&X_ACCOUNT_WARNING).is_none(),
+        "a warning carrying no means to act must not be delivered: an unactionable \
+         warning is later read as evidence the merchant could have acted"
     );
     assert!(
         response.headers().get(&X_ACCOUNT_CHECKOUT_URL).is_none(),
-        "the absence of this header is the machine-readable fact that the warning gave \
-         the merchant nowhere to go"
+        "and no route header either, since there is no route"
     );
+}
+
+/// The allow-list on the WIRE, not only on the struct. Acceptance item 3 asks that a
+/// field added later fails by default; this pins the full set of x-account-* headers a
+/// response may carry, so a new one has to be added here deliberately.
+#[tokio::test]
+#[ignore]
+async fn the_response_carries_no_account_headers_beyond_the_warning_and_its_route() {
+    let pg = Arc::new(pg_service().await);
+    let (user, key, _) = seed(&pg).await;
+    hold(&pg, user, 2).await;
+    let response = get(&app(&pg), &key).await;
+
+    let account_headers: Vec<String> = response
+        .headers()
+        .keys()
+        .map(|k| k.as_str().to_ascii_lowercase())
+        .filter(|k| k.starts_with("x-account"))
+        .collect();
+    let mut sorted = account_headers.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec![
+            "x-account-checkout-url".to_string(),
+            "x-account-warning".to_string()
+        ],
+        "only the expiry fact and the means to act may reach the wire; a new \
+         x-account-* header must be added to this list deliberately"
+    );
+
+    // And nothing recognisable as profiling in the value we do send.
+    let text = response
+        .headers()
+        .get(&X_ACCOUNT_WARNING)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    for forbidden in [
+        "plan", "tier", "usd", "$", "invoice", "paid", "days ago", "lapsed",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "payload discloses {forbidden:?}: {text}"
+        );
+    }
 }
 
 #[tokio::test]

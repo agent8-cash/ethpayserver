@@ -119,18 +119,35 @@ pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<Warning> {
     {
         return None;
     }
+    // NO MEANS TO ACT, NO WARNING.
+    //
+    // The rule: a warning must carry either an open invoice's `checkout_url` or the
+    // renewal endpoint/action itself, and it does NOT count as delivered if it carries
+    // neither. There is no renewal endpoint anywhere yet - the billing service serves
+    // only /health/* and /webhooks/payserver - so the only means to act we can offer is
+    // a checkout URL, and without one there is nothing to say that a merchant could act
+    // on.
+    //
+    // So the routeless case is SILENT rather than unactionable. Under on-demand issuance
+    // that is the COMMON case, not a rare degraded one, which is why this is recorded on
+    // the ticket as blocked on the renewal action rather than quietly accepted: we warn
+    // whom we can actionably warn, and say out loud that most merchants cannot be served
+    // yet. An unactionable warning would be worse than silence here precisely because
+    // something will later treat delivery as evidence.
+    let url = standing.checkout_url.as_deref()?;
     let date = ends.format("%Y-%m-%d");
-    let remedy = standing.checkout_url.as_deref().map_or_else(
-        || "renew your subscription".to_string(),
-        |u| format!("renew at {u}"),
-    );
     Some(Warning {
         text: if ends > now {
-            format!("subscription period ends {date}; {remedy}")
+            // The future expiry date IS the actionable fact and is allowed.
+            format!("subscription period ends {date}; renew at {url}")
         } else {
-            format!("subscription period ended {date}; {remedy}")
+            // NO DATE ON THE PAST BRANCH. "ended" is actionable; "ended six days ago"
+            // tells an integrator how long their principal has been lapsed, which the
+            // minimal-disclosure rule forbids - delegating API access is not delegating
+            // financial disclosure.
+            format!("subscription period has ended; renew at {url}")
         },
-        checkout_url: standing.checkout_url.clone(),
+        checkout_url: Some(url.to_string()),
     })
 }
 
@@ -263,14 +280,18 @@ mod tests {
         assert_eq!(w.checkout_url.as_deref(), Some("https://pay.example/c"));
     }
 
-    /// BOTH DIRECTIONS OF THE ONE THING THAT MATTERS: a warning with a route and a
-    /// warning without one must be distinguishable by the FIELD. A test over only the
-    /// routed case cannot tell this implementation from one that always reports a
-    /// route, and that is the direction which would make a routeless warning look
-    /// actionable to anything reading it later.
+    /// RE-POINTED, NOT DELETED. This test used to assert that a routeless warning was
+    /// correct - the behaviour the rule forbids - and it PASSED, so it could not flag
+    /// the gap. A test pinning a divergence converts a bug into documentation and the
+    /// next reader defends it.
+    ///
+    /// It now asserts the rule itself: a warning carrying NEITHER an invoice url nor a
+    /// renewal action is NOT DELIVERED AT ALL. Both directions, because a test over only
+    /// the routed case cannot tell this from an implementation that warns regardless.
     #[test]
-    fn a_routeless_warning_says_so_in_the_field_not_only_in_the_prose() {
+    fn a_warning_carrying_no_means_to_act_is_not_delivered() {
         let now = Utc::now();
+
         let routed = warning_for(
             &held(
                 true,
@@ -278,28 +299,70 @@ mod tests {
                 Some("https://pay.example/c"),
             ),
             now,
-        )
-        .unwrap();
-        let routeless = warning_for(&held(true, Some(now + Duration::days(2)), None), now).unwrap();
-
+        );
+        assert!(routed.is_some(), "a merchant with a route must be warned");
+        let routed = routed.unwrap();
         assert_eq!(
             routed.checkout_url.as_deref(),
             Some("https://pay.example/c")
         );
-        assert_eq!(
-            routeless.checkout_url, None,
-            "a warning with no checkout url must report None, so a suspension path can \
-             refuse to treat it as evidence the merchant was given a way to comply"
+        assert!(routed.text.contains("renew at https://pay.example/c"));
+
+        // The rule: "It does NOT count if it carries neither." There is no renewal
+        // endpoint to name, so no route means no warning - not a vague one.
+        assert!(
+            warning_for(&held(true, Some(now + Duration::days(2)), None), now).is_none(),
+            "a warning with neither an invoice url nor a renewal action must not be \
+             emitted at all: under on-demand issuance this is the COMMON case, and an \
+             unactionable warning would later be read as evidence the merchant could act"
         );
+    }
 
-        // Both still warn: silence is worse than a vague warning, because a merchant
-        // told nothing discovers the lapse at the moment of failure.
-        assert!(routeless.text.contains("renew your subscription"));
-        assert!(routed.text.contains("renew at"));
+    /// ALLOW-LIST. Acceptance item 3, which the amendment did not supersede: amount,
+    /// plan name, price, lapse duration and payment history must be ABSENT, and a field
+    /// added later must fail this by default rather than pass by omission.
+    ///
+    /// `plan_name` is the live risk - it sits on the struct this module reads, so a
+    /// future edit to the format string could leak it and nothing else would notice.
+    #[test]
+    fn the_payload_carries_only_the_expiry_fact_and_the_means_to_act() {
+        let now = Utc::now();
+        let ends = now + Duration::days(3);
+        let mut h = held(true, Some(ends), Some("https://pay.example/c"));
+        // Values a leak would be recognisable by, rather than the bland defaults.
+        h.standing.plan_name = "enterprise-tier-4".into();
+        let w = warning_for(&h, now).unwrap();
 
-        // And the two are not distinguishable ONLY by prose: the fields differ even
-        // though both texts are non-empty and both warn about the same date.
-        assert_ne!(routed.checkout_url, routeless.checkout_url);
+        // Allowed: the expiry fact and the means to act.
+        assert!(w.text.contains(&ends.format("%Y-%m-%d").to_string()));
+        assert!(w.text.contains("https://pay.example/c"));
+
+        // Forbidden, each named so a failure says which one leaked.
+        for forbidden in [
+            "enterprise-tier-4", // plan name
+            "tier",              // any plan vocabulary
+            "$",                 // price or amount
+            "USD",
+            "39",       // a price figure
+            "days ago", // lapse duration
+            "lapsed",
+            "invoice", // payment history
+            "paid",
+        ] {
+            assert!(
+                !w.text.to_lowercase().contains(&forbidden.to_lowercase()),
+                "payload must not disclose {forbidden:?}: {:?}",
+                w.text
+            );
+        }
+
+        // THE STRUCT, not only the text: a new field is the likelier leak, and this
+        // fails by default when one appears because it enumerates what may exist.
+        let Warning {
+            text: _,
+            checkout_url,
+        } = w;
+        assert_eq!(checkout_url.as_deref(), Some("https://pay.example/c"));
     }
 
     #[test]
@@ -329,11 +392,25 @@ mod tests {
     #[test]
     fn a_lapsed_period_still_in_good_standing_says_ended() {
         let now = Utc::now();
-        let text = warning_for(&held(true, Some(now - Duration::days(1)), None), now)
-            .unwrap()
-            .text;
-        assert!(text.contains("ended"));
-        assert!(text.contains("renew your subscription"));
+        let text = warning_for(
+            &held(
+                true,
+                Some(now - Duration::days(1)),
+                Some("https://pay.example/c"),
+            ),
+            now,
+        )
+        .unwrap()
+        .text;
+        assert!(text.contains("ended"), "{text}");
+        assert!(text.contains("renew at https://pay.example/c"), "{text}");
+        // AND NO DATE ON THE PAST BRANCH: "ended" is the actionable fact, "ended on
+        // 2026-10-11" is how long the account has been lapsed, which the
+        // minimal-disclosure rule forbids.
+        assert!(
+            !text.contains(&(now - Duration::days(1)).format("%Y-%m-%d").to_string()),
+            "the past branch must not disclose when the period ended: {text}"
+        );
     }
 
     struct Counting {
@@ -407,7 +484,14 @@ mod tests {
 
     #[tokio::test]
     async fn stamps_inside_the_window_and_reads_the_store_once() {
-        let s = store(Some(held(true, Some(Utc::now() + Duration::days(2)), None)));
+        // A ROUTE IS PART OF THE FIXTURE NOW, not incidental to it: a standing with no
+        // checkout_url produces no warning at all, so without one this test would pass
+        // or fail for a reason unrelated to the caching it exists to pin.
+        let s = store(Some(held(
+            true,
+            Some(Utc::now() + Duration::days(2)),
+            Some("https://pay.example/c"),
+        )));
         let app = app(s.clone(), true);
         for _ in 0..3 {
             let r = call(&app).await;
