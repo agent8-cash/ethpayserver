@@ -458,22 +458,6 @@ where
     // `X-API-Key-Deprecated` header stamped automatically.
     app = app.layer(axum::middleware::from_fn(api_key_deprecation::middleware));
 
-    // ABLATION 3 - DO NOT MERGE. Stamps `Warning`, which is the header name the
-    // ticket offers alongside an `X-` name, and which the PREVIOUS version of the
-    // header test - filtering on `starts_with("x-account")` - would have let
-    // through while promising to catch it. The widened allow-list must go red on
-    // it. The body test must stay GREEN. Reverted in the next commit.
-    app = app.layer(axum::middleware::from_fn(
-        |req: axum::extract::Request, next: axum::middleware::Next| async move {
-            let mut response = next.run(req).await;
-            response.headers_mut().insert(
-                axum::http::header::WARNING,
-                axum::http::HeaderValue::from_static("199 - \"subscription period ends soon\""),
-            );
-            response
-        },
-    ));
-
     // HTTP request metrics (innermost layer = runs closest to handlers)
     app = app.layer(axum::middleware::from_fn(http_metrics::middleware));
 
