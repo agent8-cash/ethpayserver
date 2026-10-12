@@ -30,14 +30,14 @@ cat > src/alerting.rs <<'RS'
 fn helper() {}
 
 #[test]
-fn keeps_newer_version() {}
+fn keeps_newer_version() { assert_eq!(1, 1); }
 
 #[tokio::test]
 #[ignore]
-async fn push_failing_reaches_sentry() {}
+async fn push_failing_reaches_sentry() { assert_eq!(2, 2); }
 
 #[test]
-fn briefly_failing_is_not_an_event() {}
+fn briefly_failing_is_not_an_event() { assert_eq!(3, 3); }
 RS
 printf '#[test]\nfn unrelated() {}\n' > src/other.rs
 commit base
@@ -75,14 +75,18 @@ git reset -q --hard HEAD~1
 # Moving a test to another file is not a deletion.
 sed -i '/^fn keeps_newer_version/d' src/alerting.rs
 sed -i '0,/^#\[test\]$/{//d}' src/alerting.rs  # its now-dangling attribute
-printf '#[test]\nfn keeps_newer_version() {}\n' > src/moved.rs
+printf '#[test]\nfn keeps_newer_version() { assert_eq!(1, 1); }\n' > src/moved.rs
 commit "move test to another file"
 check "a test moved to another file is not a deletion" 0
 
-# An uncited file losing a test is not this check's business.
+# A file the change does not touch cannot lose a test, cited or not.
+check "an untouched file does not fire" 0
+
+# No trailer at all: touching a file is what scopes the check.
 printf '// emptied\n' > src/other.rs
-commit "gut uncited file"
-check "tests lost from an uncited file do not fire" 0
+commit "gut an uncited but touched file"
+check "a test silently lost from a touched, uncited file is refused" 1 "unrelated"
+git reset -q --hard HEAD~1
 
 # A multi-line attribute must still be read, in the base and in the head.
 git checkout -q base
@@ -91,9 +95,12 @@ cat > src/db.rs <<'RS'
 #[sqlx::test(
     migrations = "./migrations"
 )]
-async fn survives_a_multiline_attribute() {}
+async fn survives_a_multiline_attribute() {
+    let x = 1;
+    assert_eq!(x, 1);
+}
 
-#[test] fn one_liner_is_seen() {}
+#[test] fn one_liner_is_seen() { assert!(true); }
 RS
 commit "base with multiline"
 git branch -f base
@@ -119,18 +126,22 @@ Cites-Tests: README.md"
 check "cited non-rust path is refused" 1 "not a .rs file"
 git reset -q --hard HEAD~1
 
-# A test renamed in place has lost its old name: declare it.
+# A test renamed in place keeps its body: not a deletion, no declaration needed.
 sed -i 's/survives_a_multiline_attribute/renamed_in_place/' src/db.rs
 commit "rename test"
-check "undeclared in-place rename is refused" 1 "survives_a_multiline_attribute"
+check "an in-place rename with the body intact passes" 0 "renamed to renamed_in_place"
+# Renamed AND rewritten is indistinguishable from delete + add: refused.
+sed -i 's/assert_eq!(x, 1);/assert_eq!(x, 2);/' src/db.rs
+commit "rewrite the renamed test"
+check "a rename that also rewrites the body is refused" 1 "survives_a_multiline_attribute"
 git commit -q --allow-empty -m "declared
 
 Removes-Test: survives_a_multiline_attribute"
-check "declared rename passes" 0
+check "declared removal passes" 0
 
 # Gaining a test must not excuse silently losing another.
 sed -i '/one_liner_is_seen/d' src/db.rs
-printf '#[test]\nfn brand_new() {}\n' >> src/db.rs
+printf '#[test]\nfn brand_new() { assert!(false); }\n' >> src/db.rs
 commit "drop one, add one"
 check "a dropped test is not covered by an added one" 1 "one_liner_is_seen"
 git commit -q --allow-empty -m "declared
