@@ -52,12 +52,14 @@ export function expectReceived(label: string, frames: Frame[], invoiceIds: strin
  * invoices. Any other invoice id, or a data frame naming no invoice at all,
  * is a leak.
  */
+export const FOREIGN_FRAME_MESSAGE = 'outside its stores';
+
 export function expectNothingForeign(label: string, frames: Frame[], ownInvoiceIds: string[]): void {
   const own = new Set(ownInvoiceIds);
   const foreign = dataFrames(frames).filter((f) => !f.invoice_id || !own.has(f.invoice_id));
   if (foreign.length > 0) {
     throw new Error(
-      `${label}: received ${foreign.length} frame(s) for invoices outside its stores: ` +
+      `${label}: received ${foreign.length} frame(s) for invoices ${FOREIGN_FRAME_MESSAGE}: ` +
         `[${describe(foreign)}]`,
     );
   }

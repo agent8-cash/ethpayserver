@@ -59,6 +59,7 @@ import { api, ApiError, V4_UUID } from '../fixtures/api';
 import { createUserWithApiKey } from '../fixtures/db';
 import {
   judgeIsolation,
+  type Frame,
   openAuthenticatedSocket,
   type RecordingSocket,
 } from '../fixtures/ws-isolation';
@@ -262,16 +263,21 @@ test.describe('Status socket tenant isolation', () => {
     // below must run on whatever frames arrived, so a broken expiry path cannot
     // take the isolation check with it. Once one event is missing, later waits
     // would only repeat the same timeout, so the remaining invoices are still
-    // created (a leak of them is still detectable) but not waited on.
+    // created but not waited on. If the socket was closed meanwhile (an idle
+    // proxy timeout, say) it records nothing, so a leak after the closure is
+    // invisible: that run is reported NOT VERIFIED, never as a clean pass.
     let precondition: string | null = null;
     async function expectOwnEvent(socket: RecordingSocket, invoiceId: string, who: string): Promise<void> {
       if (precondition) return;
+      let frame: Frame;
       try {
-        const frame = await socket.waitForInvoice(invoiceId, EXPIRY_WAIT_MS);
-        expect(frame.status, `${who} was told something other than expiry about its own invoice`).toBe('expired');
+        frame = await socket.waitForInvoice(invoiceId, EXPIRY_WAIT_MS);
       } catch (e) {
         precondition = `${who}: ${(e as Error).message}`;
+        return;
       }
+      // Outside the try: a wrong status is a product failure, not a missing precondition.
+      expect(frame.status, `${who} was told something other than expiry about its own invoice`).toBe('expired');
     }
 
     const s2First = await expireOne(s2, b);

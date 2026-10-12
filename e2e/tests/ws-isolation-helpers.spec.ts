@@ -12,6 +12,7 @@ import {
   dataFrames,
   expectNothingForeign,
   expectReceived,
+  FOREIGN_FRAME_MESSAGE,
   firstSeen,
   judgeIsolation,
   type Frame,
@@ -35,18 +36,18 @@ test.describe('isolation checks', () => {
     const before = timeline(['connected'], ['invoice_status', OTHER, 'expired'], ['invoice_status', OWN, 'expired']);
     const after = timeline(['connected'], ['invoice_status', OWN, 'expired'], ['invoice_status', OTHER, 'expired']);
     for (const frames of [before, after]) {
-      expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(/outside its stores.*inv-other/);
+      expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(new RegExp(`${FOREIGN_FRAME_MESSAGE}.*inv-other`));
     }
   });
 
   test('a foreign payment update fails the check as well', () => {
     const frames = timeline(['connected'], ['payment_update', OTHER, 'confirmed']);
-    expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(/outside its stores/);
+    expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(new RegExp(FOREIGN_FRAME_MESSAGE));
   });
 
   test('a data frame naming no invoice is not waved through', () => {
     const frames = timeline(['connected'], ['invoice_status', undefined, 'expired']);
-    expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(/outside its stores/);
+    expect(() => expectNothingForeign('A', frames, [OWN])).toThrow(new RegExp(FOREIGN_FRAME_MESSAGE));
   });
 
   test('a silent socket fails the positive control, so it cannot pass as isolated', () => {
@@ -69,7 +70,7 @@ test.describe('isolation checks', () => {
 
   test('a leak is reported as a failure even when no own event ever arrived', () => {
     const a = { label: 'A', frames: timeline(['connected'], ['invoice_status', OTHER, 'expired']), own: [OWN] };
-    expect(() => judgeIsolation([a])).toThrow(/outside its stores/);
+    expect(() => judgeIsolation([a])).toThrow(new RegExp(FOREIGN_FRAME_MESSAGE));
     expect(() => judgeIsolation([a])).not.toThrow(/NOT VERIFIED/);
   });
 
