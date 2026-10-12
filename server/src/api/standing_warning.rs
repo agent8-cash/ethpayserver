@@ -61,14 +61,39 @@ const MAX_CACHE_ENTRIES: usize = 10_000;
 
 pub static X_ACCOUNT_WARNING: HeaderName = HeaderName::from_static("x-account-warning");
 
+/// The route, carried separately from the prose. Present only when the entitlement
+/// supplied one, so its ABSENCE on a warned response is the machine-readable fact
+/// that the merchant was told their period is ending and given nowhere to go.
+pub static X_ACCOUNT_CHECKOUT_URL: HeaderName = HeaderName::from_static("x-account-checkout-url");
+
 /// Written by the auth extractor with the authenticated account.
 pub type AccountSlot = Arc<Mutex<Option<Uuid>>>;
 
-/// The text to put on a response, or `None` outside the warning window.
+/// A warning, and SEPARATELY the route that would let the merchant act on it.
+///
+/// THE ROUTE IS A FIELD RATHER THAN PROSE INSIDE `text`. The difference between
+/// "renew at https://..." and "renew your subscription" is the difference between a
+/// warning a merchant can act on and one they cannot - and anything that later treats
+/// a delivered warning as evidence (a suspension, a grace-period decision) has to be
+/// able to tell those apart WITHOUT STRING-MATCHING ENGLISH. Prose is edited freely by
+/// anyone and nothing links the edit to the reader.
+///
+/// This is the same ruling the renewal findings already carry: the distinction lives in
+/// a structured field, never in the message. Second site, same rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warning {
+    /// For a human. May say "renew your subscription" when there is no route.
+    pub text: String,
+    /// `None` means this warning gave the merchant no way to comply. A caller deciding
+    /// whether they were fairly warned must branch on this and not on `text`.
+    pub checkout_url: Option<String>,
+}
+
+/// The warning to put on a response, or `None` outside the warning window.
 ///
 /// Pure, so the window's edges are testable without a clock or a database.
 #[must_use]
-pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<String> {
+pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<Warning> {
     let standing = &held.standing;
     if !standing.in_good_standing {
         return None;
@@ -84,16 +109,19 @@ pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<String> {
         || "renew your subscription".to_string(),
         |u| format!("renew at {u}"),
     );
-    Some(if ends > now {
-        format!("subscription period ends {date}; {remedy}")
-    } else {
-        format!("subscription period ended {date}; {remedy}")
+    Some(Warning {
+        text: if ends > now {
+            format!("subscription period ends {date}; {remedy}")
+        } else {
+            format!("subscription period ended {date}; {remedy}")
+        },
+        checkout_url: standing.checkout_url.clone(),
     })
 }
 
 pub struct StandingWarningState {
     store: Arc<dyn AccountStandingStore>,
-    cache: Mutex<HashMap<Uuid, (Instant, Option<String>)>>,
+    cache: Mutex<HashMap<Uuid, (Instant, Option<Warning>)>>,
 }
 
 impl StandingWarningState {
@@ -104,17 +132,17 @@ impl StandingWarningState {
         }
     }
 
-    async fn warning(&self, account: Uuid) -> Option<String> {
+    async fn warning(&self, account: Uuid) -> Option<Warning> {
         if let Ok(cache) = self.cache.lock()
-            && let Some((at, text)) = cache.get(&account)
+            && let Some((at, warning)) = cache.get(&account)
             && at.elapsed() < CACHE_TTL
         {
-            return text.clone();
+            return warning.clone();
         }
         // A failed read is logged and cached as "no warning" for the TTL, so
         // an unhealthy database costs one read per account per TTL rather
         // than one per request.
-        let text = match self.store.get_account_standing(account).await {
+        let warning = match self.store.get_account_standing(account).await {
             Ok(held) => held.and_then(|h| warning_for(&h, Utc::now())),
             Err(e) => {
                 tracing::warn!(%account, error = %e, "could not read standing for the account warning header");
@@ -125,9 +153,9 @@ impl StandingWarningState {
             if cache.len() >= MAX_CACHE_ENTRIES {
                 cache.clear();
             }
-            cache.insert(account, (Instant::now(), text.clone()));
+            cache.insert(account, (Instant::now(), warning.clone()));
         }
-        text
+        warning
     }
 }
 
@@ -143,14 +171,29 @@ pub async fn middleware(
     let mut response = next.run(req).await;
     let account = slot.lock().ok().and_then(|g| *g);
     if let Some(account) = account
-        && let Some(text) = state.warning(account).await
+        && let Some(warning) = state.warning(account).await
     {
-        match HeaderValue::from_str(&text) {
+        match HeaderValue::from_str(&warning.text) {
             Ok(value) => {
                 response.headers_mut().insert(&X_ACCOUNT_WARNING, value);
             }
             Err(e) => {
                 tracing::warn!(%account, error = %e, "account warning text is not a valid header value; header omitted");
+            }
+        }
+        // Emitted only when a route exists. The store's column admits only https
+        // URLs, so a rejection here means the value was corrupt rather than merely
+        // absent, and saying so beats a silently routeless warning.
+        if let Some(url) = warning.checkout_url.as_deref() {
+            match HeaderValue::from_str(url) {
+                Ok(value) => {
+                    response
+                        .headers_mut()
+                        .insert(&X_ACCOUNT_CHECKOUT_URL, value);
+                }
+                Err(e) => {
+                    tracing::warn!(%account, error = %e, "account checkout url is not a valid header value; header omitted");
+                }
             }
         }
     }
@@ -194,9 +237,54 @@ mod tests {
             Some(now + Duration::days(3)),
             Some("https://pay.example/c"),
         );
-        let text = warning_for(&h, now).unwrap();
-        assert!(text.contains(&(now + Duration::days(3)).format("%Y-%m-%d").to_string()));
-        assert!(text.contains("renew at https://pay.example/c"));
+        let w = warning_for(&h, now).unwrap();
+        assert!(
+            w.text
+                .contains(&(now + Duration::days(3)).format("%Y-%m-%d").to_string())
+        );
+        assert!(w.text.contains("renew at https://pay.example/c"));
+        // The route is a FIELD, not only prose. A caller must be able to see that a
+        // route was given without matching English.
+        assert_eq!(w.checkout_url.as_deref(), Some("https://pay.example/c"));
+    }
+
+    /// BOTH DIRECTIONS OF THE ONE THING THAT MATTERS: a warning with a route and a
+    /// warning without one must be distinguishable by the FIELD. A test over only the
+    /// routed case cannot tell this implementation from one that always reports a
+    /// route, and that is the direction which would make a routeless warning look
+    /// actionable to anything reading it later.
+    #[test]
+    fn a_routeless_warning_says_so_in_the_field_not_only_in_the_prose() {
+        let now = Utc::now();
+        let routed = warning_for(
+            &held(
+                true,
+                Some(now + Duration::days(2)),
+                Some("https://pay.example/c"),
+            ),
+            now,
+        )
+        .unwrap();
+        let routeless = warning_for(&held(true, Some(now + Duration::days(2)), None), now).unwrap();
+
+        assert_eq!(
+            routed.checkout_url.as_deref(),
+            Some("https://pay.example/c")
+        );
+        assert_eq!(
+            routeless.checkout_url, None,
+            "a warning with no checkout url must report None, so a suspension path can \
+             refuse to treat it as evidence the merchant was given a way to comply"
+        );
+
+        // Both still warn: silence is worse than a vague warning, because a merchant
+        // told nothing discovers the lapse at the moment of failure.
+        assert!(routeless.text.contains("renew your subscription"));
+        assert!(routed.text.contains("renew at"));
+
+        // And the two are not distinguishable ONLY by prose: the fields differ even
+        // though both texts are non-empty and both warn about the same date.
+        assert_ne!(routed.checkout_url, routeless.checkout_url);
     }
 
     #[test]
@@ -226,7 +314,9 @@ mod tests {
     #[test]
     fn a_lapsed_period_still_in_good_standing_says_ended() {
         let now = Utc::now();
-        let text = warning_for(&held(true, Some(now - Duration::days(1)), None), now).unwrap();
+        let text = warning_for(&held(true, Some(now - Duration::days(1)), None), now)
+            .unwrap()
+            .text;
         assert!(text.contains("ended"));
         assert!(text.contains("renew your subscription"));
     }

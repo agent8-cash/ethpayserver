@@ -22,7 +22,7 @@ use uuid::Uuid;
 use auth::{AuthConfig, AuthService};
 use data_service::{AccountStanding, AccountStandingStore, PgDataService};
 use rates::NoOpRateProvider;
-use server::api::standing_warning::X_ACCOUNT_WARNING;
+use server::api::standing_warning::{X_ACCOUNT_CHECKOUT_URL, X_ACCOUNT_WARNING};
 use server::services::RedisEVMMonitor;
 use server::state::PgAppState;
 
@@ -95,13 +95,20 @@ async fn seed(pg: &PgDataService) -> (Uuid, String, Uuid) {
 }
 
 async fn hold(pg: &PgDataService, account: Uuid, days_left: i64) {
+    hold_with_route(pg, account, days_left, Some("https://pay.example/c")).await;
+}
+
+/// `route: None` is the case the entitlement API permits and the warning must still
+/// report: `checkout_url` is `Option` where billing sets it, so a merchant warned with
+/// nowhere to go is reachable in production rather than hypothetical.
+async fn hold_with_route(pg: &PgDataService, account: Uuid, days_left: i64, route: Option<&str>) {
     pg.apply_account_standing(&AccountStanding {
         account_id: account,
         version: 1,
         in_good_standing: true,
         paid_through: Some(Utc::now() + Duration::days(days_left)),
         plan_name: "p".into(),
-        checkout_url: Some("https://pay.example/c".into()),
+        checkout_url: route.map(str::to_string),
     })
     .await
     .expect("hold standing");
@@ -140,7 +147,50 @@ async fn key_and_session_callers_inside_the_window_get_the_header() {
             .to_str()
             .unwrap();
         assert!(text.contains("renew at https://pay.example/c"), "{text}");
+        // THE ROUTE REACHES THE WIRE AS ITS OWN HEADER. The struct field proves
+        // nothing about what a caller receives; this is the hop between them.
+        assert_eq!(
+            response
+                .headers()
+                .get(&X_ACCOUNT_CHECKOUT_URL)
+                .expect("checkout url header present when a route exists")
+                .to_str()
+                .unwrap(),
+            "https://pay.example/c"
+        );
     }
+}
+
+/// THE OTHER DIRECTION, AND THE ONE THAT MAKES THE FIELD WORTH HAVING: warned, with no
+/// route, and a caller can tell WITHOUT READING THE ENGLISH. The warning header is
+/// present (silence would be worse - a merchant told nothing finds out at the moment of
+/// failure) and the checkout header is absent, so anything that later treats a
+/// delivered warning as evidence the merchant could comply can refuse to.
+#[tokio::test]
+#[ignore]
+async fn a_warned_caller_with_no_route_gets_the_warning_and_no_checkout_header() {
+    let pg = Arc::new(pg_service().await);
+    let (user, key, _) = seed(&pg).await;
+    hold_with_route(&pg, user, 2, None).await;
+    let response = get(&app(&pg), &key).await;
+
+    let text = response
+        .headers()
+        .get(&X_ACCOUNT_WARNING)
+        .expect("a routeless account is still warned")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("renew your subscription"), "{text}");
+    assert!(
+        !text.contains("renew at"),
+        "no route was supplied, so the prose must not imply one: {text}"
+    );
+    assert!(
+        response.headers().get(&X_ACCOUNT_CHECKOUT_URL).is_none(),
+        "the absence of this header is the machine-readable fact that the warning gave \
+         the merchant nowhere to go"
+    );
 }
 
 #[tokio::test]
