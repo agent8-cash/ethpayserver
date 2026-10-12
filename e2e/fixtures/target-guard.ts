@@ -8,13 +8,16 @@
  * (`E2E_REMOTE=true`) is exempt: it targets a deployed environment on purpose.
  *
  * Rules, for each of `E2E_API_URL` and `E2E_BASE_URL`:
- * - the live service's port is refused on any host, with no override;
+ * - the live service's port is refused on any host, with no override. The
+ *   number comes from `E2E_RESERVED_PORTS` (comma separated), not from this
+ *   file; the local port ranges below stop short of it regardless, so with the
+ *   variable unset it is still refused unless the opt-in is given;
  * - a loopback host on the harness's own port range is allowed;
  * - anything else needs `E2E_ALLOW_NON_LOCAL_TARGET=true`.
  */
 
-/** The port the live service listens on. Never a valid local test target. */
-export const LIVE_SERVICE_PORT = 3100;
+/** Ports that are never a valid local test target, whatever the opt-in. */
+export const RESERVED_PORTS_VARIABLE = 'E2E_RESERVED_PORTS';
 
 /** Ports a local test server or frontend dev server may use. */
 const LOCAL_PORT_RANGES: Record<string, [number, number]> = {
@@ -22,7 +25,8 @@ const LOCAL_PORT_RANGES: Record<string, [number, number]> = {
   E2E_BASE_URL: [8000, 8099],
 };
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+// `URL.hostname` drops the brackets from an IPv6 literal; keep both spellings.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 export const OPT_IN_VARIABLE = 'E2E_ALLOW_NON_LOCAL_TARGET';
 
@@ -32,6 +36,11 @@ type Env = Record<string, string | undefined>;
 export function assertSafeTarget(env: Env): void {
   // Strict compare, as everywhere else: `E2E_REMOTE=false` must not mean remote.
   if (env.E2E_REMOTE === 'true') return;
+
+  const reserved = (env[RESERVED_PORTS_VARIABLE] ?? '')
+    .split(',')
+    .map((p) => Number(p.trim()))
+    .filter((p) => Number.isInteger(p) && p > 0);
 
   for (const [name, [low, high]] of Object.entries(LOCAL_PORT_RANGES)) {
     const raw = env[name];
@@ -43,7 +52,7 @@ export function assertSafeTarget(env: Env): void {
       throw new Error(`${name} is not a valid URL: refusing to run in local mode`);
     }
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    if (port === LIVE_SERVICE_PORT) {
+    if (reserved.includes(port)) {
       throw new Error(
         `${name} names the live service's port (${port}): refusing to run in local mode. ` +
           'There is no override for this.',

@@ -4,19 +4,22 @@
  */
 import { test, expect } from '@playwright/test';
 
-import { assertSafeTarget, LIVE_SERVICE_PORT, OPT_IN_VARIABLE } from '../fixtures/target-guard';
+import { assertSafeTarget, OPT_IN_VARIABLE, RESERVED_PORTS_VARIABLE } from '../fixtures/target-guard';
 
-const live = `http://localhost:${LIVE_SERVICE_PORT}`;
+// An arbitrary port inside the local range, reserved only for these tests.
+const RESERVED = 3077;
+const reserved = { [RESERVED_PORTS_VARIABLE]: `3001, ${RESERVED}` };
+const live = `http://localhost:${RESERVED}`;
 
 test('the live service port is refused in local mode, even on loopback', () => {
-  expect(() => assertSafeTarget({ E2E_API_URL: live })).toThrow(/live service's port/);
-  expect(() => assertSafeTarget({ E2E_API_URL: `http://127.0.0.1:${LIVE_SERVICE_PORT}` })).toThrow(
+  expect(() => assertSafeTarget({ ...reserved, E2E_API_URL: live })).toThrow(/live service's port/);
+  expect(() => assertSafeTarget({ ...reserved, E2E_API_URL: `http://127.0.0.1:${RESERVED}` })).toThrow(
     /live service's port/,
   );
 });
 
 test('the opt-in does not unlock the live service port', () => {
-  expect(() => assertSafeTarget({ E2E_API_URL: live, [OPT_IN_VARIABLE]: 'true' })).toThrow(
+  expect(() => assertSafeTarget({ ...reserved, E2E_API_URL: live, [OPT_IN_VARIABLE]: 'true' })).toThrow(
     /live service's port/,
   );
 });
@@ -33,7 +36,7 @@ test('the frontend URL is guarded too', () => {
 });
 
 test('E2E_REMOTE=false is still local mode', () => {
-  expect(() => assertSafeTarget({ E2E_REMOTE: 'false', E2E_API_URL: live })).toThrow();
+  expect(() => assertSafeTarget({ ...reserved, E2E_REMOTE: 'false', E2E_API_URL: live })).toThrow();
 });
 
 test('the harness defaults and CI targets pass', () => {
@@ -47,4 +50,8 @@ test('remote mode is untouched', () => {
   expect(() =>
     assertSafeTarget({ E2E_REMOTE: 'true', E2E_API_URL: 'https://testnet.example.com' }),
   ).not.toThrow();
+});
+
+test('an IPv6 loopback target inside the range passes without the opt-in', () => {
+  expect(() => assertSafeTarget({ E2E_API_URL: 'http://[::1]:3000' })).not.toThrow();
 });
