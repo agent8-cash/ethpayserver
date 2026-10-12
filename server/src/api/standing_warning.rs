@@ -64,6 +64,21 @@ pub static X_ACCOUNT_WARNING: HeaderName = HeaderName::from_static("x-account-wa
 /// The route, carried separately from the prose. Present only when the entitlement
 /// supplied one, so its ABSENCE on a warned response is the machine-readable fact
 /// that the merchant was told their period is ending and given nowhere to go.
+///
+/// THE ABSENCE IS LOAD-BEARING. DO NOT REPLACE IT WITH AN EXPLICIT `none` VALUE.
+///
+/// An absent header cannot be distinguished from one stripped by a proxy or never
+/// emitted by an older build. That ambiguity would normally be a defect; here it is
+/// the point. Both readings - "no route was supplied" and "cannot tell" - resolve to
+/// the same safe conclusion: DO NOT treat this as evidence the merchant was given a
+/// way to comply. It fails toward not suspending, which is the direction this has to
+/// fail in. Our faults must not cost the merchant.
+///
+/// Sending `x-account-checkout-url: none` would look tidier and would break that.
+/// Present-with-`none` and absent would then mean different things, a stripped header
+/// would become indistinguishable from an old build, and a consumer would face three
+/// states with no safe default. One signal with one safe reading beats three with
+/// none.
 pub static X_ACCOUNT_CHECKOUT_URL: HeaderName = HeaderName::from_static("x-account-checkout-url");
 
 /// Written by the auth extractor with the authenticated account.
