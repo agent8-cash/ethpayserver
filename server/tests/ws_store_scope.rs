@@ -226,8 +226,13 @@ async fn connect(h: &Harness, person: &Person) -> Socket {
 }
 
 async fn next_update(ws: &mut Socket) -> Option<serde_json::Value> {
-    let msg = tokio::time::timeout(WAIT, ws.next()).await.ok()??.ok()?;
-    serde_json::from_str(msg.to_text().ok()?).ok()
+    loop {
+        let msg = tokio::time::timeout(WAIT, ws.next()).await.ok()??.ok()?;
+        if matches!(msg, Message::Ping(_) | Message::Pong(_)) {
+            continue;
+        }
+        return serde_json::from_str(msg.to_text().ok()?).ok();
+    }
 }
 
 /// Asserts that the server closes the socket (Close frame, error or end of
