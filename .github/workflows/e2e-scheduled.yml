@@ -188,11 +188,14 @@ jobs:
         env:
           BROWSER: ${{ needs.browser.result }}
           SYNTHETIC: ${{ needs.synthetic-payment.result }}
+          TRIGGER: ${{ github.event_name }}
         with:
           script: |
             const title = 'Scheduled E2E: testnet is failing';
             const body = [
-              'The daily E2E run against https://testnet.random.cash failed.',
+              process.env.TRIGGER === 'schedule'
+                ? 'The daily E2E run against https://testnet.random.cash failed.'
+                : `A manually dispatched (${process.env.TRIGGER}) E2E run against https://testnet.random.cash failed. This is not the daily scheduled run.`,
               '',
               `- Playwright suite: **${process.env.BROWSER}**`,
               `- Synthetic payment: **${process.env.SYNTHETIC}**`,
