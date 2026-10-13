@@ -64,6 +64,25 @@ use crate::state::PgAppState;
 /// that would trouble the process.
 const MAX_WASM_BYTES: usize = 32 * 1024 * 1024;
 
+/// The newest page-descriptor schema the client this server ships can draw.
+///
+/// A manifest asking for a newer one is refused at install: the alternative
+/// is a plugin that installs cleanly and then shows blank or placeholder
+/// panels, which is the worst way to learn the client is behind. Raise this
+/// together with the client pin, in the same change.
+const SUPPORTED_UI_SCHEMA: u32 = 1;
+
+/// Refuse a manifest whose page schema this server's client cannot draw.
+fn check_ui_schema(requested: Option<u32>) -> Result<(), String> {
+    match requested {
+        Some(v) if v > SUPPORTED_UI_SCHEMA => Err(format!(
+            "plugin needs page schema {v}, but this server's client draws up to \
+             {SUPPORTED_UI_SCHEMA}; update the server's client before installing it"
+        )),
+        _ => Ok(()),
+    }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -498,6 +517,8 @@ where
     PluginRegistry::new(host_version())
         .register(manifest.clone())
         .map_err(|e| bad_request(e.to_string()))?;
+
+    check_ui_schema(manifest.ui_schema).map_err(bad_request)?;
 
     let id = manifest.id.clone();
     let version = manifest.version.to_string();
@@ -984,6 +1005,14 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn a_newer_page_schema_than_the_client_draws_is_refused() {
+        assert!(check_ui_schema(None).is_ok());
+        assert!(check_ui_schema(Some(SUPPORTED_UI_SCHEMA)).is_ok());
+        let err = check_ui_schema(Some(SUPPORTED_UI_SCHEMA + 1)).unwrap_err();
+        assert!(err.contains("page schema"), "{err}");
+    }
 
     /// Every plugin lifecycle route must be mounted on the router the server
     /// actually serves - not on one a test built to look like it.
