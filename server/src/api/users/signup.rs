@@ -71,10 +71,20 @@ fn relay(
             );
             Err((StatusCode::NOT_FOUND, "no such plan"))
         }
-        409 => Err((
-            StatusCode::CONFLICT,
-            "this account already has a subscription",
-        )),
+        // The service refuses a second create. Its refusal carries the link
+        // of the account's own unpaid first invoice when the reply to the
+        // original signup was lost, so the merchant's retry can still pay.
+        409 => match relay_created(body) {
+            Some(SignupResponse {
+                checkout_url: Some(url),
+            }) => Ok(SignupResponse {
+                checkout_url: Some(url),
+            }),
+            _ => Err((
+                StatusCode::CONFLICT,
+                "this account already has a subscription",
+            )),
+        },
         _ => {
             tracing::error!(
                 status,
@@ -158,11 +168,25 @@ mod tests {
     }
 
     #[test]
-    fn refusals_map_and_anything_else_is_a_bad_gateway() {
+    fn a_refusal_that_carries_the_pending_link_hands_it_over() {
+        let ok = relay(
+            409,
+            &json!({"checkout_url": "https://pay.example/checkout/1"}),
+        )
+        .unwrap();
         assert_eq!(
-            relay(409, &json!(null)).unwrap_err().0,
-            StatusCode::CONFLICT
+            ok.checkout_url.as_deref(),
+            Some("https://pay.example/checkout/1")
         );
+        let bad = relay(409, &json!({"checkout_url": "http://pay.example/1"}));
+        assert_eq!(bad.unwrap_err().0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn refusals_map_and_anything_else_is_a_bad_gateway() {
+        for body in [json!(null), json!({"checkout_url": null})] {
+            assert_eq!(relay(409, &body).unwrap_err().0, StatusCode::CONFLICT);
+        }
         assert_eq!(
             relay(404, &json!(null)).unwrap_err().0,
             StatusCode::NOT_FOUND

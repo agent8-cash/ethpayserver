@@ -195,3 +195,17 @@ async fn the_services_refusals_reach_the_merchant_coarsely() {
         assert_eq!(body, Value::Null, "the service's own words are not relayed");
     }
 }
+
+#[tokio::test]
+#[ignore]
+async fn a_retry_after_a_lost_reply_gets_the_pending_link_from_the_refusal() {
+    let pg = Arc::new(pg_service().await);
+    let (_, key) = seed_user(&pg).await;
+    let (url, _) = fake_service(409, json!({"checkout_url": "https://pay.example/c/1"})).await;
+
+    let (status, body) =
+        post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["checkout_url"], "https://pay.example/c/1");
+}
