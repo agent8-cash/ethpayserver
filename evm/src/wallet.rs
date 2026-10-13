@@ -422,9 +422,9 @@ pub fn xpub_depth_problem(xpub_str: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "invalid_xpub_depth: this key is at depth {depth}; register the account-level key \
-         at depth {ACCOUNT_XPUB_DEPTH} (m/44'/60'/0' for Ethereum, or another hardened \
-         account such as m/44'/60'/7'), not a deeper or shallower one"
+        "invalid_xpub_depth: this key is at depth {depth}; register the account-level key at \
+         depth {ACCOUNT_XPUB_DEPTH} (the m/44'/<coin>'/<account>' level your wallet exports, \
+         e.g. m/44'/60'/0' for Ethereum), not a deeper or shallower one"
     ))
 }
 
