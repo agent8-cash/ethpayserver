@@ -1014,6 +1014,67 @@ mod tests {
         assert!(err.contains("page schema"), "{err}");
     }
 
+    /// Through the handler, not the helper: deleting the `check_ui_schema`
+    /// call from `install_plugin` must turn this red.
+    ///
+    /// The state's pool points at a host that does not exist and connects
+    /// lazily, so any attempt to reach the database - the slug check, the
+    /// install record, storage provisioning - would answer 500, not 400. A
+    /// 400 carrying the schema message therefore also shows the refusal
+    /// happens before anything is written, so nothing is left installed. The
+    /// registry `register` runs against is a throwaway built in the handler,
+    /// so it holds no state either.
+    #[tokio::test]
+    async fn install_refuses_a_page_schema_the_client_cannot_draw() {
+        use axum::response::IntoResponse;
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://plugin-install-test-unused/db")
+            .expect("connect_lazy only validates the URL, it does not connect");
+        let data_service = std::sync::Arc::new(data_service::PgDataService::new(pool));
+        let auth_service = std::sync::Arc::new(auth::AuthService::with_config(
+            std::sync::Arc::clone(&data_service),
+            auth::AuthConfig::default(),
+        ));
+        let state = crate::state::AppState::new(
+            data_service,
+            auth_service,
+            None,
+            std::sync::Arc::new(NoRatesForRouting),
+            std::sync::Arc::new(crate::services::email::NoopEmailSender),
+        );
+        let admin = AdminAuth(auth::UserInfo {
+            id: auth::UserId(uuid::Uuid::new_v4()),
+            email: None,
+            primary_wallet_address: None,
+            created_at: chrono::Utc::now(),
+            last_login_at: None,
+            role: auth::Role::ServerAdmin,
+        });
+        let manifest_toml = format!(
+            "id = \"cash.random.uitest\"\nversion = \"0.1.0\"\n\
+             dependencies = [\"ethpayserver:^0.1\"]\nkind = \"action\"\n\
+             ui_schema = {}\n",
+            SUPPORTED_UI_SCHEMA + 1
+        );
+        let req = InstallPluginRequest {
+            manifest_toml,
+            wasm_base64: base64::engine::general_purpose::STANDARD.encode(b"\0asm"),
+            migrations: Default::default(),
+        };
+
+        let resp = match install_plugin(admin, State(state), Json(req)).await {
+            Ok(_) => panic!("a manifest needing a newer page schema must not install"),
+            Err(e) => e.into_response(),
+        };
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("page schema"), "{body}");
+    }
+
     /// Every plugin lifecycle route must be mounted on the router the server
     /// actually serves - not on one a test built to look like it.
     ///
