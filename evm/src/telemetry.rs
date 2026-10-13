@@ -85,23 +85,20 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // error report loses hashes rather than risk a key.
             (build(r"\b[0-9a-fA-F]{64,}\b"), "[redacted-hex]"),
             // Recovery phrases: 12 or more runs of letters, of any case, script
-            // or wordlist, with anything that is not a letter between them.
-            // Membership is deliberately not checked: a wordlist would let
-            // other languages, typos and non-BIP-39 seeds through, and a
-            // destroyed line costs less than a leaked seed. The separator is
-            // "not a letter" rather than a list of separators, because a list
-            // is a blocklist of the ways to hide a phrase: whitespace of every
-            // kind, zero-width and invisible characters, combining marks,
-            // escapes, punctuation and digits all separate words. Combining
-            // marks are not letters, so a mark between two words cannot fuse
-            // them, and an accented letter that is decomposed counts as two
-            // runs, which only widens the match. Long digit-split identifiers
-            // are over-redacted on purpose; that side is the safe one. There is no
-            // carve-out for `@` or `://`: each would be one more way to glue a
-            // phrase together, and a URL or address in a long message costs
-            // legibility, not a key.
+            // or wordlist, divided by separators. Membership is deliberately not
+            // checked: a wordlist would let other languages, typos and
+            // non-BIP-39 seeds through, and a destroyed line costs less than a
+            // leaked seed. A separator is whitespace of every kind, any control,
+            // format (zero-width, bidi, invisible) or combining character, a JSON
+            // escape of a line break or of a code point, or list and quote
+            // punctuation. Digits and the punctuation of paths, URLs, addresses
+            // and `key:value` pairs (`: / . @ - _ = +`) are not separators: they
+            // are how structured diagnostics are written, and the rule is for the
+            // ways a person pastes a phrase, not for every long line.
             (
-                build(r"(?:\p{L}+\P{L}+){11,}\p{L}+"),
+                build(
+                    r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[\s\p{Cc}\p{Cf}\p{M},;|()\[\]{}"'\\])+){11,}\p{L}+"#,
+                ),
                 PHRASE_PLACEHOLDER,
             ),
             // Email addresses (customer PII).
@@ -126,13 +123,16 @@ fn rules() -> &'static [(Regex, &'static str)] {
                 "$1$2[redacted]",
             ),
             // `key: value` / `key=value` for sensitive keys. A JSON line escapes
-            // a quoted value (`token: \"abc\"`), so both the opening quote and
-            // the value stop at a backslash. A bare word with only whitespace
-            // after it is not a pair for these: `token USDC received` is
-            // ordinary vocabulary here, so a separator is required.
+            // a quoted value (`token: \"abc\"`), so the opening quote is
+            // optionally escaped and the value stops at a backslash that opens an
+            // escape. A `}` or a backslash followed by more value belongs to it
+            // (`abc}def`), so the tail of a secret is not left behind; a `}` that
+            // ends the value does not. A bare word with only whitespace after it
+            // is not a pair for these: `token USDC received` is ordinary
+            // vocabulary here, so a separator is required.
             (
                 build(
-                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|bearer|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)[^\s,;"'}\\]+"#,
+                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|bearer|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)(?:[^\s,;"'}\\]|\\[^nrt"'\\]|\}[^\s,;"'}\\])+"#,
                 ),
                 "$1$2$3[redacted]",
             ),

@@ -124,21 +124,18 @@ fn bare_hex_of_64_or_more_is_redacted_at_every_length() {
     }
 }
 
-/// Separators other than whitespace: every non-letter divides words, so none
-/// of these ways of gluing twelve words together hides them. The plain-space
-/// control keeps a pass from meaning the rule went inert.
+/// Separators other than whitespace: list and quote punctuation, escapes and
+/// invisible characters do not hide twelve words. The plain-space control keeps
+/// a pass from meaning the rule went inert.
 #[test]
 fn phrase_is_redacted_whatever_glues_its_words() {
     let words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let separators = [
         ("space (control)", " "),
-        ("colon", ":"),
-        ("underscore", "_"),
-        ("plus", "+"),
-        ("equals", "="),
-        ("at sign", "@"),
-        ("url scheme", "://"),
-        ("numbered list", ": 1. "),
+        ("comma", ","),
+        ("semicolon", ";"),
+        ("pipe", "|"),
+        ("quoted list", "\", \""),
         ("bidi control U+202E", "\u{202E}"),
         ("bidi isolate U+2066", "\u{2066}"),
         ("mongolian vowel separator U+180E", "\u{180E}"),
@@ -156,13 +153,20 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     }
 }
 
-/// Long identifiers that merely contain digits between letter runs are
-/// redacted too: the rule cannot tell them from a phrase, and the fail-closed
-/// side is the one this rule is on. Pinned so the boundary is a decision.
+/// Structured diagnostics are not a phrase: digits and the punctuation of
+/// paths, URLs, addresses and `key:value` pairs do not divide words, so a long
+/// JSON body or URL keeps its ids and amounts. Twelve letter runs in a row with
+/// only those between them are not the shape of a pasted phrase.
 #[test]
-fn long_digit_split_identifier_is_redacted_deliberately() {
-    let id = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9";
-    assert!(redact_secrets(id).starts_with("[redacted: 12+ word run]"));
+fn structured_text_is_not_a_word_run() {
+    for line in [
+        r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia","tx":"t","note":"n","from":"a","to":"b","kind":"k","extra":"e"}"#,
+        "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/abc123) failed",
+        "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9",
+        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank:yellow",
+    ] {
+        assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
+    }
 }
 
 #[test]
@@ -235,9 +239,8 @@ fn redacts_api_key_in_rpc_url_path() {
 #[test]
 fn redacts_rpc_key_inside_a_provider_error_string() {
     // The shape alloy produces when a connection fails.
-    // Kept short: every non-letter divides words, so a URL plus a long
-    // sentence is a twelve-word run and is redacted whole.
-    let msg = "fetch (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
+    let msg = "error sending request for url \
+               (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
     let out = redact_secrets(msg);
     assert!(
         !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),
@@ -247,50 +250,6 @@ fn redacts_rpc_key_inside_a_provider_error_string() {
         out.contains("eth-sepolia.g.alchemy.com"),
         "host should survive for diagnosis: {out}"
     );
-}
-
-/// The full alloy connection-failure message is a twelve-run line under the
-/// phrase rule (every non-letter divides words), so it is redacted whole: the
-/// key is gone and so is the host. That is the cost of a separator that cannot
-/// be hidden behind, pinned here so a change to it is a decision. Trimmed to the
-/// URL alone the host survives, which `redacts_rpc_key_inside_a_provider_error_string`
-/// covers.
-#[test]
-fn full_provider_error_line_is_redacted_whole() {
-    let msg = "error sending request for url \
-               (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
-    let out = redact_secrets(msg);
-    assert!(out.starts_with("[redacted: 12+ word run]"), "{out}");
-    assert!(!out.contains("EPqFizwy"), "key leaked: {out}");
-    assert!(
-        !out.contains("alchemy"),
-        "expected whole-line redaction: {out}"
-    );
-}
-
-/// Typical error strings the services emit, and what the phrase rule does to
-/// each. Anything under twelve letter runs survives intact; the long ones are
-/// blanked, deliberately, because a line indistinguishable from a phrase is
-/// treated as one.
-#[test]
-fn ordinary_error_strings_by_length() {
-    let kept = [
-        "connection refused (os error 111)",
-        "rpc request failed: timeout after 30s on https://eth.llamarpc.com",
-        "database error: duplicate key value violates unique constraint invoices_pkey",
-        "webhook delivery to https://example.com/hook returned 502",
-    ];
-    for line in kept {
-        assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
-    }
-    let blanked = [
-        "error sending request for url https://eth-mainnet.g.alchemy.com/v2/ failed to connect to host",
-        "failed to fetch price from https://api.coingecko.com/api/v3/simple/price because of timeout",
-    ];
-    for line in blanked {
-        let out = redact_secrets(line);
-        assert!(out.starts_with("[redacted: 12+ word run]"), "{out}");
-    }
 }
 
 #[test]
@@ -861,7 +820,7 @@ fn phrase_split_by_json_escapes_is_redacted_even_with_a_typo() {
     let clean = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let typo = "legal winner thank year wave sausagee worth useful legal winner thank yellow";
     for m in [clean, typo] {
-        for sep in ["\\n", "\\t", "\\r\\n", "\\\\n", ", ", ". 1 "] {
+        for sep in ["\\n", "\\t", "\\r\\n", "\\\\n", ", "] {
             for lead in ["", "\\n", "\\n\\n"] {
                 let line = format!(r#"{{"message":"{lead}{}"}}"#, m.replace(' ', sep));
                 let out = redact_secrets(&line);
@@ -902,5 +861,18 @@ fn phrase_is_redacted_whatever_separates_its_words() {
             out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
             "{name}: {out}"
         );
+    }
+}
+
+/// A secret's tail must not be left behind by punctuation inside the value.
+#[test]
+fn key_value_rule_takes_the_whole_value() {
+    for (input, tail) in [
+        ("password=ab\\cd", "cd"),
+        ("token=abc}def", "def"),
+        ("token=abc}def}", "def"),
+    ] {
+        let out = redact_secrets(input);
+        assert!(!out.contains(tail), "{input} -> {out}");
     }
 }
