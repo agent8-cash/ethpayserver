@@ -163,7 +163,7 @@ fn structured_text_is_not_a_word_run() {
         r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia","tx":"t","note":"n","from":"a","to":"b","kind":"k","extra":"e"}"#,
         "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/abc123) failed",
         "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9",
-        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank:yellow",
+        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
     }
@@ -857,6 +857,53 @@ fn phrase_is_redacted_whatever_separates_its_words() {
     ];
     for (name, sep) in separators {
         let out = redact_secrets(&format!("pasted {}", words.replace(' ', sep)));
+        assert!(
+            out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
+            "{name}: {out}"
+        );
+    }
+}
+
+/// Numbered backups and single-punctuation joins are how a phrase is printed or
+/// pasted; none may keep a word. The plain-space row is the control.
+#[test]
+fn phrase_is_redacted_in_numbered_and_joined_layouts() {
+    let w = [
+        "legal", "winner", "thank", "year", "wave", "sausage", "worth", "useful", "legal",
+        "winner", "thank", "yellow",
+    ];
+    let mut cases = vec![("space (control)", w.join(" "))];
+    for (name, sep) in [
+        ("hyphen", "-"),
+        ("underscore", "_"),
+        ("dot", "."),
+        ("colon", ":"),
+        ("slash", "/"),
+        ("plus", "+"),
+        ("equals", "="),
+    ] {
+        cases.push((name, w.join(sep)));
+    }
+    let numbered = |f: &dyn Fn(usize) -> String| {
+        w.iter()
+            .enumerate()
+            .map(|(i, x)| format!("{}{x}", f(i + 1)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    cases.push(("dot-numbered", numbered(&|i| format!("{i}. "))));
+    cases.push(("paren-numbered", numbered(&|i| format!("{i}) "))));
+    cases.push(("bare-numbered", numbered(&|i| format!("{i} "))));
+    cases.push((
+        "newline list",
+        w.iter()
+            .enumerate()
+            .map(|(i, x)| format!("{}. {x}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    for (name, text) in cases {
+        let out = redact_secrets(&format!("pasted {text}"));
         assert!(
             out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
             "{name}: {out}"

@@ -90,14 +90,27 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // non-BIP-39 seeds through, and a destroyed line costs less than a
             // leaked seed. A separator is whitespace of every kind, any control,
             // format (zero-width, bidi, invisible) or combining character, a JSON
-            // escape of a line break or of a code point, or list and quote
-            // punctuation. Digits and the punctuation of paths, URLs, addresses
-            // and `key:value` pairs (`: / . @ - _ = +`) are not separators: they
-            // are how structured diagnostics are written, and the rule is for the
-            // ways a person pastes a phrase, not for every long line.
+            // escape of a line break or of a code point, list and quote
+            // punctuation, or a list number set off from the words
+            // (`1. legal 2. winner`, `1) legal`), which is how wallets print a
+            // backup. Digits glued to letters are not (`a1b2c3...`).
             (
                 build(
-                    r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[\s\p{Cc}\p{Cf}\p{M},;|()\[\]{}"'\\])+){11,}\p{L}+"#,
+                    &r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|SEP\d{1,3}[.):\-]*|\d{1,3}[.):\-]*SEP|SEP)+){11,}\p{L}+"#
+                        .replace("SEP", r#"[\s\p{Cc}\p{Cf}\p{M},;|()\[\]{}"'\\]"#),
+                ),
+                PHRASE_PLACEHOLDER,
+            ),
+            // The same run joined by one repeated punctuation character and
+            // nothing else (`legal-winner-thank-...`, `legal_winner_...`,
+            // `legal.winner...`). Mixed punctuation and digits stay out, so
+            // paths, URLs, hex and `key:value` JSON read as before; twelve words
+            // joined by the same character is not a path.
+            (
+                build(
+                    &["-", "_", ".", ":", "/", "+", "="]
+                        .map(|c| format!(r"(?:\p{{L}}+{}){{11,}}\p{{L}}+", regex::escape(c)))
+                        .join("|"),
                 ),
                 PHRASE_PLACEHOLDER,
             ),
