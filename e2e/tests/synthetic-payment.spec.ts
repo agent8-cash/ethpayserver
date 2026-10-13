@@ -37,7 +37,7 @@ import { HDKey, mnemonicToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { mnemonicToSeedSync } from '@scure/bip39';
 
-import { api, V4_UUID, wsUrl } from '../fixtures/api';
+import { api, ApiError, V4_UUID, wsUrl } from '../fixtures/api';
 import {
   expectRunSurvivedArchive,
   randomInvoiceAmountWei,
@@ -532,6 +532,20 @@ test.describe('Synthetic payment (live testnet)', () => {
             expiration_seconds: 1_800,
             metadata: { source: 'synthetic-payment', sequence: i + 1 },
           },
+        }).catch((e: unknown) => {
+          // This test settles a real payment every day, so its account's
+          // rolling settled volume only grows. A plugin that limits volume
+          // will eventually refuse it, and that is permanent, not flaky.
+          // Say so, rather than leave a bare 403 to be read as a flake.
+          if (e instanceof ApiError && e.status === 403 && e.body.includes('invoice_creation_blocked')) {
+            throw new Error(
+              'invoice creation refused for the E2E_API_TOKEN account. The daily payment ' +
+                'accumulates settled volume, so this will not clear on a re-run. The key must ' +
+                'be an operator credential (api_keys.is_operator) - see e2e/README.md. ' +
+                e.message,
+            );
+          }
+          throw e;
         });
 
         expect(invoice.id, 'invoice id is not a v4 UUID').toMatch(V4_UUID);
