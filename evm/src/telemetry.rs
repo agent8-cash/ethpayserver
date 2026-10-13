@@ -154,9 +154,31 @@ pub fn redact_secrets(input: &str) -> String {
     // words each, and the exemption would become a way to smuggle a phrase past
     // the rule. Whatever the rules redact takes the stand-in with it.
     // Input already holding the stand-in could forge the alert on the way out.
+    // Only an occurrence with a non-letter (or the string edge) on both sides is
+    // exempt: glued to letters it is not the alert, and swapping it for the
+    // stand-in would fuse the neighbours into one letter run no rule matches.
+    // An unexempt occurrence stays in the text and is redacted as the run of
+    // words it is.
     if input.contains(FAIL_OPEN_ALERT_MESSAGE) && !input.contains(ALERT_STAND_IN) {
-        let masked = input.replace(FAIL_OPEN_ALERT_MESSAGE, ALERT_STAND_IN);
-        return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
+        let mut masked = String::with_capacity(input.len());
+        let mut last = 0;
+        for (start, m) in input.match_indices(FAIL_OPEN_ALERT_MESSAGE) {
+            let end = start + m.len();
+            let before = input[..start].chars().next_back();
+            let after = input[end..].chars().next();
+            if start >= last
+                && !before.is_some_and(char::is_alphabetic)
+                && !after.is_some_and(char::is_alphabetic)
+            {
+                masked.push_str(&input[last..start]);
+                masked.push_str(ALERT_STAND_IN);
+                last = end;
+            }
+        }
+        if last > 0 {
+            masked.push_str(&input[last..]);
+            return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
+        }
     }
     let mut out = std::borrow::Cow::Borrowed(input);
     for (re, replacement) in rules() {

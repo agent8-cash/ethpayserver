@@ -92,6 +92,19 @@ fn phrase_straddling_the_alert_is_still_redacted() {
     assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
 }
 
+/// An alert sentence glued to letters is not the alert; swapping it out would
+/// fuse its neighbours into one unmatched letter run and leak the words.
+#[test]
+fn phrase_glued_to_the_alert_is_still_redacted() {
+    let a = FAIL_OPEN_ALERT_MESSAGE;
+    let input =
+        format!("legal{a}winner{a}thank year wave sausage worth useful legal winner thank yellow");
+    let out = redact_secrets(&input);
+    assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
+    // Control: the same sentence set off by spaces is still kept.
+    assert_eq!(redact_secrets(&format!("x {a} y")), format!("x {a} y"));
+}
+
 /// The exemption is keyed to the stand-in's absence: input that already carries
 /// the stand-in word cannot have it expanded into the alert sentence.
 #[test]
