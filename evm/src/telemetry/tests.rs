@@ -249,6 +249,50 @@ fn redacts_rpc_key_inside_a_provider_error_string() {
     );
 }
 
+/// The full alloy connection-failure message is a twelve-run line under the
+/// phrase rule (every non-letter divides words), so it is redacted whole: the
+/// key is gone and so is the host. That is the cost of a separator that cannot
+/// be hidden behind, pinned here so a change to it is a decision. Trimmed to the
+/// URL alone the host survives, which `redacts_rpc_key_inside_a_provider_error_string`
+/// covers.
+#[test]
+fn full_provider_error_line_is_redacted_whole() {
+    let msg = "error sending request for url \
+               (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
+    let out = redact_secrets(msg);
+    assert!(out.starts_with("[redacted: 12+ word run]"), "{out}");
+    assert!(!out.contains("EPqFizwy"), "key leaked: {out}");
+    assert!(
+        !out.contains("alchemy"),
+        "expected whole-line redaction: {out}"
+    );
+}
+
+/// Typical error strings the services emit, and what the phrase rule does to
+/// each. Anything under twelve letter runs survives intact; the long ones are
+/// blanked, deliberately, because a line indistinguishable from a phrase is
+/// treated as one.
+#[test]
+fn ordinary_error_strings_by_length() {
+    let kept = [
+        "connection refused (os error 111)",
+        "rpc request failed: timeout after 30s on https://eth.llamarpc.com",
+        "database error: duplicate key value violates unique constraint invoices_pkey",
+        "webhook delivery to https://example.com/hook returned 502",
+    ];
+    for line in kept {
+        assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
+    }
+    let blanked = [
+        "error sending request for url https://eth-mainnet.g.alchemy.com/v2/ failed to connect to host",
+        "failed to fetch price from https://api.coingecko.com/api/v3/simple/price because of timeout",
+    ];
+    for line in blanked {
+        let out = redact_secrets(line);
+        assert!(out.starts_with("[redacted: 12+ word run]"), "{out}");
+    }
+}
+
 #[test]
 fn keeps_keyless_rpc_urls_readable() {
     for url in [

@@ -5,10 +5,11 @@
 use super::*;
 use tracing_subscriber::prelude::*;
 
-/// The alert text exactly as `surface_fail_open_allow` emits it. Deliberately a
-/// second literal, not `FAIL_OPEN_ALERT_MESSAGE`: if the emitter's wording is
-/// ever changed without the scrubber's exemption, these tests go red instead of
-/// the alert quietly turning into a placeholder. Do not tidy it into the constant.
+/// The alert text as a second literal, not `FAIL_OPEN_ALERT_MESSAGE`. The emitter
+/// reads the constant, so emitter and exemption cannot drift; what this guards is
+/// the constant itself being reworded: the literal then stops being exempt and
+/// the test goes red, instead of the operator-facing sentence changing unnoticed
+/// (and with it any alert rule or search keyed on the wording).
 const FAIL_OPEN_MESSAGE: &str = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
 
 #[test]
