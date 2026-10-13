@@ -17,7 +17,36 @@
 set -uo pipefail
 
 report=$(mktemp); trap 'rm -f "$report"' EXIT
-if [ -n "${AUDIT_JSON_FILE:-}" ]; then cp "$AUDIT_JSON_FILE" "$report"; else cargo audit --json > "$report"; fi
+# A FIXTURE MAY SUBSTITUTE THE REPORT ONLY WHEN THE CALLER SAYS SO EXPLICITLY.
+#
+# AUDIT_JSON_FILE exists so this script's own test can feed it a crafted report.
+# Read from the environment alone, it is also a silent bypass: anything that sets
+# it - a shell profile, a CI env block, a persistent runner's .env - replaces the
+# real advisory scan with a file, and the audit then reports a pass having scanned
+# nothing. The default is right and the default is not the control.
+#
+# Not reachable today, because this job runs on a GitHub-hosted runner: a fresh VM
+# per job, no .env carried between runs. But that is a CONFIGURATION, not a
+# property of this script, and moving the job to a self-hosted runner would arm
+# the bypass invisibly. The marker makes the safety belong to the script, so where
+# it runs becomes a cost question rather than a security one.
+#
+# Two variables rather than one is deliberate. AUDIT_JSON_FILE names a file, which
+# has no narrower-or-wider sense, so it cannot be made safe by requiring an
+# override to narrow: an unordered substitution needs an explicit marker instead.
+# Fails with exit 2 - could not run - because an audit that was handed a fixture
+# it was not told to expect has not audited anything, and that is not a verdict
+# about the code.
+if [ -n "${AUDIT_JSON_FILE:-}" ]; then
+  if [ "${AUDIT_FIXTURE_OK:-}" != 1 ]; then
+    echo "ERROR: AUDIT_JSON_FILE is set but AUDIT_FIXTURE_OK is not 1 - refusing to substitute a fixture for the real scan. The audit COULD NOT RUN (not a pass)." >&2
+    exit 2
+  fi
+  echo "NOTE: using the fixture at $AUDIT_JSON_FILE instead of cargo audit (AUDIT_FIXTURE_OK=1)" >&2
+  cp "$AUDIT_JSON_FILE" "$report"
+else
+  cargo audit --json > "$report"
+fi
 
 if ! jq -e '.vulnerabilities.list | type == "array" and all(.[]; type == "object")' "$report" >/dev/null 2>&1; then
   echo "ERROR: cargo audit produced no parseable report - the audit COULD NOT RUN (not a pass)."
