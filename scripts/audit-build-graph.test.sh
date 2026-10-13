@@ -7,13 +7,14 @@ GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/audit-build-graph.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # A real fixture workspace, so the answer comes from real `cargo tree` and not
 # from a mock that agrees with whatever the script assumes: `shipped` is a normal
-# dependency, `otherplatform` enters only through a target that is not ours.
+# dependency, `devonly` and `featureonly` enter by a dev edge and an optional
+# feature (both must block), `otherplatform` enters only through a target that is not ours.
 # (Path crates under the root are implicitly members, hence the exclude.)
-mkdir -p "$TMP/fx/app/src" "$TMP/fx/shipped/src" "$TMP/fx/otherplatform/src"
+mkdir -p "$TMP/fx/app/src" "$TMP/fx/shipped/src" "$TMP/fx/otherplatform/src" "$TMP/fx/devonly/src" "$TMP/fx/featureonly/src"
 cat > "$TMP/fx/Cargo.toml" <<'EOS'
 [workspace]
 members = ["app"]
-exclude = ["shipped", "otherplatform"]
+exclude = ["shipped", "otherplatform", "devonly", "featureonly"]
 resolver = "3"
 EOS
 cat > "$TMP/fx/app/Cargo.toml" <<'EOS'
@@ -23,10 +24,13 @@ version = "1.0.0"
 edition = "2021"
 [dependencies]
 shipped = { path = "../shipped" }
+featureonly = { path = "../featureonly", optional = true }
+[dev-dependencies]
+devonly = { path = "../devonly" }
 [target.'cfg(target_os = "nonexistent")'.dependencies]
 otherplatform = { path = "../otherplatform" }
 EOS
-for c in shipped otherplatform; do
+for c in shipped otherplatform devonly featureonly; do
   printf '[package]\nname = "%s"\nversion = "1.0.0"\nedition = "2021"\n' "$c" > "$TMP/fx/$c/Cargo.toml"
   : > "$TMP/fx/$c/src/lib.rs"
 done
@@ -48,9 +52,13 @@ grep -q "LOCKFILE ONLY" "$TMP/out" || { echo "FAIL: lockfile-only case is not la
 vuln "$(entry RUSTSEC-Y shipped)"; check "advisory in a crate we build blocks" 1
 grep -q "IN BUILD GRAPH" "$TMP/out" || { echo "FAIL: build-graph case is not labelled in the output"; fail=1; }
 vuln "$(entry RUSTSEC-X otherplatform),$(entry RUSTSEC-Y shipped)"; check "one built crate among lockfile-only ones blocks" 1
+vuln "$(entry RUSTSEC-D devonly)"; check "a dev-only crate blocks (--edges all)" 1
+vuln "$(entry RUSTSEC-F featureonly)"; check "an optional-feature crate blocks (--all-features)" 1
+grep -q "IN BUILD GRAPH" "$TMP/out" || { echo "FAIL: feature-only crate is not classified as in the build graph"; fail=1; }
 vuln "$(entry RUSTSEC-X notinlockfile)"; check "a cargo tree error fails closed" 1
 grep -q "COULD NOT CLASSIFY" "$TMP/out" || { echo "FAIL: tree error is not labelled"; fail=1; }
 vuln '{"advisory":{"id":"RUSTSEC-Z"},"package":{"name":"otherplatform"}}'; check "an entry with no version fails closed" 1
+grep -q "COULD NOT CLASSIFY an advisory entry" "$TMP/out" || { echo "FAIL: missing-version guard did not fire"; fail=1; }
 printf '{"vulnerabilities":{"list":["x"]}}' > "$TMP/audit.json"; check "a non-object entry is 'could not run', not a pass" 2
 BUILD_TARGET=all vuln "$(entry RUSTSEC-X otherplatform)"; BUILD_TARGET=all check "--target all would put the other platform's crate in scope (why the script must not use it)" 1
 echo 'not json' > "$TMP/audit.json"; check "unparseable audit output is 'could not run', not a pass" 2
