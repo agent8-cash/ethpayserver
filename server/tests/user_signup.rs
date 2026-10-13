@@ -193,13 +193,13 @@ async fn the_services_refusals_reach_the_merchant_coarsely() {
         (404, StatusCode::NOT_FOUND),
         (401, StatusCode::BAD_GATEWAY),
     ] {
-        let (url, _) = fake_service(answered, json!({"secret": "x"})).await;
+        let (url, _) = fake_service(answered, json!({"secret": "leak-marker-q7z"})).await;
         let (status, body) =
             post_signup_raw(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
         assert_eq!(status, expected);
         let text = String::from_utf8(body).unwrap();
         assert!(
-            !text.contains('x'),
+            !text.contains("leak-marker-q7z"),
             "the service's own words are not relayed: {text}"
         );
     }
