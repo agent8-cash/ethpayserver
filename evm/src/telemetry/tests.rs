@@ -159,6 +159,23 @@ fn bare_token_word_is_not_a_key_value_pair() {
 }
 
 #[test]
+fn bearer_token_is_redacted_in_every_form() {
+    for input in [
+        "Bearer abc123xyz",
+        "bearer=abc123xyz",
+        "Bearer: abc123xyz",
+        r#"{"bearer":"abc123xyz"}"#,
+        "Authorization: Bearer abc123xyz",
+    ] {
+        let out = redact_secrets(input);
+        assert!(
+            !out.contains("abc123xyz"),
+            "bearer leaked: {input} -> {out}"
+        );
+    }
+}
+
+#[test]
 fn redacts_email() {
     let out = redact_secrets("customer alice@example.com paid invoice");
     assert!(!out.contains("alice@example.com"), "email leaked: {out}");

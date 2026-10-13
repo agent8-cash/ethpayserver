@@ -133,7 +133,7 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // ordinary vocabulary here, so a separator is required.
             (
                 build(
-                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)[^\s,;"'}\\]+"#,
+                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|bearer|mnemonic|seed|private[_-]?key|authorization)\b(\\*"?\s*[:=]\s*)(\\*"?)[^\s,;"'}\\]+"#,
                 ),
                 "$1$2$3[redacted]",
             ),
