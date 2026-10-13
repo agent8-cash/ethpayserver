@@ -321,6 +321,10 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
    and exempts only that key - other merchants stay limited, which
    `server/tests/plugin_invoice_creation_filter.rs` pins through the real
    extractor.
+   There is no approaching-the-limit signal to read: an operator credential is never
+   asked about volume, and a non-operator one learns its standing only from the
+   refusal. So losing the flag (a rotated key, a reset column) shows up as that
+   refusal, which the spec now explains, rather than as an earlier warning.
 4. Store a Sepolia RPC endpoint as `E2E_SEPOLIA_RPC_URL`.
 5. Set `SENTRY_CRON_E2E_URL` to a Sentry Cron Monitor check-in URL. This is
    required, not optional, and the workflow enforces it — the check-in step
