@@ -44,7 +44,7 @@ import {
   remainingBudgetMs,
   worstCaseRunCostWei,
 } from '../fixtures/synthetic-payment';
-import { WebhookSink, verifySignature } from '../fixtures/webhook-sink';
+import { TunnelUnavailableError, WebhookSink, verifySignature } from '../fixtures/webhook-sink';
 
 const ENABLED = process.env.E2E_SYNTHETIC_PAYMENT === 'true';
 
@@ -91,7 +91,11 @@ const RECEIPT_TIMEOUT_MS = 3 * 60_000;
  * the cloudflared install and the report upload around it.
  */
 const PAYMENTS_BUDGET_MS = 18 * 60_000;
-/** Everything before the first broadcast: the sink's tunnel, store, invoices. */
+/**
+ * Everything before the first broadcast: the sink's tunnel, store, invoices.
+ * A budget only — these are different failures, and only the tunnel's own
+ * provisioning is reported as infrastructure being unavailable.
+ */
 const SETUP_BUDGET_MS = 5 * 60_000;
 /**
  * The least clock a payment may be started with.
@@ -430,7 +434,20 @@ test.describe('Synthetic payment (live testnet)', () => {
       }
     }
 
-    const sink = await WebhookSink.start();
+    // The one place "could not run" applies: only the tunnel's own
+    // provisioning. Store and invoice creation below (a refused invoice is a
+    // product failure) must keep failing as ordinary assertions.
+    const sink = await WebhookSink.start().catch((err: unknown) => {
+      if (err instanceof TunnelUnavailableError) {
+        const msg =
+          `INFRASTRUCTURE UNAVAILABLE, NOT A PAYMENT FAILURE: the Cloudflare quick tunnel ` +
+          `could not be provisioned, so no payment was attempted and nothing was verified. ` +
+          `Set E2E_WEBHOOK_PUBLIC_URL to a named tunnel to remove this dependency.\n${err.message}`;
+        console.log(`::error title=Synthetic payment NOT VERIFIED (tunnel unavailable)::${msg}`);
+        throw new Error(msg);
+      }
+      throw err;
+    });
     activeSink = sink;
     try {
       console.log(`webhook sink listening on :${sink.port}, public at ${sink.publicUrl}`);
