@@ -151,7 +151,11 @@ impl SignupServiceConfig {
             .send()
             .await?;
         let status = response.status().as_u16();
-        let body = response.json().await.unwrap_or(serde_json::Value::Null);
+        let body = response.json().await.unwrap_or_else(|e| {
+            // A mangled 409 would silently lose the pending checkout link.
+            tracing::warn!(status, error = %e, "the signup service sent an unreadable body");
+            serde_json::Value::Null
+        });
         Ok((status, body))
     }
 }
@@ -229,6 +233,15 @@ mod tests {
             ("SIGNUP_SERVICE_AUDIENCE", "a"),
         ]));
         assert!(short.is_err());
+        let padded = SignupServiceConfig::from_lookup(lookup(&[
+            ("SIGNUP_SERVICE_URL", "https://s"),
+            (
+                "SIGNUP_SERVICE_SECRET",
+                " 0123456789012345678901234567890123456789\n",
+            ),
+            ("SIGNUP_SERVICE_AUDIENCE", "a"),
+        ]));
+        assert!(padded.is_err(), "surrounding whitespace is refused");
         assert!(
             !format!("{short:?}").contains("tooshort-marker"),
             "no secret in errors"
