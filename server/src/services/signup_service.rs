@@ -69,8 +69,18 @@ impl SignupServiceConfig {
                     .into());
             }
         };
-        if !url.starts_with("https://") && !url.starts_with("http://") {
-            return Err("SIGNUP_SERVICE_URL must start with http:// or https://".into());
+        // The assertion is a bearer credential, so it only travels in the
+        // clear to a loopback listener, where nothing can read it in transit.
+        let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+            .iter()
+            .any(|p| {
+                url.strip_prefix(p)
+                    .is_some_and(|r| r.is_empty() || r.starts_with([':', '/']))
+            });
+        if !url.starts_with("https://") && !loopback {
+            return Err(
+                "SIGNUP_SERVICE_URL must start with https:// (http:// only for loopback)".into(),
+            );
         }
         if secret.trim() != secret || secret.len() < MIN_SECRET_LEN {
             return Err(format!(
@@ -215,14 +225,37 @@ mod tests {
         assert_eq!(ok.url, "https://s.example");
         let short = SignupServiceConfig::from_lookup(lookup(&[
             ("SIGNUP_SERVICE_URL", "https://s"),
-            ("SIGNUP_SERVICE_SECRET", "short"),
+            ("SIGNUP_SERVICE_SECRET", "tooshort-marker"),
             ("SIGNUP_SERVICE_AUDIENCE", "a"),
         ]));
         assert!(short.is_err());
         assert!(
-            !format!("{short:?}").contains("short\""),
+            !format!("{short:?}").contains("tooshort-marker"),
             "no secret in errors"
         );
+        assert!(
+            !format!("{ok:?}").contains(SECRET),
+            "no secret in the config's Debug output"
+        );
+    }
+
+    #[test]
+    fn a_cleartext_url_is_refused_except_to_loopback() {
+        const SECRET: &str = "0123456789012345678901234567890123456789";
+        let with = |url: &'static str| {
+            SignupServiceConfig::from_lookup(move |k| match k {
+                "SIGNUP_SERVICE_URL" => Some(url.to_string()),
+                "SIGNUP_SERVICE_SECRET" => Some(SECRET.to_string()),
+                "SIGNUP_SERVICE_AUDIENCE" => Some("a".to_string()),
+                _ => None,
+            })
+        };
+        assert!(with("https://billing.example").is_ok());
+        assert!(with("http://127.0.0.1:8080").is_ok());
+        assert!(with("http://localhost").is_ok());
+        assert!(with("http://billing.example").is_err());
+        assert!(with("http://localhost.evil.example").is_err());
+        assert!(with("http://127.0.0.1.evil.example").is_err());
     }
 
     #[tokio::test]

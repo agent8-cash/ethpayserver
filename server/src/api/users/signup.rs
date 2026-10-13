@@ -26,28 +26,62 @@ pub struct SignupResponse {
     pub checkout_url: Option<String>,
 }
 
+/// The 201 case. `None` means the answer cannot be trusted and is logged.
+fn relay_created(body: &serde_json::Value) -> Option<SignupResponse> {
+    if !body.is_object() {
+        tracing::error!("the signup service answered 201 without a JSON object");
+        return None;
+    }
+    match body["checkout_url"].as_str() {
+        Some(u) if u.starts_with("https://") => Some(SignupResponse {
+            checkout_url: Some(u.to_string()),
+        }),
+        // The account is enrolled and an invoice exists; a link we refuse to
+        // pass on must not look like "nothing to pay".
+        Some(_) => {
+            tracing::error!("the signup service sent a checkout link that is not https; withheld");
+            None
+        }
+        None => Some(SignupResponse { checkout_url: None }),
+    }
+}
+
 /// What the merchant is told for each answer of the signup service. Only the
 /// checkout link is passed through; nothing else the service says is relayed.
+///
+/// The merchant gets a deliberately coarse answer, so every status that is not
+/// an ordinary refusal is logged here (status only, never the body): a 401 or
+/// 403 means the service rejected our assertion, which is a wrong secret or
+/// audience, and a 404 may be an unknown plan or a missing route - the service
+/// gives no body to tell them apart.
 fn relay(
     status: u16,
     body: &serde_json::Value,
 ) -> Result<SignupResponse, (StatusCode, &'static str)> {
+    let unavailable = (
+        StatusCode::BAD_GATEWAY,
+        "signup is unavailable; try again later",
+    );
     match status {
-        201 => Ok(SignupResponse {
-            checkout_url: body["checkout_url"]
-                .as_str()
-                .filter(|u| u.starts_with("https://"))
-                .map(str::to_string),
-        }),
-        404 => Err((StatusCode::NOT_FOUND, "no such plan")),
+        201 => relay_created(body).ok_or(unavailable),
+        404 => {
+            tracing::warn!(
+                status,
+                "the signup service answered 404: an unknown plan, or a route it does not serve"
+            );
+            Err((StatusCode::NOT_FOUND, "no such plan"))
+        }
         409 => Err((
             StatusCode::CONFLICT,
             "this account already has a subscription",
         )),
-        _ => Err((
-            StatusCode::BAD_GATEWAY,
-            "signup is unavailable; try again later",
-        )),
+        _ => {
+            tracing::error!(
+                status,
+                "the signup service answered with an unexpected status"
+            );
+            Err(unavailable)
+        }
     }
 }
 
@@ -108,8 +142,19 @@ mod tests {
             ok.checkout_url.as_deref(),
             Some("https://pay.example/checkout/1")
         );
-        let odd = relay(201, &json!({"checkout_url": "javascript:alert(1)"})).unwrap();
-        assert_eq!(odd.checkout_url, None);
+        let none = relay(201, &json!({"checkout_url": null})).unwrap();
+        assert_eq!(none.checkout_url, None);
+    }
+
+    #[test]
+    fn a_link_that_is_refused_or_a_201_without_a_body_is_a_bad_gateway() {
+        for body in [
+            json!({"checkout_url": "javascript:alert(1)"}),
+            json!({"checkout_url": "http://pay.example/1"}),
+            json!(null),
+        ] {
+            assert_eq!(relay(201, &body).unwrap_err().0, StatusCode::BAD_GATEWAY);
+        }
     }
 
     #[test]
@@ -122,7 +167,7 @@ mod tests {
             relay(404, &json!(null)).unwrap_err().0,
             StatusCode::NOT_FOUND
         );
-        for status in [401, 403, 500, 503] {
+        for status in [200, 401, 403, 500, 503] {
             assert_eq!(
                 relay(status, &json!(null)).unwrap_err().0,
                 StatusCode::BAD_GATEWAY

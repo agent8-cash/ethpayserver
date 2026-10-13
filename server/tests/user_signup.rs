@@ -1,0 +1,197 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! `POST /users/me/signup`, driven through the production router with a real
+//! `Authorization: Bearer` key against a real Postgres, and a stand-in for the
+//! signup service that records what it was sent.
+//!
+//! Pins what a unit test of the helpers cannot: the route sits behind
+//! authentication, an instance without the service configured answers 404, and
+//! the account the service is told about is the session's - the request body
+//! has no way to name another.
+//!
+//! Needs `DATABASE_URL` and fails, naming it, when it is unset; runs in CI's
+//! `--run-ignored` step.
+
+use data_service::test_support::pg_service;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::routing::post;
+use axum::{Json, Router};
+use data_service::PgDataService;
+use rates::NoOpRateProvider;
+use secrecy::SecretString;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+use auth::{AuthConfig, AuthService};
+use server::services::RedisEVMMonitor;
+use server::services::signup_service::SignupServiceConfig;
+use server::state::PgAppState;
+
+type Seen = Arc<Mutex<Vec<Value>>>;
+
+/// A signup service that answers `status` with `reply` and records each body.
+async fn fake_service(status: u16, reply: Value) -> (String, Seen) {
+    let seen: Seen = Arc::default();
+    let record = Arc::clone(&seen);
+    let app = Router::new().route(
+        "/signup",
+        post(move |Json(body): Json<Value>| {
+            let record = Arc::clone(&record);
+            let reply = reply.clone();
+            async move {
+                record.lock().unwrap().push(body);
+                (StatusCode::from_u16(status).unwrap(), Json(reply))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, seen)
+}
+
+fn app(pg: &Arc<PgDataService>, service: Option<&str>) -> Router {
+    let auth_service = Arc::new(AuthService::with_config(
+        Arc::clone(pg),
+        AuthConfig::default(),
+    ));
+    let mut state = PgAppState::new(
+        Arc::clone(pg),
+        auth_service,
+        None::<Arc<RedisEVMMonitor>>,
+        Arc::new(NoOpRateProvider),
+        Arc::new(server::services::email::NoopEmailSender),
+    );
+    state.signup_service = service.map(|url| {
+        Arc::new(SignupServiceConfig {
+            url: url.to_string(),
+            secret: SecretString::from("k".repeat(40)),
+            audience: "signup.test".into(),
+        })
+    });
+    server::api::router(state, false, None, None, None)
+}
+
+async fn seed_user(pg: &PgDataService) -> (Uuid, String) {
+    let user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, kdf_params, encrypted_symmetric_key, \
+         recovery_verification_hash, kdf_salt_identifier) \
+         VALUES ($1, \
+             '{\"algorithm\":\"argon2id\",\"memory_kb\":65536,\"iterations\":3,\"parallelism\":4,\"salt\":\"\"}'::jsonb, \
+             '{\"ciphertext\":\"\",\"iv\":\"\",\"mac\":\"\"}'::jsonb, \
+             'h', 'passkey:' || $1::text)",
+    )
+    .bind(user_id)
+    .execute(pg.pool())
+    .await
+    .expect("seed user");
+
+    let key = format!("ak_signup_{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix, permissions) \
+         VALUES ($1, $2, 'signup key', $3, 'ak_test', NULL)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(hex::encode(Sha256::digest(key.as_bytes())))
+    .execute(pg.pool())
+    .await
+    .expect("seed api key");
+    (user_id, key)
+}
+
+async fn post_signup(app: &Router, key: Option<&str>, body: Value) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/users/me/signup")
+        .header("content-type", "application/json");
+    if let Some(key) = key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_unauthenticated_signup_is_refused_and_reaches_nobody() {
+    let pg = Arc::new(pg_service().await);
+    let (url, seen) = fake_service(201, json!({})).await;
+    let (status, _) = post_signup(&app(&pg, Some(&url)), None, json!({"plan_id": 1})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_instance_without_the_service_answers_404() {
+    let pg = Arc::new(pg_service().await);
+    let (_, key) = seed_user(&pg).await;
+    let (status, _) = post_signup(&app(&pg, None), Some(&key), json!({"plan_id": 1})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_account_told_to_the_service_is_the_sessions_and_cannot_be_named() {
+    let pg = Arc::new(pg_service().await);
+    let (url, seen) = fake_service(201, json!({"checkout_url": "https://pay.example/c/1"})).await;
+    let app = app(&pg, Some(&url));
+    let (user, key) = seed_user(&pg).await;
+    let other = Uuid::new_v4();
+
+    let (status, body) = post_signup(&app, Some(&key), json!({"plan_id": 7})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["checkout_url"], "https://pay.example/c/1");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["account_id"], user.to_string());
+        assert_eq!(seen[0]["plan_id"], 7);
+    }
+
+    // There is no field to name another account in; the attempt is refused
+    // before the service is asked anything.
+    let (status, _) = post_signup(
+        &app,
+        Some(&key),
+        json!({"plan_id": 7, "account_id": other.to_string()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_services_refusals_reach_the_merchant_coarsely() {
+    let pg = Arc::new(pg_service().await);
+    let (_, key) = seed_user(&pg).await;
+    for (answered, expected) in [
+        (409, StatusCode::CONFLICT),
+        (404, StatusCode::NOT_FOUND),
+        (401, StatusCode::BAD_GATEWAY),
+    ] {
+        let (url, _) = fake_service(answered, json!({"secret": "x"})).await;
+        let (status, body) =
+            post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
+        assert_eq!(status, expected);
+        assert_eq!(body, Value::Null, "the service's own words are not relayed");
+    }
+}
