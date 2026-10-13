@@ -1,0 +1,19 @@
+# Copy of payserver-client/e2e-routes.txt, which is the list that client's own
+# test checks against its router. Refresh this file together with the client
+# image pin (ops/client-image.pin); route-coverage.spec.ts fails when a route
+# listed here has no capture and no stated reason for lacking one.
+/login
+/register
+/checkout/:id
+/
+/evm
+/evm/invoices
+/evm/invoices/:id
+/evm/payments
+/evm/payments/:id
+/evm/stores
+/evm/stores/:id
+/evm/wallets
+/evm/wallets/:id
+/evm/settings
+/evm/plugins/:id/:path

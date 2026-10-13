@@ -12,7 +12,17 @@
 import { test, expect } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { UNAUTHENTICATED_ROUTES, AUTHENTICATED_ROUTES } from '../fixtures/visual-review-routes';
+import {
+  UNAUTHENTICATED_ROUTES,
+  AUTHENTICATED_ROUTES,
+  ROUTE_DISPOSITION,
+  TAB_STATES,
+  STORE_DETAIL,
+  readClientRoutes,
+  dispositionGaps,
+  expectedCaptures,
+  captureGaps,
+} from '../fixtures/visual-review-routes';
 
 test('scout.spec.ts route coverage stays in sync with visual-review.spec.ts', () => {
   const scoutSrc = fs.readFileSync(path.join('tests', 'scout.spec.ts'), 'utf8');
@@ -38,4 +48,40 @@ test('scout.spec.ts route coverage stays in sync with visual-review.spec.ts', ()
     missing,
     `scout.spec.ts reaches ${missing.join(', ')} but visual-review.spec.ts's route lists do not — add it there`,
   ).toHaveLength(0);
+});
+
+test('every route the client router declares is captured or has a stated reason it is not', () => {
+  const routes = readClientRoutes();
+  // An empty list would make both differences empty - the same result as being in sync.
+  expect(routes.length, 'fixtures/client-routes.txt yielded no routes').toBeGreaterThanOrEqual(10);
+  const { undecided, stale } = dispositionGaps(routes);
+  expect(undecided, `routes with no capture and no stated reason: add them to ROUTE_DISPOSITION`).toEqual([]);
+  expect(stale, `ROUTE_DISPOSITION names routes the router no longer declares`).toEqual([]);
+
+  // A claimed capture must be one this suite actually makes.
+  const made = new Set(expectedCaptures());
+  for (const [route, d] of Object.entries(ROUTE_DISPOSITION)) {
+    if ('captured' in d) expect(made.has(d.captured), `${route} claims capture '${d.captured}' which nothing makes`).toBe(true);
+  }
+});
+
+test('an empty or short manifest is a coverage failure, not a pass', () => {
+  const vps = ['mobile', 'desktop'];
+  const all = expectedCaptures().length * vps.length;
+  expect(captureGaps([], vps)).toHaveLength(all);
+
+  const complete = expectedCaptures().flatMap((route) => vps.map((viewport) => ({ route, viewport, file: 'x.png' })));
+  expect(captureGaps(complete, vps)).toEqual([]);
+  // One screenshot missing, or taken but failed (no file), must be named.
+  expect(captureGaps(complete.slice(1), vps)).toHaveLength(1);
+  expect(captureGaps([{ ...complete[0], file: null }, ...complete.slice(1)], vps)).toHaveLength(1);
+});
+
+test('store detail tabs are all in the capture list', () => {
+  expect(TAB_STATES.filter((t) => t.route === STORE_DETAIL).map((t) => t.label)).toEqual([
+    'General',
+    'Payment Methods',
+    'Webhooks',
+    'Settings',
+  ]);
 });

@@ -15,7 +15,15 @@ import { test as base, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { setupVirtualAuthenticator, register } from '../fixtures/auth';
-import { UNAUTHENTICATED_ROUTES, AUTHENTICATED_ROUTES } from '../fixtures/visual-review-routes';
+import { createStoreAndOpen } from '../fixtures/stores';
+import {
+  UNAUTHENTICATED_ROUTES,
+  AUTHENTICATED_ROUTES,
+  TAB_STATES,
+  STORE_DETAIL,
+  tabCaptureName,
+  captureGaps,
+} from '../fixtures/visual-review-routes';
 
 const RUN = process.env.E2E_VISUAL_REVIEW === 'true';
 const SKIP_REASON = 'Nightly-only: set E2E_VISUAL_REVIEW=true to run (see scripts/visual-review.mjs)';
@@ -145,6 +153,54 @@ test.describe('Authenticated routes', () => {
     for (const [route, urlPath] of AUTHENTICATED_ROUTES) {
       await capture(route, urlPath);
     }
+
+    // States behind one URL: a sidebar crawl lands on the default tab and
+    // never sees the others. Each tab is clicked and captured at both viewports.
+    await captureStoreTabs();
+  });
+});
+
+async function captureStoreTabs() {
+  const tabs = TAB_STATES.filter((t) => t.route === STORE_DETAIL);
+  try {
+    await sharedPage.setViewportSize({ width: VIEWPORTS[1].width, height: VIEWPORTS[1].height });
+    await createStoreAndOpen(sharedPage, `Visual Review ${Date.now()}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    for (const t of tabs) {
+      manifest.push({ route: tabCaptureName(t), path: '/evm/stores/:id', viewport: 'n/a', file: null, error: `not captured - could not open a store: ${message}` });
+    }
+    return;
+  }
+  const storeUrl = sharedPage.url();
+  for (const t of tabs) {
+    for (const vp of VIEWPORTS) {
+      const name = tabCaptureName(t);
+      const file = `${name}-${vp.name}.png`;
+      const entry: ManifestEntry = { route: name, path: storeUrl, viewport: vp.name, file: null, error: null };
+      try {
+        await sharedPage.setViewportSize({ width: vp.width, height: vp.height });
+        await sharedPage.goto(storeUrl);
+        await sharedPage.locator('.store-tab', { hasText: t.label }).click();
+        await sharedPage.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+        await sharedPage.screenshot({ path: path.join(VISUAL_DIR, file), fullPage: true });
+        entry.file = file;
+      } catch (err) {
+        entry.error = err instanceof Error ? err.message : String(err);
+      }
+      manifest.push(entry);
+    }
+  }
+}
+
+// Coverage gates; the model's judgement of what it sees does not. Every
+// capture this suite promises must exist at both viewports, so a run that
+// reached nothing (or only three pages) fails instead of reporting no findings.
+test.describe('Coverage', () => {
+  test('every promised capture was taken', () => {
+    test.skip(!RUN, SKIP_REASON);
+    const gaps = captureGaps(manifest, VIEWPORTS.map((v) => v.name));
+    if (gaps.length > 0) throw new Error(`${gaps.length} promised capture(s) missing: ${gaps.join(', ')}`);
   });
 });
 
