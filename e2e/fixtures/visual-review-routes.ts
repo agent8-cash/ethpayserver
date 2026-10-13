@@ -60,6 +60,32 @@ export const TAB_STATES: { route: string; tab: string; label: string }[] = [
   { route: STORE_DETAIL, tab: 'settings', label: 'Settings' },
 ];
 
+/**
+ * Classes in `classes` that no selector in `selectorText` mentions. `selectorText`
+ * is every selector of every loaded stylesheet, joined.
+ */
+export function classesWithoutRules(classes: string[], selectorText: string): string[] {
+  return [...new Set(classes)].filter((c) => {
+    const escaped = c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return !new RegExp(`\\.${escaped}(?![\\w-])`).test(selectorText);
+  });
+}
+
+/**
+ * A captured view whose markup names classes the stylesheet never defines is
+ * unstyled, whatever the model judging the screenshot makes of it. Deterministic
+ * so it can gate: a view must name at least three distinct classes before it is
+ * judged at all (a sparse view proves nothing), and is unstyled when more than
+ * half of them have no rule. Returns the reason, or null when the view is styled.
+ */
+export function unstyledReason(classes: string[], selectorText: string): string | null {
+  const distinct = [...new Set(classes)];
+  if (distinct.length < 3) return null;
+  const missing = classesWithoutRules(distinct, selectorText);
+  if (missing.length * 2 <= distinct.length) return null;
+  return `${missing.length} of ${distinct.length} classes have no stylesheet rule: ${missing.slice(0, 8).join(', ')}`;
+}
+
 /** Names of the captures made for a route's tabs, as they appear in the manifest. */
 export const tabCaptureName = (t: { route: string; tab: string }) => `${t.route}-${t.tab}`;
 

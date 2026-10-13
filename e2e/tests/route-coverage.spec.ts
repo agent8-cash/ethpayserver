@@ -17,11 +17,12 @@ import {
   AUTHENTICATED_ROUTES,
   ROUTE_DISPOSITION,
   TAB_STATES,
-  STORE_DETAIL,
   readClientRoutes,
   dispositionGaps,
   expectedCaptures,
   captureGaps,
+  unstyledReason,
+  classesWithoutRules,
 } from '../fixtures/visual-review-routes';
 
 test('scout.spec.ts route coverage stays in sync with visual-review.spec.ts', () => {
@@ -77,11 +78,29 @@ test('an empty or short manifest is a coverage failure, not a pass', () => {
   expect(captureGaps([{ ...complete[0], file: null }, ...complete.slice(1)], vps)).toHaveLength(1);
 });
 
-test('store detail tabs are all in the capture list', () => {
-  expect(TAB_STATES.filter((t) => t.route === STORE_DETAIL).map((t) => t.label)).toEqual([
-    'General',
-    'Payment Methods',
-    'Webhooks',
-    'Settings',
-  ]);
+test('dropping a route from the list is a stale disposition, adding one is undecided', () => {
+  const routes = readClientRoutes();
+  expect(dispositionGaps(routes.slice(1)).stale).toEqual([routes[0]]);
+  expect(dispositionGaps([...routes, '/evm/brand-new']).undecided).toEqual(['/evm/brand-new']);
+  expect(dispositionGaps(routes)).toEqual({ undecided: [], stale: [] });
+});
+
+test('a view whose classes the stylesheet never defines is unstyled', () => {
+  const styled = '.store-tab-content { } .settings-card, .settings-row:hover { } .btn.btn-primary { }';
+  const classes = ['store-tab-content', 'settings-card', 'settings-row', 'btn', 'btn-primary'];
+  // Negative control: the same markup against a stylesheet missing its rules.
+  expect(unstyledReason(classes, styled)).toBeNull();
+  expect(unstyledReason(classes, '.nav { }')).toMatch(/5 of 5 classes have no stylesheet rule/);
+  // Defining only a longer class must not count as defining its prefix.
+  expect(classesWithoutRules(['btn'], '.btn-primary { }')).toEqual(['btn']);
+  // A sparse view proves nothing either way.
+  expect(unstyledReason(['a', 'b'], '')).toBeNull();
+});
+
+test('every tab state belongs to a route the router declares', () => {
+  const owners = new Set(TAB_STATES.map((t) => t.route));
+  const captured = new Set(Object.values(ROUTE_DISPOSITION).flatMap((d) => ('captured' in d ? [d.captured] : [])));
+  for (const owner of owners) {
+    expect(captured.has(`${owner}-general`) || captured.has(owner), `tab group '${owner}' belongs to no declared route`).toBe(true);
+  }
 });
