@@ -325,6 +325,9 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
    asked about volume, and a non-operator one learns its standing only from the
    refusal. So losing the flag (a rotated key, a reset column) shows up as that
    refusal, which the spec now explains, rather than as an earlier warning.
+   An early warning is deliberately deferred: it needs either a fresh account per run
+   (which removes the accumulation) or a standing-warning signal on API responses,
+   and both are server-side or provisioning work, not something this test can read.
 4. Store a Sepolia RPC endpoint as `E2E_SEPOLIA_RPC_URL`.
 5. Set `SENTRY_CRON_E2E_URL` to a Sentry Cron Monitor check-in URL. This is
    required, not optional, and the workflow enforces it — the check-in step
