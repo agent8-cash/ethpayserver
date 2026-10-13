@@ -19,7 +19,7 @@ set -uo pipefail
 report=$(mktemp); trap 'rm -f "$report"' EXIT
 if [ -n "${AUDIT_JSON_FILE:-}" ]; then cp "$AUDIT_JSON_FILE" "$report"; else cargo audit --json > "$report"; fi
 
-if ! jq -e '.vulnerabilities.list' "$report" >/dev/null 2>&1; then
+if ! jq -e '.vulnerabilities.list | type == "array"' "$report" >/dev/null 2>&1; then
   echo "ERROR: cargo audit produced no parseable report - the audit COULD NOT RUN (not a pass)."
   head -c 2000 "$report"
   exit 2
@@ -36,7 +36,7 @@ while IFS=$'\t' read -r id name version; do
   err=$(mktemp)
   if out=$(cargo tree -i "$name@$version" --workspace --target "$target" --edges all --all-features 2>"$err"); then
     if [ -z "$out" ]; then
-      echo "LOCKFILE ONLY  $id  $name $version - not reachable from the workspace on $target; does not block"
+      echo "::warning::LOCKFILE ONLY  $id  $name $version - not reachable from the workspace on $target; does not block"
       rm -f "$err"
       continue
     fi
