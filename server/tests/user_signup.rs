@@ -106,6 +106,14 @@ async fn seed_user(pg: &PgDataService) -> (Uuid, String) {
 }
 
 async fn post_signup(app: &Router, key: Option<&str>, body: Value) -> (StatusCode, Value) {
+    let (status, bytes) = post_signup_raw(app, key, body).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+async fn post_signup_raw(app: &Router, key: Option<&str>, body: Value) -> (StatusCode, Vec<u8>) {
     let mut req = Request::builder()
         .method("POST")
         .uri("/users/me/signup")
@@ -122,10 +130,7 @@ async fn post_signup(app: &Router, key: Option<&str>, body: Value) -> (StatusCod
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    (status, bytes.to_vec())
 }
 
 #[tokio::test]
@@ -190,9 +195,13 @@ async fn the_services_refusals_reach_the_merchant_coarsely() {
     ] {
         let (url, _) = fake_service(answered, json!({"secret": "x"})).await;
         let (status, body) =
-            post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
+            post_signup_raw(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
         assert_eq!(status, expected);
-        assert_eq!(body, Value::Null, "the service's own words are not relayed");
+        let text = String::from_utf8(body).unwrap();
+        assert!(
+            !text.contains('x'),
+            "the service's own words are not relayed: {text}"
+        );
     }
 }
 
@@ -201,11 +210,19 @@ async fn the_services_refusals_reach_the_merchant_coarsely() {
 async fn a_retry_after_a_lost_reply_gets_the_pending_link_from_the_refusal() {
     let pg = Arc::new(pg_service().await);
     let (_, key) = seed_user(&pg).await;
-    let (url, _) = fake_service(409, json!({"checkout_url": "https://pay.example/c/1"})).await;
+    let (url, _) = fake_service(
+        409,
+        json!({"checkout_url": "https://pay.example/c/1", "plan_id": 1}),
+    )
+    .await;
 
     let (status, body) =
         post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 1})).await;
 
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["checkout_url"], "https://pay.example/c/1");
+
+    // Asking for a different plan than the pending invoice is for is refused.
+    let (status, _) = post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 2})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }

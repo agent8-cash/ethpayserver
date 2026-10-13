@@ -27,23 +27,21 @@ pub struct SignupResponse {
 }
 
 /// The 201 case. `None` means the answer cannot be trusted and is logged.
+///
+/// The service always sends the `checkout_url` key, `null` when nothing is
+/// owed; an absent or non-string value is drift, not a free signup. A link we
+/// refuse to pass on must likewise not look like "nothing to pay", since the
+/// account is already enrolled and an invoice exists.
 fn relay_created(body: &serde_json::Value) -> Option<SignupResponse> {
-    if !body.is_object() {
-        tracing::error!("the signup service answered 201 without a JSON object");
-        return None;
-    }
-    match body["checkout_url"].as_str() {
-        Some(u) if u.starts_with("https://") => Some(SignupResponse {
-            checkout_url: Some(u.to_string()),
-        }),
-        // The account is enrolled and an invoice exists; a link we refuse to
-        // pass on must not look like "nothing to pay".
-        Some(_) => {
-            tracing::error!("the signup service sent a checkout link that is not https; withheld");
-            None
+    let checkout_url = match body.get("checkout_url") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(u)) if u.starts_with("https://") => Some(u.clone()),
+        _ => {
+            tracing::error!("the signup service sent no usable checkout_url; withheld");
+            return None;
         }
-        None => Some(SignupResponse { checkout_url: None }),
-    }
+    };
+    Some(SignupResponse { checkout_url })
 }
 
 /// What the merchant is told for each answer of the signup service. Only the
@@ -55,6 +53,7 @@ fn relay_created(body: &serde_json::Value) -> Option<SignupResponse> {
 /// audience, and a 404 may be an unknown plan or a missing route - the service
 /// gives no body to tell them apart.
 fn relay(
+    plan_id: i64,
     status: u16,
     body: &serde_json::Value,
 ) -> Result<SignupResponse, (StatusCode, &'static str)> {
@@ -73,11 +72,13 @@ fn relay(
         }
         // The service refuses a second create. Its refusal carries the link
         // of the account's own unpaid first invoice when the reply to the
-        // original signup was lost, so the merchant's retry can still pay.
+        // original signup was lost, so the merchant's retry can still pay. Only
+        // for the plan that was asked for: another plan's link is never
+        // presented as this one.
         409 => match relay_created(body) {
             Some(SignupResponse {
                 checkout_url: Some(url),
-            }) => Ok(SignupResponse {
+            }) if body["plan_id"].as_i64() == Some(plan_id) => Ok(SignupResponse {
                 checkout_url: Some(url),
             }),
             _ => Err((
@@ -124,7 +125,9 @@ where
     // The account is the session's, never the request's: a merchant cannot
     // name another account because there is no field to name it in.
     match service.subscribe(user.id.0, request.plan_id).await {
-        Ok((status, body)) => relay(status, &body).map(|r| (StatusCode::CREATED, Json(r))),
+        Ok((status, body)) => {
+            relay(request.plan_id, status, &body).map(|r| (StatusCode::CREATED, Json(r)))
+        }
         Err(error) => {
             tracing::error!(%error, "the signup service could not be reached");
             Err((
@@ -144,6 +147,7 @@ mod tests {
     #[test]
     fn only_a_https_checkout_link_is_passed_through() {
         let ok = relay(
+            1,
             201,
             &json!({"checkout_url": "https://pay.example/checkout/1", "x": 1}),
         )
@@ -152,7 +156,7 @@ mod tests {
             ok.checkout_url.as_deref(),
             Some("https://pay.example/checkout/1")
         );
-        let none = relay(201, &json!({"checkout_url": null})).unwrap();
+        let none = relay(1, 201, &json!({"checkout_url": null})).unwrap();
         assert_eq!(none.checkout_url, None);
     }
 
@@ -162,38 +166,48 @@ mod tests {
             json!({"checkout_url": "javascript:alert(1)"}),
             json!({"checkout_url": "http://pay.example/1"}),
             json!(null),
+            json!({}),
+            json!({"checkout_url": 7}),
         ] {
-            assert_eq!(relay(201, &body).unwrap_err().0, StatusCode::BAD_GATEWAY);
+            assert_eq!(relay(1, 201, &body).unwrap_err().0, StatusCode::BAD_GATEWAY);
         }
     }
 
     #[test]
     fn a_refusal_that_carries_the_pending_link_hands_it_over() {
         let ok = relay(
+            1,
             409,
-            &json!({"checkout_url": "https://pay.example/checkout/1"}),
+            &json!({"checkout_url": "https://pay.example/checkout/1", "plan_id": 1}),
         )
         .unwrap();
         assert_eq!(
             ok.checkout_url.as_deref(),
             Some("https://pay.example/checkout/1")
         );
-        let bad = relay(409, &json!({"checkout_url": "http://pay.example/1"}));
+        // A pending link for a different plan is a refusal, not a success.
+        let other = relay(
+            1,
+            409,
+            &json!({"checkout_url": "https://pay.example/checkout/1", "plan_id": 2}),
+        );
+        assert_eq!(other.unwrap_err().0, StatusCode::CONFLICT);
+        let bad = relay(1, 409, &json!({"checkout_url": "http://pay.example/1"}));
         assert_eq!(bad.unwrap_err().0, StatusCode::CONFLICT);
     }
 
     #[test]
     fn refusals_map_and_anything_else_is_a_bad_gateway() {
         for body in [json!(null), json!({"checkout_url": null})] {
-            assert_eq!(relay(409, &body).unwrap_err().0, StatusCode::CONFLICT);
+            assert_eq!(relay(1, 409, &body).unwrap_err().0, StatusCode::CONFLICT);
         }
         assert_eq!(
-            relay(404, &json!(null)).unwrap_err().0,
+            relay(1, 404, &json!(null)).unwrap_err().0,
             StatusCode::NOT_FOUND
         );
         for status in [200, 401, 403, 500, 503] {
             assert_eq!(
-                relay(status, &json!(null)).unwrap_err().0,
+                relay(1, status, &json!(null)).unwrap_err().0,
                 StatusCode::BAD_GATEWAY
             );
         }
