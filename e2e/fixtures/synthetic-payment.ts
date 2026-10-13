@@ -160,7 +160,8 @@ export async function expectRunSurvivedArchive(
  *
  * This test settles a real payment every day, so its account's rolling settled
  * volume only grows; a plugin that limits volume will eventually refuse it, and
- * a re-run cannot clear that. `body` is the raw response text.
+ * a re-run cannot clear that. The refusal is recognised by the error code in
+ * the response body.
  */
 export function explainInvoiceCreationRefusal(e: unknown): unknown {
   if (e instanceof ApiError && e.status === 403 && e.body.includes('invoice_creation_blocked')) {
