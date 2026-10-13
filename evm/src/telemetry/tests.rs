@@ -136,6 +136,8 @@ fn phrase_is_redacted_whatever_glues_its_words() {
         ("underscore", "_"),
         ("plus", "+"),
         ("equals", "="),
+        ("at sign", "@"),
+        ("url scheme", "://"),
         ("numbered list", ": 1. "),
         ("bidi control U+202E", "\u{202E}"),
         ("bidi isolate U+2066", "\u{2066}"),
@@ -233,8 +235,9 @@ fn redacts_api_key_in_rpc_url_path() {
 #[test]
 fn redacts_rpc_key_inside_a_provider_error_string() {
     // The shape alloy produces when a connection fails.
-    let msg = "error sending request for url \
-               (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
+    // Kept short: every non-letter divides words, so a URL plus a long
+    // sentence is a twelve-word run and is redacted whole.
+    let msg = "fetch (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
     let out = redact_secrets(msg);
     assert!(
         !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),

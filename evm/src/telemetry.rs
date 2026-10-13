@@ -96,13 +96,12 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // marks are not letters, so a mark between two words cannot fuse
             // them, and an accented letter that is decomposed counts as two
             // runs, which only widens the match. Long digit-split identifiers
-            // are over-redacted on purpose; that side is the safe one. One
-            // exception: the `:` of `scheme://` is not a separator, so a URL in
-            // an error message (host labels, path, key placeholder) does not
-            // run together with the sentence around it. `@` is not one either,
-            // so an email address does not pad out a run of its own.
+            // are over-redacted on purpose; that side is the safe one. There is no
+            // carve-out for `@` or `://`: each would be one more way to glue a
+            // phrase together, and a URL or address in a long message costs
+            // legibility, not a key.
             (
-                build(r"(?:\p{L}+(?:[^\p{L}:@]|:(?:[^/]|$))+){11,}\p{L}+"),
+                build(r"(?:\p{L}+\P{L}+){11,}\p{L}+"),
                 PHRASE_PLACEHOLDER,
             ),
             // Email addresses (customer PII).
