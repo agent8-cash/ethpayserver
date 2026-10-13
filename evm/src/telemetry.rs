@@ -79,25 +79,30 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // 0x-prefixed hex of address length or longer: addresses (40),
             // private keys / tx hashes / block hashes (64), signatures (130).
             (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]"),
-            // 64+ hex chars, 0x-prefixed or bare, is the shape of a private key
-            // and of a transaction hash alike; nothing in the text tells them
-            // apart, so the error report loses hashes rather than risk a key.
-            (build(r"0x[0-9a-fA-F]{64,}"), "[redacted-hex]"),
-            (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]"),
-            // Recovery phrases: 12+ consecutive words of any case, script or
-            // wordlist. Membership is deliberately not checked: a wordlist
-            // would let other languages, typos and non-BIP-39 seeds through,
-            // and a destroyed log line costs less than a leaked seed. Words may
-            // be separated by real or escaped whitespace, quotes (a Debug-
-            // formatted `Vec<String>`, which a JSON line escapes again), commas,
-            // brackets, hyphens, slashes, pipes or numbering, as a pasted list
-            // would be. `:` and `_` are not separators, so a log line's
-            // `target::path` and `field=value` pairs break a run instead of
-            // joining the timestamp and target to the message.
+            // Bare hex of 64 or more characters (the 0x-prefixed form is the
+            // rule above) is the shape of a private key, a transaction hash and
+            // a signature alike; nothing in the text tells them apart, so the
+            // error report loses hashes rather than risk a key.
+            (build(r"\b[0-9a-fA-F]{64,}\b"), "[redacted-hex]"),
+            // Recovery phrases: 12 or more runs of letters, of any case, script
+            // or wordlist, with anything that is not a letter between them.
+            // Membership is deliberately not checked: a wordlist would let
+            // other languages, typos and non-BIP-39 seeds through, and a
+            // destroyed line costs less than a leaked seed. The separator is
+            // "not a letter" rather than a list of separators, because a list
+            // is a blocklist of the ways to hide a phrase: whitespace of every
+            // kind, zero-width and invisible characters, combining marks,
+            // escapes, punctuation and digits all separate words. Combining
+            // marks are not letters, so a mark between two words cannot fuse
+            // them, and an accented letter that is decomposed counts as two
+            // runs, which only widens the match. Long digit-split identifiers
+            // are over-redacted on purpose; that side is the safe one. One
+            // exception: the `:` of `scheme://` is not a separator, so a URL in
+            // an error message (host labels, path, key placeholder) does not
+            // run together with the sentence around it. `@` is not one either,
+            // so an email address does not pad out a run of its own.
             (
-                build(
-                    r#"\b(?:[\p{L}\p{M}]+(?:\s|\\+[nrt"]|[,;.)(\[\]{}"'|/\-\d\x{00AD}\x{200B}-\x{200F}\x{2060}-\x{2064}\x{FEFF}])+){11,}[\p{L}\p{M}]+\b"#,
-                ),
+                build(r"(?:\p{L}+(?:[^\p{L}:@]|:(?:[^/]|$))+){11,}\p{L}+"),
                 PHRASE_PLACEHOLDER,
             ),
             // Email addresses (customer PII).
@@ -148,7 +153,8 @@ pub fn redact_secrets(input: &str) -> String {
     // run: splitting the input around it would leave two halves under twelve
     // words each, and the exemption would become a way to smuggle a phrase past
     // the rule. Whatever the rules redact takes the stand-in with it.
-    if input.contains(FAIL_OPEN_ALERT_MESSAGE) {
+    // Input already holding the stand-in could forge the alert on the way out.
+    if input.contains(FAIL_OPEN_ALERT_MESSAGE) && !input.contains(ALERT_STAND_IN) {
         let masked = input.replace(FAIL_OPEN_ALERT_MESSAGE, ALERT_STAND_IN);
         return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
     }

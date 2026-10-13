@@ -235,7 +235,8 @@ fn parity_with_shared_scrubber() {
         "https://telemetry.example.com/api/random.cash/envelope/",
         "no store for merchant@example.com or a@b.co.uk or bad@b.c",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",
-        "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
+        "api-key: k1 apikey:k2 API_KEY = k3",
+        "private-key k4 passwd:\tk5",
         "twelve plain lowercase words here really do read as ordinary prose ok now",
         "secretariat: not a word with a key after it",
         "seed abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -257,7 +258,7 @@ fn parity_with_shared_scrubber() {
 /// Known divergence, in the open so it cannot widen unnoticed: the shared
 /// scrubber only knows lowercase words split by whitespace, so a capitalised or
 /// quoted-list phrase passes it. It is the browser-side copy; this table is
-/// what every server sink uses.
+/// what the Sentry sinks use. Stdout redaction is not covered by either.
 #[test]
 fn shared_scrubber_is_weaker_on_non_lowercase_phrases() {
     let phrase =

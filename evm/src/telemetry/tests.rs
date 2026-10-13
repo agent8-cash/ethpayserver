@@ -47,13 +47,14 @@ fn any_twelve_word_run_is_redacted() {
         "Legal winner thank year wave sausage worth useful legal winner thank yellow",
     ];
     for run in runs {
-        for out in [
-            redact_secrets(&format!("pasted {run} here")),
-            redact_secrets(&format!("pasted {run} here")),
-        ] {
-            assert!(out.contains("[redacted: 12+ word run]"), "{run} -> {out}");
-            assert!(!out.contains("thank") && !out.contains("abeja") && !out.contains("mobile"));
-        }
+        let out = redact_secrets(&format!("pasted {run} here"));
+        assert!(out.contains("[redacted: 12+ word run]"), "{run} -> {out}");
+        let first = run.split(' ').next().unwrap();
+        let last = run.split(' ').next_back().unwrap();
+        assert!(
+            !out.contains(first) && !out.contains(last),
+            "{run} -> {out}"
+        );
     }
     let eleven = "legal winner thank year wave sausage worth useful legal winner thank";
     assert_eq!(redact_secrets(eleven), eleven);
@@ -66,14 +67,16 @@ fn fail_open_alert_is_exempt_and_only_it() {
         redact_secrets(FAIL_OPEN_ALERT_MESSAGE),
         FAIL_OPEN_ALERT_MESSAGE
     );
-    assert_eq!(
-        redact_secrets(FAIL_OPEN_ALERT_MESSAGE),
-        FAIL_OPEN_ALERT_MESSAGE
-    );
-    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    let out = redact_secrets(&format!("{m}: {FAIL_OPEN_ALERT_MESSAGE}: token=abc"));
+    let out = redact_secrets(&format!("{FAIL_OPEN_ALERT_MESSAGE}: token=abc"));
     assert!(out.contains(FAIL_OPEN_ALERT_MESSAGE), "{out}");
-    assert!(!out.contains("sausage") && !out.contains("abc"), "{out}");
+    assert!(!out.contains("abc"), "{out}");
+    // A phrase next to the alert reads as one run with it and is redacted.
+    let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let out = redact_secrets(&format!("{m}: {FAIL_OPEN_ALERT_MESSAGE}"));
+    assert!(
+        !out.contains("sausage") && out.contains("[redacted: 12+ word run]"),
+        "{out}"
+    );
     // A near-miss of the alert is ordinary text and is redacted.
     let near = FAIL_OPEN_ALERT_MESSAGE.replace("invoice", "invoices");
     assert!(redact_secrets(&near).contains("[redacted: 12+ word run]"));
@@ -85,9 +88,66 @@ fn phrase_straddling_the_alert_is_still_redacted() {
     let input = format!(
         "legal winner thank year wave sausage {FAIL_OPEN_ALERT_MESSAGE} worth useful legal winner thank yellow"
     );
-    for out in [redact_secrets(&input), redact_secrets(&input)] {
-        assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
+    let out = redact_secrets(&input);
+    assert!(!out.contains("sausage") && !out.contains("yellow"), "{out}");
+}
+
+/// The exemption is keyed to the stand-in's absence: input that already carries
+/// the stand-in word cannot have it expanded into the alert sentence.
+#[test]
+fn alert_stand_in_in_input_is_not_expanded() {
+    let out = redact_secrets(&format!("ALERTSTANDIN {FAIL_OPEN_ALERT_MESSAGE}"));
+    assert!(!out.contains(FAIL_OPEN_ALERT_MESSAGE), "{out}");
+}
+
+/// Hex of 64 or more characters is redacted bare, whatever its length: a
+/// 128-character seed or a signature is not a 64-character key.
+#[test]
+fn bare_hex_of_64_or_more_is_redacted_at_every_length() {
+    for len in [64, 65, 128, 130] {
+        let hex = "ab12".repeat(len / 4) + &"c".repeat(len % 4);
+        let out = redact_secrets(&format!("value {hex} end"));
+        assert_eq!(out, "value [redacted-hex] end", "len {len}");
     }
+}
+
+/// Separators other than whitespace: every non-letter divides words, so none
+/// of these ways of gluing twelve words together hides them. The plain-space
+/// control keeps a pass from meaning the rule went inert.
+#[test]
+fn phrase_is_redacted_whatever_glues_its_words() {
+    let words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let separators = [
+        ("space (control)", " "),
+        ("colon", ":"),
+        ("underscore", "_"),
+        ("plus", "+"),
+        ("equals", "="),
+        ("numbered list", ": 1. "),
+        ("bidi control U+202E", "\u{202E}"),
+        ("bidi isolate U+2066", "\u{2066}"),
+        ("mongolian vowel separator U+180E", "\u{180E}"),
+        ("combining grapheme joiner U+034F", "\u{034F}"),
+        ("combining mark after a space", " \u{0301}"),
+        ("json unicode escape", "\\u000a"),
+        ("json nbsp escape", "\\u00a0"),
+    ];
+    for (name, sep) in separators {
+        let out = redact_secrets(&format!("pasted {}", words.replace(' ', sep)));
+        assert!(
+            out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
+            "{name}: {out}"
+        );
+    }
+}
+
+/// Long identifiers that merely contain digits between letter runs are
+/// redacted too: the rule cannot tell them from a phrase, and the fail-closed
+/// side is the one this rule is on. Pinned so the boundary is a decision.
+#[test]
+fn long_digit_split_identifier_is_redacted_deliberately() {
+    let id = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9";
+    assert!(redact_secrets(id).starts_with("[redacted: 12+ word run]"));
 }
 
 #[test]
