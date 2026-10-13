@@ -5,32 +5,52 @@
 set -uo pipefail
 GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/audit-build-graph.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-mkdir "$TMP/bin"
-# A fake cargo: `cargo tree -i <spec>` prints a tree only for crates in $BUILT.
-cat > "$TMP/bin/cargo" <<'EOS'
-#!/usr/bin/env bash
-spec="$3"
-case " $BUILT " in *" ${spec%@*} "*) echo "${spec%@*} v1";; esac
-[ "${TREE_ERR:-}" = 1 ] && exit 101
-exit 0
+# A real fixture workspace, so the answer comes from real `cargo tree` and not
+# from a mock that agrees with whatever the script assumes: `shipped` is a normal
+# dependency, `otherplatform` enters only through a target that is not ours.
+# (Path crates under the root are implicitly members, hence the exclude.)
+mkdir -p "$TMP/fx/app/src" "$TMP/fx/shipped/src" "$TMP/fx/otherplatform/src"
+cat > "$TMP/fx/Cargo.toml" <<'EOS'
+[workspace]
+members = ["app"]
+exclude = ["shipped", "otherplatform"]
+resolver = "3"
 EOS
-chmod +x "$TMP/bin/cargo"
+cat > "$TMP/fx/app/Cargo.toml" <<'EOS'
+[package]
+name = "app"
+version = "1.0.0"
+edition = "2021"
+[dependencies]
+shipped = { path = "../shipped" }
+[target.'cfg(target_os = "nonexistent")'.dependencies]
+otherplatform = { path = "../otherplatform" }
+EOS
+for c in shipped otherplatform; do
+  printf '[package]\nname = "%s"\nversion = "1.0.0"\nedition = "2021"\n' "$c" > "$TMP/fx/$c/Cargo.toml"
+  : > "$TMP/fx/$c/src/lib.rs"
+done
+: > "$TMP/fx/app/src/lib.rs"
+(cd "$TMP/fx" && cargo generate-lockfile --offline -q) || { echo "FAIL: could not build the fixture"; exit 1; }
+cd "$TMP/fx"
 fail=0
 vuln() { printf '{"vulnerabilities":{"list":[%s]}}' "$1" > "$TMP/audit.json"; }
 entry() { printf '{"advisory":{"id":"%s"},"package":{"name":"%s","version":"1.0.0"}}' "$1" "$2"; }
 check() { # name want-rc
-  PATH="$TMP/bin:$PATH" AUDIT_JSON_FILE="$TMP/audit.json" "$GUARD" >"$TMP/out" 2>&1
+  AUDIT_JSON_FILE="$TMP/audit.json" "$GUARD" >"$TMP/out" 2>&1
   got=$?
   if [ "$got" -ne "$2" ]; then echo "FAIL: $1 - expected exit $2, got $got"; cat "$TMP/out"; fail=1; else echo "ok: $1 (exit $got)"; fi
 }
 
-export BUILT="shipped"
 vuln ""; check "no advisories passes" 0
-vuln "$(entry RUSTSEC-X quinn-proto)"; check "advisory in a lockfile-only crate does not block" 0
+vuln "$(entry RUSTSEC-X otherplatform)"; check "advisory in a lockfile-only crate does not block" 0
 grep -q "LOCKFILE ONLY" "$TMP/out" || { echo "FAIL: lockfile-only case is not labelled in the output"; fail=1; }
 vuln "$(entry RUSTSEC-Y shipped)"; check "advisory in a crate we build blocks" 1
 grep -q "IN BUILD GRAPH" "$TMP/out" || { echo "FAIL: build-graph case is not labelled in the output"; fail=1; }
-vuln "$(entry RUSTSEC-X quinn-proto),$(entry RUSTSEC-Y shipped)"; check "one built crate among lockfile-only ones blocks" 1
-TREE_ERR=1 vuln "$(entry RUSTSEC-X quinn-proto)"; TREE_ERR=1 check "a cargo tree error fails closed" 1
+vuln "$(entry RUSTSEC-X otherplatform),$(entry RUSTSEC-Y shipped)"; check "one built crate among lockfile-only ones blocks" 1
+vuln "$(entry RUSTSEC-X notinlockfile)"; check "a cargo tree error fails closed" 1
+grep -q "COULD NOT CLASSIFY" "$TMP/out" || { echo "FAIL: tree error is not labelled"; fail=1; }
+vuln '{"advisory":{"id":"RUSTSEC-Z"},"package":{"name":"otherplatform"}}'; check "an entry with no version fails closed" 1
+BUILD_TARGET=all vuln "$(entry RUSTSEC-X otherplatform)"; BUILD_TARGET=all check "--target all would put the other platform's crate in scope (why the script must not use it)" 1
 echo 'not json' > "$TMP/audit.json"; check "unparseable audit output is 'could not run', not a pass" 2
 exit $fail
