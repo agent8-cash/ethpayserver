@@ -13,6 +13,7 @@ import { formatEther, parseEther } from 'viem';
 import { ApiError } from '../fixtures/api';
 import {
   AMOUNT_STEP_WEI,
+  explainInvoiceCreationRefusal,
   expectRunSurvivedArchive,
   MAX_INVOICE_AMOUNT_WEI,
   MIN_INVOICE_AMOUNT_WEI,
@@ -168,5 +169,25 @@ test.describe('expectRunSurvivedArchive', () => {
     await expect(
       expectRunSurvivedArchive(STORE, records.slice(0, 2), 3, fake('archived')),
     ).rejects.toThrow(/recorded 2/);
+  });
+});
+
+test.describe('explainInvoiceCreationRefusal', () => {
+  const blocked = '{"error":"invoice_creation_blocked","message":"over allowance"}';
+
+  test('a volume refusal becomes an error saying it is permanent', () => {
+    const out = explainInvoiceCreationRefusal(new ApiError('POST', '/invoices', 403, blocked));
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toMatch(/will not clear on a re-run/);
+    expect((out as Error).message).toContain('invoice_creation_blocked');
+  });
+
+  test('other refusals and other errors pass through unchanged', () => {
+    const forbidden = new ApiError('POST', '/invoices', 403, '{"error":"forbidden"}');
+    const server = new ApiError('POST', '/invoices', 500, blocked);
+    const plain = new TypeError('boom');
+    expect(explainInvoiceCreationRefusal(forbidden)).toBe(forbidden);
+    expect(explainInvoiceCreationRefusal(server)).toBe(server);
+    expect(explainInvoiceCreationRefusal(plain)).toBe(plain);
   });
 });

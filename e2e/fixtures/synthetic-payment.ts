@@ -9,6 +9,8 @@
  */
 import { parseEther } from 'viem';
 
+import { ApiError } from './api';
+
 /**
  * Bounds of the randomised invoice amount, in wei (inclusive).
  *
@@ -150,4 +152,24 @@ export async function expectRunSurvivedArchive(
       throw new Error(`invoice ${invoiceId} no longer shows payment ${hash} after the archive`);
     }
   }
+}
+
+/**
+ * Turn a volume-limit refusal of invoice creation into an error that says why
+ * it is permanent. Anything else is returned unchanged.
+ *
+ * This test settles a real payment every day, so its account's rolling settled
+ * volume only grows; a plugin that limits volume will eventually refuse it, and
+ * a re-run cannot clear that. `body` is the raw response text.
+ */
+export function explainInvoiceCreationRefusal(e: unknown): unknown {
+  if (e instanceof ApiError && e.status === 403 && e.body.includes('invoice_creation_blocked')) {
+    return new Error(
+      'invoice creation refused for the E2E_API_TOKEN account. The daily payment ' +
+        'accumulates settled volume, so this will not clear on a re-run. The key must ' +
+        'be an operator credential (api_keys.is_operator) - see e2e/README.md. ' +
+        e.message,
+    );
+  }
+  return e;
 }
