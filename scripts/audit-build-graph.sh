@@ -19,11 +19,18 @@ set -uo pipefail
 report=$(mktemp); trap 'rm -f "$report"' EXIT
 if [ -n "${AUDIT_JSON_FILE:-}" ]; then cp "$AUDIT_JSON_FILE" "$report"; else cargo audit --json > "$report"; fi
 
-if ! jq -e '.vulnerabilities.list | type == "array"' "$report" >/dev/null 2>&1; then
+if ! jq -e '.vulnerabilities.list | type == "array" and all(.[]; type == "object")' "$report" >/dev/null 2>&1; then
   echo "ERROR: cargo audit produced no parseable report - the audit COULD NOT RUN (not a pass)."
   head -c 2000 "$report"
   exit 2
 fi
+
+# Read the entries into a variable first: a jq failure inside `< <(...)` is
+# invisible to the loop and would read as "no advisories".
+entries=$(jq -r '.vulnerabilities.list[] | [.advisory.id // "", .package.name // "", .package.version // ""] | @tsv' "$report") || {
+  echo "ERROR: could not read the advisory entries - the audit COULD NOT RUN (not a pass)."
+  exit 2
+}
 
 target="${BUILD_TARGET:-x86_64-unknown-linux-gnu}"
 blocking=0
@@ -47,7 +54,7 @@ while IFS=$'\t' read -r id name version; do
   fi
   rm -f "$err"
   blocking=1
-done < <(jq -r '.vulnerabilities.list[] | [.advisory.id // "", .package.name // "", .package.version // ""] | @tsv' "$report")
+done < <(printf '%s\n' "$entries" | sed '/^$/d')
 
 if [ "$blocking" -ne 0 ]; then
   echo "FAIL: at least one advisory is in a crate we build (or could not be classified)."

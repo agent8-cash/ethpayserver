@@ -51,6 +51,7 @@ vuln "$(entry RUSTSEC-X otherplatform),$(entry RUSTSEC-Y shipped)"; check "one b
 vuln "$(entry RUSTSEC-X notinlockfile)"; check "a cargo tree error fails closed" 1
 grep -q "COULD NOT CLASSIFY" "$TMP/out" || { echo "FAIL: tree error is not labelled"; fail=1; }
 vuln '{"advisory":{"id":"RUSTSEC-Z"},"package":{"name":"otherplatform"}}'; check "an entry with no version fails closed" 1
+printf '{"vulnerabilities":{"list":["x"]}}' > "$TMP/audit.json"; check "a non-object entry is 'could not run', not a pass" 2
 BUILD_TARGET=all vuln "$(entry RUSTSEC-X otherplatform)"; BUILD_TARGET=all check "--target all would put the other platform's crate in scope (why the script must not use it)" 1
 echo 'not json' > "$TMP/audit.json"; check "unparseable audit output is 'could not run', not a pass" 2
 exit $fail
