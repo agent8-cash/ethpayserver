@@ -153,19 +153,47 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     }
 }
 
-/// Structured diagnostics are not a phrase: digits and the punctuation of
-/// paths, URLs, addresses and `key:value` pairs do not divide words, so a long
-/// JSON body or URL keeps its ids and amounts. Twelve letter runs in a row with
-/// only those between them are not the shape of a pasted phrase.
+/// Ids, amounts and hex are not words: a number in quotes or glued to a word
+/// breaks a run, so a short JSON body or a URL keeps what it says. Anything
+/// with twelve letter runs and only punctuation between them is a phrase as far
+/// as the rule can tell (see `twelve_words_joined_by_punctuation_are_redacted`).
 #[test]
-fn structured_text_is_not_a_word_run() {
+fn ids_and_hex_break_a_word_run() {
     for line in [
-        r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia","tx":"t","note":"n","from":"a","to":"b","kind":"k","extra":"e"}"#,
-        "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/abc123) failed",
+        r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia"}"#,
+        "GET https://eth-sepolia.g.alchemy.com/v2/abc123 failed",
         "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9",
         "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
+    }
+}
+
+/// The cost of failing closed, pinned so it is a choice and not a surprise: a
+/// diagnostic line made of twelve or more letter runs is destroyed whole, even
+/// when it is not a phrase, because the alternative is listing the separators a
+/// pasted phrase may use and losing the one we forgot. An eleven-run line is
+/// untouched, and the provider key never survives either way.
+#[test]
+fn twelve_words_joined_by_punctuation_are_redacted() {
+    let eleven = "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank";
+    assert_eq!(redact_secrets(eleven), eleven);
+    for line in [
+        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank:yellow",
+        "- legal\n- winner\n- thank\n- year\n- wave\n- sausage\n- worth\n- useful\n- legal\n- winner\n- thank\n- yellow",
+        "\u{2022} legal \u{2022} winner \u{2022} thank \u{2022} year \u{2022} wave \u{2022} sausage \u{2022} worth \u{2022} useful \u{2022} legal \u{2022} winner \u{2022} thank \u{2022} yellow",
+        "legal. Winner. Thank. Year. Wave. Sausage. Worth. Useful. Legal. Winner. Thank. Yellow.",
+        "legal * winner * thank * year * wave * sausage * worth * useful * legal * winner * thank * yellow",
+        "legal!winner!thank!year!wave!sausage!worth!useful!legal!winner!thank!yellow",
+        "legal winner thank year wave - sausage worth useful legal winner thank yellow",
+        "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)",
+    ] {
+        let out = redact_secrets(line);
+        assert!(
+            out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
+            "not redacted: {line} -> {out}"
+        );
+        assert!(!out.contains("EPqFizwy30"), "key leaked: {out}");
     }
 }
 
@@ -245,10 +273,6 @@ fn redacts_rpc_key_inside_a_provider_error_string() {
     assert!(
         !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),
         "key leaked: {out}"
-    );
-    assert!(
-        out.contains("eth-sepolia.g.alchemy.com"),
-        "host should survive for diagnosis: {out}"
     );
 }
 

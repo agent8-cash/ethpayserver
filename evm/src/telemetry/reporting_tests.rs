@@ -233,7 +233,10 @@ fn parity_with_shared_scrubber() {
         "wss://polygon-mainnet.infura.io:443/ws/v3/0123456789abcdefzz closed",
         "https://api.coingecko.com/api/v3/simple/price?ids=ethereum",
         "https://telemetry.example.com/api/random.cash/envelope/",
-        "no store for merchant@example.com or a@b.co.uk or bad@b.c",
+        // Split in two: any non-letter divides words, so the three together
+        // are a twelve-word run the table redacts whole.
+        "no store for merchant@example.com or a@b.co.uk",
+        "or bad@b.c",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",
         "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
         "twelve plain lowercase words here really do read as ordinary prose ok now",
