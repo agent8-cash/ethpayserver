@@ -529,13 +529,12 @@ fn handler_test_state(service: data_service::PgDataService) -> PgAppState<NoAuth
     )
 }
 
-/// BIP-32 test vector 1's account xpub - real, valid, and reused from
-/// `evm::wallet`'s own `an_xprv_is_never_accepted_as_an_xpub` test so this
-/// file needs no key material of its own. Passed explicitly so the request
-/// takes the "pin to this key" branch of `create_payment_method` rather than
+/// An account-level (depth 3) EVM xpub, the one `evm::wallet`'s tests pin to
+/// the published first address. Depth matters: the handlers refuse any other.
+/// Passed explicitly so the request takes the "pin to this key" branch of `create_payment_method` rather than
 /// the "resolve the store's existing wallet" branch - the chain gate must
 /// refuse tron before either branch runs.
-const HANDLER_TEST_XPUB: &str = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
+const HANDLER_TEST_XPUB: &str = "xpub6DCoCpSuQZB2jawqnGMEPS63ePKWkwWPH4TU45Q7LPXWuNd8TMtVxRrgjtEshuqpK3mdhaWHPFsBngh5GFZaM6si3yZdUsT8ddYM3PwnATt";
 
 /// `tron:728126428` must 400, naming the chain: unlike Sepolia below, it
 /// would otherwise be created pinned to `HANDLER_TEST_XPUB`, and an invoice
@@ -610,6 +609,113 @@ async fn a_sepolia_payment_method_is_still_created_by_the_handler() {
         response.0.chain_id,
         ChainId::parse("eip155:11155111").unwrap()
     );
+}
+
+/// The receive branch (`m/44'/60'/0'/0`) of the same mnemonic as
+/// `HANDLER_TEST_XPUB`, depth 4: it parses, and the deriver would append
+/// `0/i` to it and produce addresses the merchant's wallet never shows.
+const HANDLER_TEST_CHILD_XPUB: &str = "xpub6EF8jXqFeFEW5bwMU7RpQtHkzE4KJxcqJtvkCjJumzW8CPpacXkb92ek4WzLQXjL93HycJwTPUAcuNxCqFPKKU5m5Z2Vq4nCyh5CyPeBFFr";
+
+/// Create must refuse the child-depth key with the depth named, before
+/// anything is stored - and the account key on the same chain still passes.
+#[tokio::test]
+#[ignore]
+async fn creating_a_payment_method_with_a_child_depth_xpub_is_refused() {
+    let service = pg_service().await;
+    let pool = service.pool().clone();
+    let user_id = seed_handler_test_user(&pool).await;
+    let store_id = seed_handler_test_store(&pool, user_id).await;
+    let state = handler_test_state(service);
+    // Unique per run: an xpub may belong to only one account and this test
+    // shares a database with every other.
+    let fresh_account_xpub = evm::HdWallet::from_mnemonic(&evm::generate_mnemonic(12).unwrap(), "")
+        .unwrap()
+        .account_xpub_string_for(evm::ChainFamily::Evm)
+        .unwrap();
+
+    let req = |xpub: &str| CreatePaymentMethodRequest {
+        chain_id: ChainId::parse("eip155:11155111").unwrap(),
+        token_address: None,
+        asset_symbol: "ETH".to_string(),
+        decimals: 18,
+        xpub: Some(xpub.to_string()),
+    };
+
+    let err = create_payment_method(
+        admin_scoped(user_id),
+        State(state.clone()),
+        Path(store_id),
+        Json(req(HANDLER_TEST_CHILD_XPUB)),
+    )
+    .await
+    .expect_err("a depth-4 key must be refused");
+    let (status, body) = body_of(err).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("depth 4"), "must name the depth: {body}");
+
+    let (status, _) = create_payment_method(
+        admin_scoped(user_id),
+        State(state),
+        Path(store_id),
+        Json(req(&fresh_account_xpub)),
+    )
+    .await
+    .expect("the account-level key must still be accepted");
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+/// Update must refuse it too: the method need not exist, because the key is
+/// judged before the method is looked up.
+#[tokio::test]
+#[ignore]
+async fn updating_a_payment_method_to_a_child_depth_xpub_is_refused() {
+    let service = pg_service().await;
+    let pool = service.pool().clone();
+    let user_id = seed_handler_test_user(&pool).await;
+    let store_id = seed_handler_test_store(&pool, user_id).await;
+    let state = handler_test_state(service);
+
+    let err = update_payment_method(
+        admin_scoped(user_id),
+        State(state),
+        Path((store_id, Uuid::new_v4())),
+        Json(UpdatePaymentMethodRequest {
+            enabled: None,
+            xpub: Some(HANDLER_TEST_CHILD_XPUB.to_string()),
+        }),
+    )
+    .await
+    .expect_err("a depth-4 key must be refused");
+    let (status, body) = body_of(err).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("depth 4"), "must name the depth: {body}");
+}
+
+/// Rotation must refuse it as well, with nothing moved.
+#[tokio::test]
+#[ignore]
+async fn rotating_a_store_wallet_to_a_child_depth_xpub_is_refused() {
+    let service = pg_service().await;
+    let pool = service.pool().clone();
+    let user_id = seed_handler_test_user(&pool).await;
+    let store_id = seed_handler_test_store(&pool, user_id).await;
+    let state = handler_test_state(service);
+
+    let err = rotate_store_wallet(
+        admin_scoped(user_id),
+        State(state),
+        Path(store_id),
+        Json(RotateWalletRequest {
+            xpub: HANDLER_TEST_CHILD_XPUB.to_string(),
+            reason: None,
+            namespace: "eip155".to_string(),
+        }),
+    )
+    .await
+    .expect_err("a depth-4 key must be refused");
+    let (status, body) = body_of(err).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("depth 4"), "must name the depth: {body}");
 }
 
 // =========================================================================
