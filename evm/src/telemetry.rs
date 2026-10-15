@@ -793,18 +793,47 @@ pub fn build_subscriber(
     json: bool,
     sentry_min_level: tracing::Level,
 ) -> Box<dyn tracing::Subscriber + Send + Sync> {
+    build_subscriber_with_writer(log_filter, json, sentry_min_level, std::io::stdout)
+}
+
+/// [`build_subscriber`] with the destination of the `fmt` layer injectable.
+///
+/// Whatever `writer` is, it sits behind [`stdout_redact::RedactingMakeWriter`]:
+/// the container log is scrubbed by the same rules as the Sentry payloads, and
+/// there is no way to build this stack without that. Exists so a test can
+/// capture what the real stack writes instead of reading the code.
+pub fn build_subscriber_with_writer<W>(
+    log_filter: tracing_subscriber::EnvFilter,
+    json: bool,
+    sentry_min_level: tracing::Level,
+    writer: W,
+) -> Box<dyn tracing::Subscriber + Send + Sync>
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     use tracing_subscriber::{Layer, layer::SubscriberExt};
+    let writer = stdout_redact::RedactingMakeWriter::new(writer);
     let registry = tracing_subscriber::registry().with(sentry_layer(sentry_min_level));
     if json {
         Box::new(
             registry.with(
                 tracing_subscriber::fmt::layer()
                     .json()
+                    .with_writer(writer)
                     .with_filter(log_filter),
             ),
         )
     } else {
-        Box::new(registry.with(tracing_subscriber::fmt::layer().with_filter(log_filter)))
+        Box::new(
+            registry.with(
+                // No ANSI: escape codes around `key=value` hide the first
+                // word of a value from the mnemonic rule's word boundary.
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .with_filter(log_filter),
+            ),
+        )
     }
 }
 
@@ -835,6 +864,8 @@ pub fn report_reporting_status(dsn_configured: bool, environment: &str) -> anyho
     }
     Ok(())
 }
+
+pub mod stdout_redact;
 
 #[cfg(test)]
 mod alloy_filter_tests;

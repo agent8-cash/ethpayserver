@@ -300,6 +300,8 @@ fn scrub_log_redacts_a_secret_through_the_real_capture_pipeline() {
 mod capture_tests;
 #[cfg(test)]
 mod event_filter_tests;
+#[cfg(test)]
+mod stdout_tests;
 
 // --- ported from this branch's inline `mod tests`, which testnet moved out
 // into this file. De-indented deliberately: this file's contents sit at
