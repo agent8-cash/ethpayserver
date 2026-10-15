@@ -31,7 +31,7 @@ export function groupByRoute(manifest, errors) {
 // could not be captured or reviewed and a route that was reviewed and found
 // clean must not render identically, or the only signal that the pipeline
 // broke is a console line nobody watches on a nightly run.
-export function renderReport(findings, errors, reviewed) {
+export function renderReport(findings, errors, reviewed = 0) {
   const lines = ['# Nightly visual review', ''];
   if (errors.length > 0) {
     lines.push(
