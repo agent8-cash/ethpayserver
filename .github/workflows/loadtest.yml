@@ -28,10 +28,30 @@ jobs:
   loadtest:
     name: Load Test
     runs-on: ubuntu-latest
-    # Only run if secrets are configured (skips forks without secrets).
+    # Skips forks, which have no access to the secrets. Whether the secrets
+    # exist is checked by the first step: a job-level `if` cannot read them.
     if: github.repository == 'randomcash/ethpayserver'
-    continue-on-error: true
     steps:
+      - name: Require load test configuration
+        env:
+          LOADTEST_API_KEY: ${{ secrets.LOADTEST_API_KEY }}
+          LOADTEST_STORE_ID: ${{ secrets.LOADTEST_STORE_ID }}
+          LOADTEST_WS_URL: ${{ secrets.LOADTEST_WS_URL }}
+          INPUT_HOST: ${{ inputs.host }}
+          SECRET_HOST: ${{ secrets.LOADTEST_HOST }}
+        run: |
+          # Running against an empty host generates no load, and the run would
+          # then look like a pass. A check that cannot run must fail, not pass.
+          missing=""
+          [ -n "${INPUT_HOST:-$SECRET_HOST}" ] || missing="$missing LOADTEST_HOST"
+          [ -n "$LOADTEST_API_KEY" ] || missing="$missing LOADTEST_API_KEY"
+          [ -n "$LOADTEST_STORE_ID" ] || missing="$missing LOADTEST_STORE_ID"
+          [ -n "$LOADTEST_WS_URL" ] || missing="$missing LOADTEST_WS_URL"
+          if [ -n "$missing" ]; then
+            echo "::error::Load test COULD NOT RUN, nothing was measured. Missing:$missing"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
@@ -102,6 +122,9 @@ jobs:
 
       - name: Check for regressions
         id: regression
+        # A regression must not fail the job's other steps from reporting, but
+        # the outcome is read by the alert step below.
+        continue-on-error: true
         run: |
           python3 scripts/loadtest-check-regression.py \
             --http results-http.json \
@@ -120,7 +143,7 @@ jobs:
           retention-days: 90
 
       - name: Alert on regression
-        if: steps.regression.outcome == 'failure'
+        if: always() && steps.regression.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

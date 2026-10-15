@@ -157,22 +157,27 @@ impl EventBridge for MemoryBridge {
         // happens to be retained next - it needs the loud `OUT_OF_RANGE`
         // path instead.
         if let Some(cursor) = from {
-            let oldest_retained = {
+            let (oldest, next_seq) = {
                 let outbox = self.outbox.lock().expect("outbox mutex poisoned");
-                outbox
-                    .max_retained
-                    .map(|_| outbox.next_seq - outbox.entries.len() as i64)
+                (
+                    outbox.next_seq - outbox.entries.len() as i64,
+                    outbox.next_seq,
+                )
             };
-            if let Some(oldest) = oldest_retained
-                && oldest > cursor.seq + 1
-            {
+            // Two ways the cursor can name a seq this outbox does not hold:
+            // trimmed away behind the oldest retained entry, or beyond
+            // anything ever published (a cursor from a different process
+            // lifetime). Neither depends on `max_retained` being set, and
+            // the second must be refused here: it would otherwise index
+            // past the end of the retained entries.
+            if cursor.seq < oldest - 1 || cursor.seq >= next_seq {
                 // The epoch is deliberately left alone: bumping it would make
                 // the consumer's next start read an epoch mismatch and
                 // resume past this gap without an error. Left unchanged,
                 // every restart fails the same way until an operator has
                 // audited the gap.
                 return Err(EvmError::EventStreamOutOfRange(format!(
-                    "resume at seq {} is behind the oldest retained entry (seq {oldest})",
+                    "resume at seq {} is outside the retained range (seq {oldest}..{next_seq})",
                     cursor.seq
                 )));
             }
@@ -453,6 +458,48 @@ mod tests {
             next.is_none(),
             "expected the stream to end on a mid-subscription gap, got {next:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn two_instances_do_not_share_an_epoch() {
+        let a = MemoryBridge::new().current_epoch().await.unwrap();
+        let b = MemoryBridge::new().current_epoch().await.unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn resuming_from_a_cursor_never_held_is_refused_not_a_panic() {
+        // Unbounded (`max_retained` is `None`) and empty: the cursor names a
+        // seq this instance never published.
+        let bridge = MemoryBridge::new();
+        let cursor = EventCursor {
+            epoch: bridge.current_epoch().await.unwrap(),
+            seq: 41,
+            block_height: 0,
+        };
+        let res = bridge.subscribe_from(Some(cursor)).await;
+        assert!(matches!(res, Err(EvmError::EventStreamOutOfRange(_))));
+
+        // The newest published seq is still a valid resume point.
+        bridge.publish(&make_event()).await.unwrap(); // seq 0
+        let ok = EventCursor {
+            epoch: cursor.epoch,
+            seq: 0,
+            block_height: 0,
+        };
+        let mut stream = bridge.subscribe_from(Some(ok)).await.unwrap();
+        bridge.publish(&make_event()).await.unwrap(); // seq 1
+        let next = stream.next().await.unwrap();
+        assert_eq!(next.cursor.seq, 1, "resume replays only what follows seq 0");
+
+        // A cursor at the extreme is refused, not an arithmetic overflow.
+        let max = EventCursor {
+            epoch: cursor.epoch,
+            seq: i64::MAX,
+            block_height: 0,
+        };
+        let res = bridge.subscribe_from(Some(max)).await;
+        assert!(matches!(res, Err(EvmError::EventStreamOutOfRange(_))));
     }
 
     #[tokio::test]
