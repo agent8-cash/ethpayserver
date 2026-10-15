@@ -26,7 +26,7 @@ export interface ReceivedWebhook {
  *
  * Thrown only from the tunnel's own provisioning — the 60s no-URL timeout,
  * which is how a `409` from Cloudflare's free provisioning API surfaces, or
- * cloudflared exiting before it reported a URL. A
+ * cloudflared exiting early with that same refusal. A
  * missing binary, or anything after the sink has a URL, is a normal failure:
  * this type means "a third party we do not control was unavailable", so a
  * caller that catches it broadly would relabel real defects as an outage.
@@ -176,6 +176,9 @@ export async function startQuickTunnelWithRetry(
   }
 }
 
+/** What cloudflared prints when the quick-tunnel API refuses to hand out a tunnel. */
+const PROVISIONING_REFUSED = /quick tunnel provisioning failed|Tunnelstore request failed/i;
+
 /** Spawn `cloudflared tunnel --url` and resolve the assigned trycloudflare host. */
 function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: string }> {
   const bin = process.env.E2E_CLOUDFLARED_BIN || 'cloudflared';
@@ -203,15 +206,15 @@ function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: stri
     proc.stdout?.on('data', onChunk);
     proc.stderr?.on('data', onChunk);
 
-    proc.on('exit', (code, signal) => {
-      // Exiting before a URL appeared is provisioning failing fast. After the
-      // URL the promise has settled, so this is a no-op then.
+    // `close`, not `exit`: it fires after the pipes drain, so the provisioning
+    // error text is in `output` by the time we classify.
+    proc.on('close', (code, signal) => {
       clearTimeout(timer);
+      const detail = `cloudflared exited (${signal ?? `code ${code}`}) before reporting a URL. Output:\n${output}`;
+      // Only Cloudflare refusing to provision is "unavailable". A crash, a bad
+      // flag or a wrong-architecture binary also exits early and is our fault.
       reject(
-        new TunnelUnavailableError(
-          `cloudflared exited (${signal ?? `code ${code}`}) before reporting a URL. ` +
-            `Output:\n${output}`,
-        ),
+        PROVISIONING_REFUSED.test(output) ? new TunnelUnavailableError(detail) : new Error(detail),
       );
     });
 

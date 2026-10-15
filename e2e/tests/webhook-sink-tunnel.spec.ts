@@ -46,6 +46,15 @@ test.describe('quick tunnel failure classification', () => {
     expect(fake.attempts()).toBe(2);
   });
 
+  test('an early exit with unrelated output is an ordinary failure and is not retried', async () => {
+    const fake = fakeCloudflared('echo "unknown flag: --bogus" >&2; exit 2');
+    process.env.E2E_CLOUDFLARED_BIN = fake.bin;
+    const err = await startQuickTunnelWithRetry(1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TunnelUnavailableError);
+    expect(fake.attempts()).toBe(1);
+  });
+
   test('a missing binary is an ordinary failure and is not retried', async () => {
     process.env.E2E_CLOUDFLARED_BIN = '/nonexistent/cloudflared';
     const err = await startQuickTunnelWithRetry(1).catch((e: unknown) => e);
