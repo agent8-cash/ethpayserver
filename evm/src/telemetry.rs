@@ -47,92 +47,6 @@ pub const FAIL_OPEN_ALERT_MESSAGE: &str = "invoice creation allowed on a standin
 /// towards a surrounding run.
 const ALERT_STAND_IN: &str = "ALERTSTANDIN";
 
-/// Prefix of the letters-only stand-in for a URL host while rules run; a
-/// four-letter index follows it, so each host is restored to its own place.
-const HOST_STAND_IN: &str = "URLHOSTSTANDIN";
-
-/// The letters-only stand-in for the `index`th masked host.
-fn host_stand_in(index: usize) -> String {
-    let mut token = HOST_STAND_IN.to_string();
-    let mut rest = index;
-    for _ in 0..4 {
-        token.push(char::from(b'a' + (rest % 10) as u8));
-        rest /= 10;
-    }
-    token
-}
-
-/// Most letter runs a host may hold and still be exempt from the phrase rule.
-/// Real hostnames have a handful; a longer one is text joined with `-` or `.`.
-const MAX_HOST_WORDS: usize = 6;
-
-/// Whether `host` is shaped like a hostname with an optional port: DNS
-/// characters only, labels of at most 63 characters (so a bare 64-digit hex
-/// key is not one), at most 253 in all, and few enough words that it cannot
-/// carry a phrase. Anything else is left to the rules, which redact it.
-fn plausible_host(host: &str) -> bool {
-    let name = match host.rsplit_once(':') {
-        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
-        Some(_) => return false,
-        None => host,
-    };
-    let letter_runs = name
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|run| !run.is_empty())
-        .count();
-    !name.is_empty()
-        && name.len() <= 253
-        && letter_runs <= MAX_HOST_WORDS
-        && name.split('.').all(|label| {
-            label.len() <= 63
-                && label
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-}
-
-/// Swap the `host[:port]` of every `scheme://host[:port]` for one letters-only
-/// word, so a hostname's labels are not counted as a phrase's words. Only the host: the
-/// path and query stay visible to every rule, so a key in a path is still
-/// redacted and a phrase after the host is still a phrase. A host followed by
-/// `@` is userinfo, not a host, and is left in the text. Returns the masked text
-/// and the hosts in index order, or `None` when there is nothing to mask or the
-/// input could forge a stand-in.
-fn mask_url_hosts(input: &str) -> Option<(String, Vec<&str>)> {
-    static SCHEME: OnceLock<Regex> = OnceLock::new();
-    let scheme = SCHEME.get_or_init(|| {
-        Regex::new(r"[A-Za-z][A-Za-z0-9+.\-]*://").expect("static url scheme pattern is valid")
-    });
-    if input.contains(HOST_STAND_IN) {
-        return None;
-    }
-    let mut masked = String::with_capacity(input.len());
-    let mut hosts = Vec::new();
-    let mut last = 0;
-    for m in scheme.find_iter(input) {
-        let start = m.end();
-        if start < last || hosts.len() >= 10_000 {
-            continue;
-        }
-        let len = input[start..]
-            .find(|c: char| c.is_whitespace() || "/?#@\"'\\)]>".contains(c))
-            .unwrap_or(input.len() - start);
-        let end = start + len;
-        if len == 0 || input[end..].starts_with('@') || !plausible_host(&input[start..end]) {
-            continue;
-        }
-        masked.push_str(&input[last..start]);
-        masked.push_str(&host_stand_in(hosts.len()));
-        hosts.push(&input[start..end]);
-        last = end;
-    }
-    if hosts.is_empty() {
-        return None;
-    }
-    masked.push_str(&input[last..]);
-    Some((masked, hosts))
-}
-
 /// Ordered `(pattern, replacement)` redaction rules applied to every free-text
 /// field. Compiled once and reused for the life of the process.
 fn rules() -> &'static [(Regex, &'static str)] {
@@ -177,8 +91,9 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // than a leaked seed. The separator is not enumerated either: a
             // phrase joined by commas, hyphens, pipes, slashes, a compact JSON
             // array, digits, a pasted non-breaking space or a zero-width
-            // character is still twelve words. The one thing exempted is the
-            // host of a URL, which `redact_secrets` masks before the rules run.
+            // character is still twelve words. Nothing else is exempted: a URL
+            // host's labels count as words like any other, because any shape an
+            // exemption accepts is a shape a phrase can be split across.
             (
                 build(r"(?:\p{L}+[^\p{L}]+){11,}\p{L}+"),
                 PHRASE_PLACEHOLDER,
@@ -260,13 +175,6 @@ pub fn redact_secrets(input: &str) -> String {
             masked.push_str(&input[last..]);
             return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
         }
-    }
-    if let Some((masked, hosts)) = mask_url_hosts(input) {
-        let mut out = redact_secrets(&masked);
-        for (i, host) in hosts.iter().enumerate() {
-            out = out.replace(&host_stand_in(i), host);
-        }
-        return out;
     }
     let mut out = std::borrow::Cow::Borrowed(input);
     for (re, replacement) in rules() {

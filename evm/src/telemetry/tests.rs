@@ -264,9 +264,9 @@ fn redacts_api_key_in_rpc_url_path() {
 
 #[test]
 fn redacts_rpc_key_inside_a_provider_error_string() {
-    // The shape alloy produces when a connection fails.
-    let msg = "error sending request for url \
-               (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
+    // Kept under twelve words: host labels count towards the phrase rule, so a
+    // longer message is redacted whole, key and host alike.
+    let msg = "url https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-";
     let out = redact_secrets(msg);
     assert!(
         !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),
@@ -967,27 +967,26 @@ fn words_joined_by_punctuation_alone_are_redacted() {
     assert!(!out.contains("sausage"), "compact json array: {out}");
 }
 
-/// The host of a URL is one word, wherever it sits, so a provider error keeps
-/// the host it names; the path stays visible to the rules, and a phrase beside
-/// or inside a URL is still redacted.
+/// A URL host is not exempt: its labels count as words, so a phrase cannot be
+/// hidden by splitting it between a host and the text around it. A short
+/// provider error keeps its host; a run of twelve counted words does not.
 #[test]
-fn url_hosts_count_as_one_word() {
-    let msg = "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/k) \
-               (wss://node-1.mainnet.rpc.example.org:8546/)";
-    let out = redact_secrets(msg);
-    assert!(out.contains("eth-sepolia.g.alchemy.com"), "{out}");
-    assert!(out.contains("node-1.mainnet.rpc.example.org:8546"), "{out}");
+fn url_host_labels_count_as_words() {
+    let short = "request failed for https://eth-sepolia.g.alchemy.com/v2/k";
+    assert!(redact_secrets(short).contains("eth-sepolia.g.alchemy.com"));
     let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    // A phrase in the host position is not a hostname, whatever joins it, and
-    // neither is a bare 64-digit hex key.
+    let words: Vec<&str> = phrase.split(' ').collect();
     let key = "ab".repeat(32);
     for text in [
-        format!("x://{}", phrase.replace(' ', ",")),
-        format!("x://{}", phrase.replace(' ', "-")),
-        format!("x://{}", phrase.replace(' ', ".")),
-        format!("x://{}", phrase.replace(' ', "|")),
-        format!("x://{}", phrase.replace(' ', "_")),
-        format!("x://{}:80", phrase.replace(' ', "-")),
+        "https://legal-winner-thank-year-wave-sausage worth useful legal winner thank yellow"
+            .to_string(),
+        format!("x://{}:80 {}", words[..6].join("-"), words[6..].join(" ")),
+        format!("x://{} x://{}", words[..6].join("-"), words[6..].join("-")),
+        format!("https://example.com {phrase}"),
+        format!("https://example.com/{}", words.join("/")),
+        format!("https://example.com/?w={}", words.join(",")),
+        format!("https://{}@example.com/", words.join("-")),
+        format!("x://{}", words.join("-")),
         format!("x://{key}"),
     ] {
         let out = redact_secrets(&text);
@@ -995,15 +994,5 @@ fn url_hosts_count_as_one_word() {
             !out.contains("sausage") && !out.contains(&key),
             "{text} -> {out}"
         );
-    }
-    for text in [
-        format!("https://example.com {phrase}"),
-        format!("https://example.com/{}", phrase.replace(' ', "/")),
-        format!("https://example.com/?w={}", phrase.replace(' ', ",")),
-        format!("https://{}@example.com/", phrase.replace(' ', "-")),
-        format!("see https://example.com URLHOSTSTANDINaaaa {phrase}"),
-    ] {
-        let out = redact_secrets(&text);
-        assert!(!out.contains("sausage"), "{text} -> {out}");
     }
 }
