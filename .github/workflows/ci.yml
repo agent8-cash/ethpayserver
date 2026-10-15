@@ -184,6 +184,21 @@ jobs:
       - name: Migration guard self-test
         run: ./scripts/check-migrations.test.sh
 
+      # Deleting a test cannot fail a test run, so a merge that resolves a test
+      # file to an older copy can drop the very tests a change is justified by
+      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # this fails if a named test in them vanishes undeclared. See the script.
+      - name: Cited tests still exist
+        env:
+          BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
+        run: |
+          export BASE_REF="origin/$BASE_BRANCH"
+          git fetch -q origin "$BASE_BRANCH"
+          ./scripts/check-test-inventory.sh
+
+      - name: Test inventory guard self-test
+        run: ./scripts/check-test-inventory.test.sh
+
       # A database test helper that returns on a missing or unreachable
       # database makes "ran" and "skipped" the same output. See the script.
       - name: Database tests fail loudly, never skip
@@ -468,8 +483,13 @@ jobs:
         run: ./scripts/check-wasmtime-ignores.test.sh
       - name: wasmtime ignores still valid
         run: ./scripts/check-wasmtime-ignores.sh
-      - name: cargo audit
-        run: cargo audit
+      # cargo audit reads the lockfile, which lists crates no target builds.
+      # This blocks on an advisory in a crate in the build graph and only
+      # reports one that is lockfile-only; the job output labels each.
+      - name: audit build-graph self-test
+        run: ./scripts/audit-build-graph.test.sh
+      - name: cargo audit (build graph blocks, lockfile-only reports)
+        run: ./scripts/audit-build-graph.sh
       - name: cargo deny
         run: cargo deny check licenses sources
 

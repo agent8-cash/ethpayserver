@@ -168,11 +168,11 @@ The monitor supports bidirectional communication via Redis:
 ### API Server Integration
 
 ```rust
-use evm::monitor::{BridgeConfig, EventBridge, MonitorEvent, MonitorCommand};
+use evm::monitor::{EventBridge, RedisBridge, COMMANDS_CHANNEL, EVENTS_CHANNEL, MonitorEvent, MonitorCommand};
 use evm::monitor::events::WatchAddressCommand;
 use tokio_stream::StreamExt;
 
-let bridge = BridgeConfig::redis("redis://localhost:6379").build().await?;
+let bridge = RedisBridge::new("redis://localhost:6379", EVENTS_CHANNEL, COMMANDS_CHANNEL).await?;
 
 // Send command to watch an address
 let cmd = MonitorCommand::WatchAddress(WatchAddressCommand {

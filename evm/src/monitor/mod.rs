@@ -33,9 +33,9 @@
 //! //   EVMMONITOR_WS_1=wss://eth.llamarpc.com
 //!
 //! // API server subscribes to events:
-//! use evm::monitor::bridge::{BridgeConfig, EventBridge};
+//! use evm::monitor::bridge::{EventBridge, RedisBridge, COMMANDS_CHANNEL, EVENTS_CHANNEL};
 //!
-//! let bridge = BridgeConfig::redis("redis://localhost:6379").build().await?;
+//! let bridge = RedisBridge::new("redis://localhost:6379", EVENTS_CHANNEL, COMMANDS_CHANNEL).await?;
 //! let mut events = bridge.subscribe_from(None).await?;
 //!
 //! while let Some(envelope) = events.next().await {
@@ -76,8 +76,8 @@ pub use source::{BlockNotification, BlockSource, ChainHealth, LogFilter, SourceS
 #[cfg(feature = "redis")]
 pub use bridge::RedisBridge;
 pub use bridge::{
-    BridgeConfig, COMMANDS_CHANNEL, CommandStream, DurableEventStream, EVENTS_CHANNEL, EventBridge,
-    EventCursor, EventEnvelope, MemoryBridge,
+    COMMANDS_CHANNEL, CommandStream, DurableEventStream, EVENTS_CHANNEL, EventBridge, EventCursor,
+    EventEnvelope, MemoryBridge,
 };
 
 pub use chain::{BACKFILL_MAX_BLOCKS, ChainMonitor, ChainMonitorConfig, WatchedAddress};

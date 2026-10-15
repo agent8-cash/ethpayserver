@@ -31,7 +31,12 @@ current. It is retained because its open rows (`passes: false`) carry design
 constraints that live nowhere else, for example that a stale watch is reported
 and never auto-removed, and that the reconciler diff key is the full tuple, not
 the address. Check any row against the code and open pull requests before acting
-on it.
+on it. Its `passes` values are a frozen snapshot from 2026-09-26, not a status
+board: a `false` does not mean the work is outstanding. F004 and F005 describe
+queue and worker automation that has since landed in the private deploy
+repository, so they are not work for this one, and F001 and F009 are
+reconciler work whose state is in the code and the open pull requests. Only the
+design constraints in the notes are still wanted.
 
 ## What works today
 
