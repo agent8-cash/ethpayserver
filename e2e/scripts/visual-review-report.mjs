@@ -31,7 +31,7 @@ export function groupByRoute(manifest, errors) {
 // could not be captured or reviewed and a route that was reviewed and found
 // clean must not render identically, or the only signal that the pipeline
 // broke is a console line nobody watches on a nightly run.
-export function renderReport(findings, errors) {
+export function renderReport(findings, errors, reviewed) {
   const lines = ['# Nightly visual review', ''];
   if (errors.length > 0) {
     lines.push(
@@ -46,7 +46,19 @@ export function renderReport(findings, errors) {
   }
 
   if (findings.length === 0) {
-    lines.push(errors.length > 0 ? 'No findings among the routes that were reviewed.' : 'No issues found.');
+    // "No findings" is a claim about routes that were looked at, so it may
+    // never be printed without the count it is out of. Nineteen consecutive
+    // nightly issues said "No findings among the routes that were reviewed"
+    // over a run that reviewed none, because this line could be reached
+    // without knowing that — the review step had no credential and the
+    // sentence read the same as a clean night.
+    if (reviewed === 0) {
+      lines.push('**No route was reviewed** — this run says nothing about the UI either way.');
+    } else if (errors.length > 0) {
+      lines.push(`No findings among the ${reviewed} route(s) that were reviewed.`);
+    } else {
+      lines.push(`No issues found across ${reviewed} route(s).`);
+    }
     return lines.join('\n') + '\n';
   }
 
@@ -87,11 +99,11 @@ export function crashOutputs(err) {
 // disappearing from the published report undetected.
 // Returns null for a clean run with nothing to report, so the caller can
 // skip opening or commenting on an issue at all.
-export function renderPublicSummary(findings, errors, runUrl) {
+export function renderPublicSummary(findings, errors, runUrl, reviewed = 0) {
   if (findings.length === 0 && errors.length === 0) return null;
 
   return (
-    renderReport(findings, errors).trimEnd() +
+    renderReport(findings, errors, reviewed).trimEnd() +
     '\n\n' +
     `Run: ${runUrl}\n\n` +
     'This is advisory — a model judging layout will produce false positives.\n'

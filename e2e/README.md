@@ -348,13 +348,20 @@ after one passkey registration — screenshotted at a mobile (375x812) and a
 desktop (1280x720) viewport. `scripts/visual-review.mjs` then sends each
 route's pair of screenshots to Claude against a fixed rubric (clipped content,
 an unlabelled control, a raw decimal where a formatted amount belongs, and so
-on) and writes `test-results/visual/report.md`.
+on) and writes `test-results/visual/report.md`. The looking is done by the
+Claude Code CLI (`claude -p`), which reads the PNGs off disk itself.
 
 This is advisory, not a gate — a model judging layout will produce false
-positives, and a check that can go red on one gets disabled. `.github/workflows/
-visual-review-scheduled.yml` runs it nightly against testnet and files (or
-comments on) a `visual-review`-labelled issue only when there is something to
-report; it never fails the build.
+positives, and a check that can go red on one gets disabled. It never fails
+the build.
+
+**The nightly job lives in `central-infrastructure`**
+(`.github/workflows/visual-review-testnet.yml`), not here: it points at a
+deployed service and needs a model credential, which is that repo's business
+and not a public repo's. It checks this repo out at `testnet`, runs the two
+commands below, and files (or comments on) a `visual-review`-labelled issue
+*in this repo* only when there is something to report — the findings are
+public bug reports (see below), the credential is not.
 
 This repo is public, so the issue carries the per-finding "what is wrong"
 text in full, not just counts and routes — the rubric only ever asks about
@@ -367,10 +374,18 @@ and report.md / findings.json stay in the job's own ephemeral workspace,
 since a picture of the live UI adds nothing the text doesn't already say.
 
 A route that could not be captured (a broken passkey registration, a
-navigation timeout) or reviewed (an Anthropic API error) is not silently
-dropped — it lands in `findings.json`'s `errors` array and in `report.md`
-as "could not be reviewed," so a broken run reads as incomplete rather than
-as a clean pass with nothing to say.
+navigation timeout) or reviewed (a CLI failure, output that is not
+the asked-for JSON) is not silently dropped — it lands in `findings.json`'s
+`errors` array and in `report.md` as "could not be reviewed," so a broken run
+reads as incomplete rather than as a clean pass with nothing to say.
+
+`findings.json` also carries `reviewed`: how many routes were actually
+judged. "No findings" is a claim about routes that were looked at, so the
+report may not print it without the count it is out of. That is not a
+hypothetical — between 2026-09-27 and 2026-10-15 nineteen consecutive nightly
+runs filed "No findings among the routes that were reviewed" having reviewed
+none, because the credential they needed existed in no repository and a
+missing one exited 0.
 
 Coverage is checked against the client router, not the sidebar:
 `fixtures/client-routes.txt` is a copy of the list payserver-client tests
@@ -386,10 +401,18 @@ nobody reviews has no business slowing down every push. Run it explicitly:
 
 ```bash
 E2E_REMOTE=true E2E_VISUAL_REVIEW=true npx playwright test tests/visual-review.spec.ts
-ANTHROPIC_API_KEY=... node scripts/visual-review.mjs
+CLAUDE_CODE_OAUTH_TOKEN=... node scripts/visual-review.mjs
 ```
 
-`ANTHROPIC_API_KEY` is the only new secret this needs; without it the review
-script logs and exits cleanly locally, but under `E2E_VISUAL_REVIEW=true` (as the
-scheduled workflow sets it) it exits 1 — a missing secret there is a broken
-pipeline, not an empty run. The repository secret must be created by a person.
+`CLAUDE_CODE_OAUTH_TOKEN` is the credential — the same one the agent jobs
+already use, which is the point: this script spent its first nineteen nightly
+runs asking for an `ANTHROPIC_API_KEY` that existed in no repository and that
+nobody had to create for the step to go green. Without it the review script
+logs and exits cleanly locally, but under `E2E_VISUAL_REVIEW=true` (as the
+scheduled job sets it) it exits 1 — a missing credential there is a broken
+pipeline, not an empty run.
+
+`VISUAL_REVIEW_MODEL`, `VISUAL_REVIEW_TIMEOUT_MS` (per route, default 300000)
+and `VISUAL_REVIEW_CLAUDE_BIN` (a stand-in CLI, which is how
+`tests/visual-review-main.spec.ts` runs the real script without a credential)
+are the knobs.

@@ -18,16 +18,19 @@ const [, , outPath, findingsPath, runUrl] = process.argv;
 
 let findings = [];
 let errors = [];
+// Zero unless the review step says otherwise, so a report can never claim
+// "no findings" over routes it never counted — see renderReport.
+let reviewed = 0;
 if (fs.existsSync(findingsPath)) {
-  ({ findings = [], errors = [] } = JSON.parse(fs.readFileSync(findingsPath, 'utf8')));
+  ({ findings = [], errors = [], reviewed = 0 } = JSON.parse(fs.readFileSync(findingsPath, 'utf8')));
 } else {
   errors = [{ route: null, viewport: null, reason: 'findings.json missing — the review step produced no output at all' }];
 }
 
-const body = renderPublicSummary(findings, errors, runUrl);
+const body = renderPublicSummary(findings, errors, runUrl, reviewed);
 if (body === null) {
   console.log('Visual review ran cleanly and found nothing to report.');
 } else {
   fs.writeFileSync(outPath, body);
-  console.log(`wrote ${outPath} (${findings.length} finding(s), ${errors.length} error(s))`);
+  console.log(`wrote ${outPath} (${findings.length} finding(s), ${errors.length} error(s), ${reviewed} route(s) reviewed)`);
 }
