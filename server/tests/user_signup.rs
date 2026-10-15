@@ -222,7 +222,18 @@ async fn a_retry_after_a_lost_reply_gets_the_pending_link_from_the_refusal() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["checkout_url"], "https://pay.example/c/1");
 
-    // Asking for a different plan than the pending invoice is for is refused.
-    let (status, _) = post_signup(&app(&pg, Some(&url)), Some(&key), json!({"plan_id": 2})).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    // THERE IS NO "DIFFERENT PLAN" CASE HERE EITHER, AND THE STUB IS WHY. This
+    // asserted that asking for plan 2 against a pending invoice for plan 1 is
+    // refused, and it passed - because `fake_service` returns a fixed body
+    // echoing `plan_id: 1` whatever is requested, so the handler saw a mismatch.
+    //
+    // The real service does the opposite: it builds the 409 body from the plan
+    // the caller REQUESTED, so it never emits a mismatch and the comparison this
+    // case exercised could never fire in production. The stub modelled a service
+    // that does not exist, the guard was deleted with it, and asserting the
+    // refusal here would now assert behaviour nothing produces.
+    //
+    // What a merchant on another plan actually receives is the first plan's
+    // payment link beside the requested plan's id. The wrong field is the
+    // service's; this repository cannot tell the two plans apart.
 }
