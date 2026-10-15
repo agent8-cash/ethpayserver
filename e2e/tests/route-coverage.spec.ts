@@ -12,7 +12,18 @@
 import { test, expect } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { UNAUTHENTICATED_ROUTES, AUTHENTICATED_ROUTES } from '../fixtures/visual-review-routes';
+import {
+  UNAUTHENTICATED_ROUTES,
+  AUTHENTICATED_ROUTES,
+  ROUTE_DISPOSITION,
+  TAB_STATES,
+  readClientRoutes,
+  dispositionGaps,
+  expectedCaptures,
+  captureGaps,
+  unstyledReason,
+  classesWithoutRules,
+} from '../fixtures/visual-review-routes';
 
 test('scout.spec.ts route coverage stays in sync with visual-review.spec.ts', () => {
   const scoutSrc = fs.readFileSync(path.join('tests', 'scout.spec.ts'), 'utf8');
@@ -38,4 +49,58 @@ test('scout.spec.ts route coverage stays in sync with visual-review.spec.ts', ()
     missing,
     `scout.spec.ts reaches ${missing.join(', ')} but visual-review.spec.ts's route lists do not — add it there`,
   ).toHaveLength(0);
+});
+
+test('every route the client router declares is captured or has a stated reason it is not', () => {
+  const routes = readClientRoutes();
+  // An empty list would make both differences empty - the same result as being in sync.
+  expect(routes.length, 'fixtures/client-routes.txt yielded no routes').toBeGreaterThanOrEqual(10);
+  const { undecided, stale } = dispositionGaps(routes);
+  expect(undecided, `routes with no capture and no stated reason: add them to ROUTE_DISPOSITION`).toEqual([]);
+  expect(stale, `ROUTE_DISPOSITION names routes the router no longer declares`).toEqual([]);
+
+  // A claimed capture must be one this suite actually makes.
+  const made = new Set(expectedCaptures());
+  for (const [route, d] of Object.entries(ROUTE_DISPOSITION)) {
+    if ('captured' in d) expect(made.has(d.captured), `${route} claims capture '${d.captured}' which nothing makes`).toBe(true);
+  }
+});
+
+test('an empty or short manifest is a coverage failure, not a pass', () => {
+  const vps = ['mobile', 'desktop'];
+  const all = expectedCaptures().length * vps.length;
+  expect(captureGaps([], vps)).toHaveLength(all);
+
+  const complete = expectedCaptures().flatMap((route) => vps.map((viewport) => ({ route, viewport, file: 'x.png' })));
+  expect(captureGaps(complete, vps)).toEqual([]);
+  // One screenshot missing, or taken but failed (no file), must be named.
+  expect(captureGaps(complete.slice(1), vps)).toHaveLength(1);
+  expect(captureGaps([{ ...complete[0], file: null }, ...complete.slice(1)], vps)).toHaveLength(1);
+});
+
+test('dropping a route from the list is a stale disposition, adding one is undecided', () => {
+  const routes = readClientRoutes();
+  expect(dispositionGaps(routes.slice(1)).stale).toEqual([routes[0]]);
+  expect(dispositionGaps([...routes, '/evm/brand-new']).undecided).toEqual(['/evm/brand-new']);
+  expect(dispositionGaps(routes)).toEqual({ undecided: [], stale: [] });
+});
+
+test('a view whose classes the stylesheet never defines is unstyled', () => {
+  const styled = '.store-tab-content { } .settings-card, .settings-row:hover { } .btn.btn-primary { }';
+  const classes = ['store-tab-content', 'settings-card', 'settings-row', 'btn', 'btn-primary'];
+  // Negative control: the same markup against a stylesheet missing its rules.
+  expect(unstyledReason(classes, styled)).toBeNull();
+  expect(unstyledReason(classes, '.nav { }')).toMatch(/5 of 5 classes have no stylesheet rule/);
+  // Defining only a longer class must not count as defining its prefix.
+  expect(classesWithoutRules(['btn'], '.btn-primary { }')).toEqual(['btn']);
+  // A sparse view proves nothing either way.
+  expect(unstyledReason(['a', 'b'], '')).toBeNull();
+});
+
+test('every tab state belongs to a route the router declares', () => {
+  const owners = new Set(TAB_STATES.map((t) => t.route));
+  const captured = new Set(Object.values(ROUTE_DISPOSITION).flatMap((d) => ('captured' in d ? [d.captured] : [])));
+  for (const owner of owners) {
+    expect(captured.has(`${owner}-general`) || captured.has(owner), `tab group '${owner}' belongs to no declared route`).toBe(true);
+  }
 });
