@@ -33,6 +33,7 @@ function fakeCloudflared(body: string): { bin: string; attempts: () => number } 
 test.describe('quick tunnel failure classification', () => {
   test.afterEach(() => {
     delete process.env.E2E_CLOUDFLARED_BIN;
+    delete process.env.E2E_TUNNEL_URL_TIMEOUT_MS;
   });
 
   test('a provisioning 409 that exits early is unavailable, and retried once', async () => {
@@ -43,6 +44,20 @@ test.describe('quick tunnel failure classification', () => {
     const err = await startQuickTunnelWithRetry(1).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TunnelUnavailableError);
     expect((err as Error).message).toContain('status 409');
+    expect(fake.attempts()).toBe(2);
+  });
+
+  // The shape of the reported outage: cloudflared prints the refusal and then
+  // stays alive without ever giving a URL, so only the timeout ends it.
+  test('a tunnel that never reports a URL times out as unavailable, and is retried', async () => {
+    const fake = fakeCloudflared(
+      'echo "quick tunnel provisioning failed with status 409" >&2; exec sleep 30',
+    );
+    process.env.E2E_CLOUDFLARED_BIN = fake.bin;
+    process.env.E2E_TUNNEL_URL_TIMEOUT_MS = '300';
+    const err = await startQuickTunnelWithRetry(1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TunnelUnavailableError);
+    expect((err as Error).message).toContain('did not report a URL');
     expect(fake.attempts()).toBe(2);
   });
 
@@ -63,7 +78,7 @@ test.describe('quick tunnel failure classification', () => {
   });
 
   test('a tunnel that reports a URL resolves', async () => {
-    const fake = fakeCloudflared('echo "https://abc-def.trycloudflare.com" >&2; sleep 30');
+    const fake = fakeCloudflared('echo "https://abc-def.trycloudflare.com" >&2; exec sleep 30');
     process.env.E2E_CLOUDFLARED_BIN = fake.bin;
     const started = await startQuickTunnelWithRetry(1);
     started.proc.kill('SIGTERM');

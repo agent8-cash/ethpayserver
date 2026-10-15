@@ -130,6 +130,24 @@ jobs:
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
+      # Option to remove the quick-tunnel dependency: a named tunnel, run from a
+      # connector token, whose public hostname is routed (in the Cloudflare
+      # dashboard) to http://localhost:8788. Skipped when the token is unset,
+      # in which case the sink falls back to a best-effort quick tunnel.
+      - name: Start named tunnel
+        if: env.TUNNEL_TOKEN != ''
+        env:
+          TUNNEL_TOKEN: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+        run: |
+          nohup cloudflared tunnel --no-autoupdate run > "$RUNNER_TEMP/named-tunnel.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            grep -q 'Registered tunnel connection' "$RUNNER_TEMP/named-tunnel.log" && exit 0
+            sleep 2
+          done
+          echo "::error::named tunnel did not register a connection within 60s"
+          cat "$RUNNER_TEMP/named-tunnel.log"
+          exit 1
+
       - name: Invoice → on-chain tx → paid → webhook
         working-directory: e2e
         env:
@@ -137,11 +155,11 @@ jobs:
           E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
           E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
           E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}
-          # Base URL of a named tunnel forwarding to E2E_WEBHOOK_PORT. Unset
-          # (empty) falls back to a best-effort quick tunnel, whose provisioning
-          # can be refused by Cloudflare.
-          E2E_WEBHOOK_PUBLIC_URL: ${{ secrets.E2E_WEBHOOK_PUBLIC_URL }}
-          E2E_WEBHOOK_PORT: ${{ secrets.E2E_WEBHOOK_PUBLIC_URL != '' && '8788' || '' }}
+          # Base URL of the named tunnel started above, which forwards to
+          # E2E_WEBHOOK_PORT. Unset falls back to a best-effort quick tunnel,
+          # whose provisioning can be refused by Cloudflare.
+          E2E_WEBHOOK_PUBLIC_URL: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN != '' && secrets.E2E_WEBHOOK_PUBLIC_URL || '' }}
+          E2E_WEBHOOK_PORT: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN != '' && secrets.E2E_WEBHOOK_PUBLIC_URL != '' && '8788' || '' }}
         run: npx playwright test tests/synthetic-payment.spec.ts
 
       - name: Upload report

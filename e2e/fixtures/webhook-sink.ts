@@ -188,10 +188,15 @@ function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: stri
 
   return new Promise((resolve, reject) => {
     let output = '';
+    const timeoutMs = Number(process.env.E2E_TUNNEL_URL_TIMEOUT_MS) || 60_000;
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new TunnelUnavailableError(`cloudflared did not report a URL within 60s. Output:\n${output}`));
-    }, 60_000);
+      reject(
+        new TunnelUnavailableError(
+          `cloudflared did not report a URL within ${timeoutMs / 1000}s. Output:\n${output}`,
+        ),
+      );
+    }, timeoutMs);
 
     const onChunk = (chunk: Buffer) => {
       output += chunk.toString();

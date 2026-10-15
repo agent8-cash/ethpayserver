@@ -349,7 +349,7 @@ jobs:
         working-directory: e2e
         env:
           E2E_REMOTE: "true"
-        run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts
+        run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts tests/webhook-sink-tunnel.spec.ts
 
   test:
     name: Test
