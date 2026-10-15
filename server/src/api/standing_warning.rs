@@ -134,6 +134,21 @@ pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<Warning> {
     // whom we can actionably warn, and say out loud that most merchants cannot be served
     // yet. An unactionable warning would be worse than silence here precisely because
     // something will later treat delivery as evidence.
+    // DORMANT IN PRODUCTION TODAY, AND THIS RETURN IS WHY. Beyond the missing
+    // renewal route above, the billing service's production renewal entry point
+    // refuses unconditionally - the only call that creates a renewal invoice sits
+    // behind a non-production build flag - so no outstanding invoice id is ever
+    // recorded, and `checkout_url` is derived from one. It is therefore `None` for
+    // every real merchant, and this line returns on every real request.
+    //
+    // So the warning below is correct, tested, and currently reaches nobody. That
+    // is deliberate rather than broken: the alternative is an unactionable notice,
+    // which this rule already forbids. It is said out loud here because
+    // unreachable code that does not say why is indistinguishable from a control
+    // and from an accident - and the next reader will otherwise find a tested
+    // warning and conclude merchants see it.
+    //
+    // The withhold is a deploy-side decision, not this crate's to lift.
     let url = standing.checkout_url.as_deref()?;
     let date = ends.format("%Y-%m-%d");
     Some(Warning {
@@ -365,20 +380,41 @@ mod tests {
         assert_eq!(checkout_url.as_deref(), Some("https://pay.example/c"));
     }
 
+    /// EVERY SILENCE CASE BELOW CARRIES A CHECKOUT URL ON PURPOSE. `warning_for`
+    /// returns early when there is none, so a fixture with `url: None` is silent
+    /// whatever the window and standing logic do - these tests passed with the
+    /// thing they name completely broken. Three of them did, until this was
+    /// measured: each asserted a silence that the missing url produced, not the
+    /// rule in its name.
+    ///
+    /// Keep the url. A fixture here that goes back to `None` stops testing
+    /// anything, and does so silently.
+    const SILENCE_URL: &str = "https://pay.example/c";
+
     #[test]
     fn silent_outside_the_window_and_without_a_date() {
         let now = Utc::now();
-        assert!(warning_for(&held(true, Some(now + Duration::days(6)), None), now).is_none());
-        assert!(warning_for(&held(true, None, None), now).is_none());
+        // Silent because the expiry is OUTSIDE the window, not because there is
+        // nowhere to pay.
+        assert!(
+            warning_for(
+                &held(true, Some(now + Duration::days(6)), Some(SILENCE_URL)),
+                now
+            )
+            .is_none()
+        );
+        // Silent because there is no expiry date at all.
+        assert!(warning_for(&held(true, None, Some(SILENCE_URL)), now).is_none());
     }
 
     #[test]
     fn a_long_lapsed_period_is_silent() {
         let now = Utc::now();
+        // Silent because the lapse is older than the notice period.
         let h = held(
             true,
             Some(now - Duration::days(ENDED_NOTICE_DAYS + 1)),
-            None,
+            Some(SILENCE_URL),
         );
         assert!(warning_for(&h, now).is_none());
     }
@@ -386,7 +422,15 @@ mod tests {
     #[test]
     fn silent_for_an_account_not_in_good_standing() {
         let now = Utc::now();
-        assert!(warning_for(&held(false, Some(now + Duration::days(1)), None), now).is_none());
+        // Silent because the account is not in good standing - an expiry one day
+        // out would otherwise be well inside the window.
+        assert!(
+            warning_for(
+                &held(false, Some(now + Duration::days(1)), Some(SILENCE_URL)),
+                now
+            )
+            .is_none()
+        );
     }
 
     #[test]
