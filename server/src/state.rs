@@ -114,19 +114,18 @@ pub struct AppState<D, A, E> {
     pub account_closed_observers: Vec<Arc<dyn AccountClosedObserver>>,
 
     /// The operator's own store: where this instance issues its own
-    /// invoices, and the one store `invoice_creation_filters` is never
-    /// consulted for.
+    /// invoices, and the one store whose payments are reported to plugins
+    /// through the own-store payment observers.
     ///
-    /// Without this exemption a plugin watching this store can deadlock the
-    /// thing that pays it: the plugin refuses invoice creation for a lapsed
-    /// merchant, the invoice that would renew that merchant is itself
-    /// created on this store, and a plugin bug - or simply a plugin that
-    /// fails closed while it is down - refuses the renewal that would have
-    /// fixed it. The only way out of that state is editing the database by
-    /// hand.
+    /// It is NOT an exemption from `invoice_creation_filters`. That exemption
+    /// is a property of the credential (`AuthenticatedCaller::is_operator`),
+    /// so a store id settable through the admin settings API cannot widen it.
+    /// Without an exemption of some kind a plugin that refuses - through a
+    /// bug, or because it is down and fails closed - would refuse the renewal
+    /// invoice that would have cleared the refusal.
     ///
     /// `None` on any instance that issues no invoices to itself, which
-    /// exempts nothing.
+    /// reports nothing.
     pub operator_store_id: Option<types::StoreId>,
 
     /// The account `operator_store_id` must be owned by, per `Config`.

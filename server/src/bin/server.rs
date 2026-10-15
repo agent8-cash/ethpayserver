@@ -451,7 +451,7 @@ async fn main() -> Result<()> {
     state.invoice_creation_filters = plugin_filters;
     // Capability 8, empty until a plugin is installed, same as the filter list above.
     state.account_closed_observers = plugin_account_closed_observers;
-    // Never filtered: see `AppState::operator_store_id`.
+    // Only drives own-store payment reporting; filter exemption is per credential.
     state.operator_store_id = operator_store_id;
     // Checked against every nomination of a new operator store: see
     // `AppState::operator_account_id`.
