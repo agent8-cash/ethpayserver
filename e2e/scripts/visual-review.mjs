@@ -46,7 +46,12 @@ import { groupByRoute, renderReport, crashOutputs } from './visual-review-report
 
 const VISUAL_DIR = path.join('test-results', 'visual');
 const MANIFEST_PATH = path.join(VISUAL_DIR, 'manifest.json');
-const MODEL = process.env.VISUAL_REVIEW_MODEL || 'claude-sonnet-5-5';
+// Measured against the installed CLI, not guessed: `claude-sonnet-5-5` is not
+// in its model catalog, and asking for it prints an "isn't described by this
+// version's model catalog" warning - on STDOUT, carrying a JSON object of its
+// own - before answering with some fallback. So the id has to be one the CLI
+// knows, and the parser below must not be fooled by a line like that anyway.
+const MODEL = process.env.VISUAL_REVIEW_MODEL || 'claude-sonnet-5';
 // Overridable so a test can point this at a stand-in script instead of the
 // real CLI — see visual-review-main.spec.ts.
 const CLAUDE_BIN = process.env.VISUAL_REVIEW_CLAUDE_BIN || 'claude';
@@ -92,7 +97,15 @@ function loadManifest() {
 
 function runClaude(prompt) {
   return new Promise((resolve, reject) => {
-    const child = spawn(CLAUDE_BIN, ['-p', '--model', MODEL, '--permission-mode', 'bypassPermissions'], {
+    // --allowedTools Read, NOT --permission-mode bypassPermissions. Two
+    // reasons, and the first one is that bypassPermissions does not work
+    // here at all: the job runs in a container as root, and the CLI refuses
+    // the flag it maps to - "--dangerously-skip-permissions cannot be used
+    // with root/sudo privileges for security reasons" - on every route, which
+    // is exactly how the first real run failed. The second is that it was
+    // more permission than this ever needed: the review reads PNGs and
+    // writes nothing.
+    const child = spawn(CLAUDE_BIN, ['-p', '--model', MODEL, '--allowedTools', 'Read'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -121,15 +134,26 @@ function runClaude(prompt) {
 // and unparseable output is exactly the shape a refusal takes — i.e. prose
 // describing the screenshot, i.e. a leaked finding that skipped the rubric.
 function parseFindings(stdout) {
-  const start = stdout.indexOf('{');
   const end = stdout.lastIndexOf('}');
-  if (start === -1 || end <= start) {
+  if (end === -1) {
     throw new Error(`no JSON object in the review output (${stdout.length} bytes)`);
   }
+  // Candidate openings from the RIGHT, not the first '{' in the stream. The
+  // CLI prints its own diagnostics to stdout and some of them contain JSON -
+  // an unrecognized model id prints {"model":"...","query_source":"sdk"} -
+  // and spanning from that brace to the answer's closing one parses as
+  // nothing at all. The answer is last, so the last object that parses is it.
   let parsed;
-  try {
-    parsed = JSON.parse(stdout.slice(start, end + 1));
-  } catch {
+  for (let i = end; i >= 0; i--) {
+    if (stdout[i] !== '{') continue;
+    try {
+      parsed = JSON.parse(stdout.slice(i, end + 1));
+      break;
+    } catch {
+      // Not an object boundary; keep walking left.
+    }
+  }
+  if (parsed === undefined) {
     throw new Error(`unparseable JSON in the review output (${stdout.length} bytes)`);
   }
   if (!Array.isArray(parsed.findings)) {

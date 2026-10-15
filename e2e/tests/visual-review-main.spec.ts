@@ -248,6 +248,34 @@ test('output that is not the asked-for JSON is an error carrying its size, never
   expect(reviewed).toBe(0);
 });
 
+// The CLI prints diagnostics to stdout, and some carry JSON of their own -
+// an unrecognized model id prints {"model":"...","query_source":"sdk"} before
+// the answer. Spanning from the first brace in the stream to the last would
+// parse as nothing, which is how a whole night's review turns into "no route
+// was reviewed" over a working credential.
+test('a JSON-carrying diagnostic line before the answer does not break the parse', async () => {
+  const dir = freshDir();
+  writeManifest(dir, [{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', file: 'wallets-mobile.png', error: null }]);
+  fs.writeFileSync(path.join(visualDir(dir), 'wallets-mobile.png'), Buffer.from([0]));
+
+  const bin = fakeClaude(
+    dir,
+    `process.stdout.write('"claude-sonnet-9" isn\\'t described by this version\\'s model catalog\\n');
+process.stdout.write('[claude-code:unrecognized_model] {"model":"claude-sonnet-9","query_source":"sdk"}\\n');
+process.stdout.write(JSON.stringify({ findings: [{ viewport: 'mobile', what_is_wrong: 'badge breaks the row baseline' }] }));`,
+  );
+
+  const result = await run(dir, { CLAUDE_CODE_OAUTH_TOKEN: 'test-token', VISUAL_REVIEW_CLAUDE_BIN: bin });
+
+  expect(result.status).toBe(0);
+  const { findings, errors, reviewed } = readFindings(dir);
+  expect(errors).toEqual([]);
+  expect(reviewed).toBe(1);
+  expect(findings).toEqual([
+    { route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'badge breaks the row baseline' },
+  ]);
+});
+
 test('a malformed finding fails its route rather than being quietly dropped', async () => {
   const dir = freshDir();
   writeManifest(dir, [{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', file: 'wallets-mobile.png', error: null }]);
