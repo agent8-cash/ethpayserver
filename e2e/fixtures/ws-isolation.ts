@@ -79,9 +79,16 @@ export interface SocketEvidence {
  * nothing leaked does a missing own event matter, and then the isolation
  * claim is unproven rather than false: that is `NOT VERIFIED`, a state
  * distinct from a failed isolation check.
+ *
+ * `productFailures` are genuine failures already observed (an own event with
+ * the wrong status): they are raised after the leak check but before any
+ * `NOT VERIFIED`, so a missing event elsewhere cannot relabel them as "could
+ * not run". `context` is the recorded cause of a missing event (a timeout, a
+ * closed socket) and is appended to the `NOT VERIFIED` message.
  */
-export function judgeIsolation(evidence: SocketEvidence[]): void {
+export function judgeIsolation(evidence: SocketEvidence[], productFailures: string[] = [], context = ''): void {
   for (const e of evidence) expectNothingForeign(e.label, e.frames, e.own);
+  if (productFailures.length) throw new Error(productFailures.join('; '));
   for (const e of evidence) {
     try {
       expectReceived(e.label, e.frames, e.own);
@@ -89,9 +96,16 @@ export function judgeIsolation(evidence: SocketEvidence[]): void {
       throw new Error(
         `NOT VERIFIED - isolation could not run: the precondition (the socket receiving its own events) ` +
           `was not established. No foreign frame was seen, but that proves nothing. ` +
-          `This is not an isolation result. ${(err as Error).message}`,
+          `This is not an isolation result. ${(err as Error).message}` +
+          (context ? ` Cause: ${context}` : ''),
       );
     }
+  }
+  if (context) {
+    throw new Error(
+      `NOT VERIFIED - isolation could not run: ${context}. ` +
+        'No foreign frame was seen, which proves nothing. This is not an isolation result.',
+    );
   }
 }
 

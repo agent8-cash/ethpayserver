@@ -83,4 +83,29 @@ test.describe('isolation checks', () => {
     const a = { label: 'A', frames: timeline(['connected'], ['invoice_status', OWN, 'expired']), own: [OWN] };
     expect(() => judgeIsolation([a])).not.toThrow();
   });
+
+  test('the leak check covers every socket before any socket is judged NOT VERIFIED', () => {
+    const silentA = { label: 'A', frames: timeline(['connected']), own: [OWN] };
+    const leakyB = {
+      label: 'B',
+      frames: timeline(['connected'], ['invoice_status', OTHER, 'expired']),
+      own: ['inv-b'],
+    };
+    expect(() => judgeIsolation([silentA, leakyB])).toThrow(new RegExp(FOREIGN_FRAME_MESSAGE));
+    expect(() => judgeIsolation([silentA, leakyB])).not.toThrow(/NOT VERIFIED/);
+  });
+
+  test('a wrong-status product failure is not relabelled NOT VERIFIED by a missing event elsewhere', () => {
+    const silentA = { label: 'A', frames: timeline(['connected']), own: [OWN] };
+    const failure = ['B was told pending rather than expiry'];
+    expect(() => judgeIsolation([silentA], failure)).toThrow(/B was told pending/);
+    expect(() => judgeIsolation([silentA], failure)).not.toThrow(/NOT VERIFIED/);
+  });
+
+  test('a recorded cause is carried into NOT VERIFIED, and alone it prevents a clean pass', () => {
+    const silentA = { label: 'A', frames: timeline(['connected']), own: [OWN] };
+    expect(() => judgeIsolation([silentA], [], 'B: socket closed by peer')).toThrow(/NOT VERIFIED.*socket closed by peer/);
+    const clean = { label: 'A', frames: timeline(['connected'], ['invoice_status', OWN, 'expired']), own: [OWN] };
+    expect(() => judgeIsolation([clean], [], 'A: socket closed by peer')).toThrow(/NOT VERIFIED/);
+  });
 });

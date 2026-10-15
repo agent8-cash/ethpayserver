@@ -305,17 +305,14 @@ test.describe('Status socket tenant isolation', () => {
       const closed = socket.closedReason();
       if (closed && !precondition) precondition = `${who}: ${closed}`;
     }
-    judgeIsolation([
-      { label: 'A', frames: socketA.frames, own: [s1Only] },
-      { label: 'B', frames: socketB.frames, own: [s2First, s2Second] },
-    ]);
-    if (statusFailures.length) throw new Error(statusFailures.join('; '));
-    if (precondition) {
-      throw new Error(
-        `NOT VERIFIED - isolation could not run: an expected expiry event never arrived or a socket was closed (${precondition}). ` +
-          'No foreign frame was seen, which proves nothing. This is not an isolation result.',
-      );
-    }
+    judgeIsolation(
+      [
+        { label: 'A', frames: socketA.frames, own: [s1Only] },
+        { label: 'B', frames: socketB.frames, own: [s2First, s2Second] },
+      ],
+      statusFailures,
+      precondition ?? '',
+    );
 
     console.log(
       `A (S1 owner) frames: ${socketA.frames.length}, B (S2 owner) frames: ${socketB.frames.length}; ` +
