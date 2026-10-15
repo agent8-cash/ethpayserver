@@ -18,6 +18,7 @@ pub(super) use super::api_key_scope::{
     key_retains_unrestricted_access,
 };
 use super::auth_freshness::{is_grace_expired, is_reauth_stale};
+use super::standing_warning::AccountSlot;
 use crate::state::PgAppState;
 
 /// Carried in the shared `DeprecationSlot` that the deprecation-header
@@ -222,7 +223,9 @@ where
 
     // If the token starts with "ak_", validate as API key
     if token.starts_with("ak_") {
-        return validate_api_key(&token, parts, state, narrow_role).await;
+        let validated = validate_api_key(&token, parts, state, narrow_role).await?;
+        record_account(parts, &validated.0);
+        return Ok(validated);
     }
 
     // Otherwise treat as session UUID
@@ -237,10 +240,22 @@ where
         .await
         .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
 
+    record_account(parts, &user_info);
+
     // A session carries no operator property or key scope of its own - the
     // caller is bound only by their role and store membership, same as
     // before either existed.
     Ok((user_info, false, None))
+}
+
+/// Tell the expiry-warning middleware which account this request is for. A
+/// missing slot (tests, unusual router builds) just means no header.
+fn record_account(parts: &Parts, user: &UserInfo) {
+    if let Some(slot) = parts.extensions.get::<AccountSlot>()
+        && let Ok(mut guard) = slot.lock()
+    {
+        *guard = Some(user.id.0);
+    }
 }
 
 /// Validate an API key and return the associated user info, plus the key's
