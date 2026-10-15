@@ -53,7 +53,6 @@ fn relay_created(body: &serde_json::Value) -> Option<SignupResponse> {
 /// audience, and a 404 may be an unknown plan or a missing route - the service
 /// gives no body to tell them apart.
 fn relay(
-    plan_id: i64,
     status: u16,
     body: &serde_json::Value,
 ) -> Result<SignupResponse, (StatusCode, &'static str)> {
@@ -70,15 +69,26 @@ fn relay(
             );
             Err((StatusCode::NOT_FOUND, "no such plan"))
         }
-        // The service refuses a second create. Its refusal carries the link
-        // of the account's own unpaid first invoice when the reply to the
-        // original signup was lost, so the merchant's retry can still pay. Only
-        // for the plan that was asked for: another plan's link is never
-        // presented as this one.
+        // The service refuses a second create. Its refusal carries the link of
+        // the account's own unpaid first invoice when the reply to the original
+        // signup was lost, so the merchant's retry can still pay.
+        //
+        // THIS DOES NOT CHECK THAT THE LINK IS FOR THE PLAN THAT WAS ASKED FOR,
+        // and it cannot. A comparison against the body's `plan_id` stood here and
+        // was deleted: the service builds that field from the plan the caller
+        // REQUESTED, not the one the subscription is actually on, so the check
+        // compared the requested plan against itself and was true for every
+        // input. It read as protection while providing none, which is worse than
+        // its absence - a later reader would have trusted it.
+        //
+        // The residual hazard is real and is not ours to close here: a merchant
+        // already on one plan who retries naming another receives that other
+        // plan's id beside the first plan's payment link. The wrong field is the
+        // service's, and the fix belongs with it.
         409 => match relay_created(body) {
             Some(SignupResponse {
                 checkout_url: Some(url),
-            }) if body["plan_id"].as_i64() == Some(plan_id) => Ok(SignupResponse {
+            }) => Ok(SignupResponse {
                 checkout_url: Some(url),
             }),
             _ => Err((
@@ -125,9 +135,7 @@ where
     // The account is the session's, never the request's: a merchant cannot
     // name another account because there is no field to name it in.
     match service.subscribe(user.id.0, request.plan_id).await {
-        Ok((status, body)) => {
-            relay(request.plan_id, status, &body).map(|r| (StatusCode::CREATED, Json(r)))
-        }
+        Ok((status, body)) => relay(status, &body).map(|r| (StatusCode::CREATED, Json(r))),
         Err(error) => {
             tracing::error!(%error, "the signup service could not be reached");
             Err((
@@ -147,7 +155,6 @@ mod tests {
     #[test]
     fn only_a_https_checkout_link_is_passed_through() {
         let ok = relay(
-            1,
             201,
             &json!({"checkout_url": "https://pay.example/checkout/1", "x": 1}),
         )
@@ -156,7 +163,7 @@ mod tests {
             ok.checkout_url.as_deref(),
             Some("https://pay.example/checkout/1")
         );
-        let none = relay(1, 201, &json!({"checkout_url": null})).unwrap();
+        let none = relay(201, &json!({"checkout_url": null})).unwrap();
         assert_eq!(none.checkout_url, None);
     }
 
@@ -169,14 +176,13 @@ mod tests {
             json!({}),
             json!({"checkout_url": 7}),
         ] {
-            assert_eq!(relay(1, 201, &body).unwrap_err().0, StatusCode::BAD_GATEWAY);
+            assert_eq!(relay(201, &body).unwrap_err().0, StatusCode::BAD_GATEWAY);
         }
     }
 
     #[test]
     fn a_refusal_that_carries_the_pending_link_hands_it_over() {
         let ok = relay(
-            1,
             409,
             &json!({"checkout_url": "https://pay.example/checkout/1", "plan_id": 1}),
         )
@@ -185,29 +191,33 @@ mod tests {
             ok.checkout_url.as_deref(),
             Some("https://pay.example/checkout/1")
         );
-        // A pending link for a different plan is a refusal, not a success.
-        let other = relay(
-            1,
-            409,
-            &json!({"checkout_url": "https://pay.example/checkout/1", "plan_id": 2}),
-        );
-        assert_eq!(other.unwrap_err().0, StatusCode::CONFLICT);
-        let bad = relay(1, 409, &json!({"checkout_url": "http://pay.example/1"}));
+        // THERE IS NO "DIFFERENT PLAN" CASE TO ASSERT. A case here fed
+        // `plan_id: 2` against a request for plan 1 and asserted a refusal,
+        // which passed - but the service builds that field from the plan the
+        // caller REQUESTED, so it never emits a body where the two differ. The
+        // case tested an input the service cannot produce, and the comparison it
+        // exercised has been deleted with it.
+        //
+        // What a merchant on another plan actually receives is the first plan's
+        // payment link beside the requested plan's id. That is the service's
+        // field to fix and is tracked there; nothing here can tell the two
+        // plans apart.
+        let bad = relay(409, &json!({"checkout_url": "http://pay.example/1"}));
         assert_eq!(bad.unwrap_err().0, StatusCode::CONFLICT);
     }
 
     #[test]
     fn refusals_map_and_anything_else_is_a_bad_gateway() {
         for body in [json!(null), json!({"checkout_url": null})] {
-            assert_eq!(relay(1, 409, &body).unwrap_err().0, StatusCode::CONFLICT);
+            assert_eq!(relay(409, &body).unwrap_err().0, StatusCode::CONFLICT);
         }
         assert_eq!(
-            relay(1, 404, &json!(null)).unwrap_err().0,
+            relay(404, &json!(null)).unwrap_err().0,
             StatusCode::NOT_FOUND
         );
         for status in [200, 401, 403, 500, 503] {
             assert_eq!(
-                relay(1, status, &json!(null)).unwrap_err().0,
+                relay(status, &json!(null)).unwrap_err().0,
                 StatusCode::BAD_GATEWAY
             );
         }
