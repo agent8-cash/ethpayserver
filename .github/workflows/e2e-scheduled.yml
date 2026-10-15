@@ -135,10 +135,15 @@ jobs:
       # dashboard) to http://localhost:8788. Skipped when the token is unset,
       # in which case the sink falls back to a best-effort quick tunnel.
       - name: Start named tunnel
-        if: env.TUNNEL_TOKEN != ''
         env:
           TUNNEL_TOKEN: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+        # The secret is tested here, not in an `if:`: a step's own `env` is not
+        # visible to its `if`, so such a guard would always skip the step.
         run: |
+          if [ -z "$TUNNEL_TOKEN" ]; then
+            echo "no named tunnel token; the sink will use a quick tunnel"
+            exit 0
+          fi
           nohup cloudflared tunnel --no-autoupdate run > "$RUNNER_TEMP/named-tunnel.log" 2>&1 &
           for _ in $(seq 1 30); do
             grep -q 'Registered tunnel connection' "$RUNNER_TEMP/named-tunnel.log" && exit 0

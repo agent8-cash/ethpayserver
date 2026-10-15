@@ -171,7 +171,9 @@ export async function startQuickTunnelWithRetry(
       return await startQuickTunnel(port);
     } catch (err) {
       if (!(err instanceof TunnelUnavailableError) || attempt >= TUNNEL_ATTEMPTS) throw err;
-      console.log(`quick tunnel attempt ${attempt}/${TUNNEL_ATTEMPTS} failed, retrying`);
+      console.log(
+        `quick tunnel attempt ${attempt}/${TUNNEL_ATTEMPTS} failed, retrying: ${err.message}`,
+      );
     }
   }
 }
