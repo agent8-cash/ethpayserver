@@ -137,6 +137,11 @@ jobs:
           E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
           E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
           E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}
+          # Base URL of a named tunnel forwarding to E2E_WEBHOOK_PORT. Unset
+          # (empty) falls back to a best-effort quick tunnel, whose provisioning
+          # can be refused by Cloudflare.
+          E2E_WEBHOOK_PUBLIC_URL: ${{ secrets.E2E_WEBHOOK_PUBLIC_URL }}
+          E2E_WEBHOOK_PORT: ${{ secrets.E2E_WEBHOOK_PUBLIC_URL != '' && '8788' || '' }}
         run: npx playwright test tests/synthetic-payment.spec.ts
 
       - name: Upload report

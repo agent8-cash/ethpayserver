@@ -25,7 +25,8 @@ export interface ReceivedWebhook {
  * The quick-tunnel service did not hand out a URL in time.
  *
  * Thrown only from the tunnel's own provisioning — the 60s no-URL timeout,
- * which is how a `409` from Cloudflare's free provisioning API surfaces. A
+ * which is how a `409` from Cloudflare's free provisioning API surfaces, or
+ * cloudflared exiting before it reported a URL. A
  * missing binary, or anything after the sink has a URL, is a normal failure:
  * this type means "a third party we do not control was unavailable", so a
  * caller that catches it broadly would relabel real defects as an outage.
@@ -162,7 +163,7 @@ export function verifySignature(hook: ReceivedWebhook, secret: string): boolean 
  * The free provisioning API is best-effort and rate-limited, so one refusal
  * says little; retry only the unavailable case, never a spawn failure.
  */
-async function startQuickTunnelWithRetry(
+export async function startQuickTunnelWithRetry(
   port: number,
 ): Promise<{ proc: ChildProcess; url: string }> {
   for (let attempt = 1; ; attempt++) {
@@ -201,6 +202,18 @@ function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: stri
     };
     proc.stdout?.on('data', onChunk);
     proc.stderr?.on('data', onChunk);
+
+    proc.on('exit', (code, signal) => {
+      // Exiting before a URL appeared is provisioning failing fast. After the
+      // URL the promise has settled, so this is a no-op then.
+      clearTimeout(timer);
+      reject(
+        new TunnelUnavailableError(
+          `cloudflared exited (${signal ?? `code ${code}`}) before reporting a URL. ` +
+            `Output:\n${output}`,
+        ),
+      );
+    });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
