@@ -160,7 +160,7 @@ fn diagnostic_lines_without_word_gaps_are_untouched() {
     for line in [
         r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia"}"#,
         "GET https://eth-sepolia.g.alchemy.com/v2/abc123 failed",
-        "https://a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z.example.org/v1/x",
+        "https://eth-sepolia.g.alchemy.com/v1/x",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
     }
@@ -973,14 +973,29 @@ fn words_joined_by_punctuation_alone_are_redacted() {
 #[test]
 fn url_hosts_count_as_one_word() {
     let msg = "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/k) \
-               (wss://a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.example.org:8546/)";
+               (wss://node-1.mainnet.rpc.example.org:8546/)";
     let out = redact_secrets(msg);
     assert!(out.contains("eth-sepolia.g.alchemy.com"), "{out}");
-    assert!(
-        out.contains("a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.example.org:8546"),
-        "{out}"
-    );
+    assert!(out.contains("node-1.mainnet.rpc.example.org:8546"), "{out}");
     let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    // A phrase in the host position is not a hostname, whatever joins it, and
+    // neither is a bare 64-digit hex key.
+    let key = "ab".repeat(32);
+    for text in [
+        format!("x://{}", phrase.replace(' ', ",")),
+        format!("x://{}", phrase.replace(' ', "-")),
+        format!("x://{}", phrase.replace(' ', ".")),
+        format!("x://{}", phrase.replace(' ', "|")),
+        format!("x://{}", phrase.replace(' ', "_")),
+        format!("x://{}:80", phrase.replace(' ', "-")),
+        format!("x://{key}"),
+    ] {
+        let out = redact_secrets(&text);
+        assert!(
+            !out.contains("sausage") && !out.contains(&key),
+            "{text} -> {out}"
+        );
+    }
     for text in [
         format!("https://example.com {phrase}"),
         format!("https://example.com/{}", phrase.replace(' ', "/")),

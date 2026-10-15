@@ -62,6 +62,35 @@ fn host_stand_in(index: usize) -> String {
     token
 }
 
+/// Most letter runs a host may hold and still be exempt from the phrase rule.
+/// Real hostnames have a handful; a longer one is text joined with `-` or `.`.
+const MAX_HOST_WORDS: usize = 6;
+
+/// Whether `host` is shaped like a hostname with an optional port: DNS
+/// characters only, labels of at most 63 characters (so a bare 64-digit hex
+/// key is not one), at most 253 in all, and few enough words that it cannot
+/// carry a phrase. Anything else is left to the rules, which redact it.
+fn plausible_host(host: &str) -> bool {
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        Some(_) => return false,
+        None => host,
+    };
+    let letter_runs = name
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|run| !run.is_empty())
+        .count();
+    !name.is_empty()
+        && name.len() <= 253
+        && letter_runs <= MAX_HOST_WORDS
+        && name.split('.').all(|label| {
+            label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
 /// Swap the `host[:port]` of every `scheme://host[:port]` for one letters-only
 /// word, so a hostname's labels are not counted as a phrase's words. Only the host: the
 /// path and query stay visible to every rule, so a key in a path is still
@@ -89,7 +118,7 @@ fn mask_url_hosts(input: &str) -> Option<(String, Vec<&str>)> {
             .find(|c: char| c.is_whitespace() || "/?#@\"'\\)]>".contains(c))
             .unwrap_or(input.len() - start);
         let end = start + len;
-        if len == 0 || input[end..].starts_with('@') {
+        if len == 0 || input[end..].starts_with('@') || !plausible_host(&input[start..end]) {
             continue;
         }
         masked.push_str(&input[last..start]);
