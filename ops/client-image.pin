@@ -23,4 +23,12 @@
 # Because deploys are separate, this can drift from what is live. That is the
 # tradeoff of independent cadence, and it is deliberate - but if it drifts far,
 # E2E stops telling you anything about production.
+#
+# The gap is meant to be bumped deliberately, not held at zero. The pin exists
+# so E2E has a fixed target; a pin that tracks main on every client commit is
+# a moving target again, and that is exactly what it replaces. Expect some
+# distance, and bump when it is worth the selector work: move the pin and the
+# e2e selectors in the same commit, since a client rename leaves one half
+# looking for controls the other no longer labels that way. The drift job in
+# ci.yml measures the distance and stays non-blocking on purpose.
 ghcr.io/randomcash/payserver-client:sha-7d807b1
