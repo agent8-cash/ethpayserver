@@ -153,16 +153,15 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     }
 }
 
-/// Ids, amounts and hex are not words: a number in quotes or glued to a word
-/// breaks a run, so a short JSON body or a URL keeps what it says. Anything
-/// with twelve letter runs and only punctuation between them is a phrase as far
-/// as the rule can tell (see `twelve_words_joined_by_punctuation_are_redacted`).
+/// Short lines keep what they say: a digit is a separator, not a word, so a
+/// body or URL with fewer than twelve letter runs is untouched. Anything with
+/// twelve letter runs is a phrase as far as the rule can tell (see
+/// `twelve_words_joined_by_punctuation_are_redacted`).
 #[test]
-fn ids_and_hex_break_a_word_run() {
+fn lines_under_twelve_letter_runs_are_untouched() {
     for line in [
         r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia"}"#,
         "GET https://eth-sepolia.g.alchemy.com/v2/abc123 failed",
-        "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9",
         "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
@@ -186,6 +185,11 @@ fn twelve_words_joined_by_punctuation_are_redacted() {
         "legal * winner * thank * year * wave * sausage * worth * useful * legal * winner * thank * yellow",
         "legal!winner!thank!year!wave!sausage!worth!useful!legal!winner!thank!yellow",
         "legal winner thank year wave - sausage worth useful legal winner thank yellow",
+        "legal1 winner2 thank3 year4 wave5 sausage6 worth7 useful8 legal9 winner10 thank11 yellow12",
+        "1legal 2winner 3thank 4year 5wave 6sausage 7worth 8useful 9legal 10winner 11thank 12yellow",
+        "legal winner thank year wave sau5age worth useful legal winner thank yellow",
+        "legal\u{b9} winner\u{b2} thank year wave sausage worth useful legal winner thank yellow",
+        "legal winner thank year wave sausage worth useful legal winner thank 12345678 yellow",
         "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)",
     ] {
         let out = redact_secrets(line);

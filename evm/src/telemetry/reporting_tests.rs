@@ -229,7 +229,9 @@ fn parity_with_shared_scrubber() {
         "0x742d35Cc6634C0532925a3b844Bc454e4438f44e paid 0x1234",
         "tx deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef mined",
         "zzdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefzz",
-        "GET https://eth-mainnet.g.alchemy.com/v2/9f8e7d6c5b4a3210zz failed",
+        // Kept under twelve letter runs, placeholders included: a redacted key
+        // adds three, and a longer line is redacted whole as a phrase.
+        "https://eth-mainnet.g.alchemy.com/v2/9f8e7d6c5b4a3210zz failed",
         "wss://polygon-mainnet.infura.io:443/ws/v3/0123456789abcdefzz closed",
         "https://api.coingecko.com/api/v3/simple/price?ids=ethereum",
         "https://telemetry.example.com/api/random.cash/envelope/",
@@ -238,7 +240,8 @@ fn parity_with_shared_scrubber() {
         "no store for merchant@example.com or a@b.co.uk",
         "or bad@b.c",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",
-        "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
+        "api-key: k1 apikey:k2 API_KEY = k3",
+        "private-key k4 passwd:\tk5",
         "twelve plain lowercase words here really do read as ordinary prose ok now",
         "secretariat: not a word with a key after it",
         "seed abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",

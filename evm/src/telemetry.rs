@@ -88,22 +88,18 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // or wordlist, divided by separators. Membership is deliberately not
             // checked: a wordlist would let other languages, typos and
             // non-BIP-39 seeds through, and a destroyed line costs less than a
-            // leaked seed. A separator is anything that is neither a letter nor
-            // a digit - whitespace of every kind, zero-width and bidi
-            // characters, bullets, dashes, dots, slashes, quotes, commas - so
-            // the set is not one we enumerate, and a JSON escape of a line break
-            // or of a code point. A short number (up to three digits) set off from the
-            // words by separators on both sides is one too, whatever brackets or
-            // punctuation surround it (`1. legal 2. winner`, `[1] legal [2]`,
-            // `#1 legal`, `1, legal`), which is how backups are printed and
-            // pasted, so numbering styles are not enumerated either. A number glued to a
-            // word is not, nor is a long one, so amounts and hex (`a1b2c3...`,
-            // `1234567`) break a run.
-            // so ids and amounts (`inv_1`, `"10"`, `a1b2c3...`, hex) break a run.
+            // leaked seed. A separator is anything that is not a letter -
+            // whitespace of every kind, zero-width and bidi characters, bullets,
+            // dashes, dots, slashes, quotes, commas, a JSON escape of a line
+            // break or of a code point, and digits of any script, length or
+            // position (`1. legal 2. winner`, `legal1 winner2`, `1legal`, a typo
+            // such as `sau5age`) - so the set is not one we enumerate, and a
+            // numbered or mistyped backup does not escape. The cost is that
+            // ids, hex and URLs with twelve letter runs are redacted too; that
+            // is chosen, because telling them from a phrase is a blocklist.
             (
                 build(
-                    &r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|SEP\d{1,3}SEP|SEP)+){11,}\p{L}+"#
-                        .replace("SEP", r#"[^\p{L}\p{N}]"#),
+                    r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[^\p{L}])+){11,}\p{L}+"#,
                 ),
                 PHRASE_PLACEHOLDER,
             ),
