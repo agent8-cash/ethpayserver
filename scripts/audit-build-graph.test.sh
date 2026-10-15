@@ -41,10 +41,40 @@ fail=0
 vuln() { printf '{"vulnerabilities":{"list":[%s]}}' "$1" > "$TMP/audit.json"; }
 entry() { printf '{"advisory":{"id":"%s"},"package":{"name":"%s","version":"1.0.0"}}' "$1" "$2"; }
 check() { # name want-rc
-  AUDIT_JSON_FILE="$TMP/audit.json" "$GUARD" >"$TMP/out" 2>&1
+  AUDIT_JSON_FILE="$TMP/audit.json" AUDIT_FIXTURE_OK=1 "$GUARD" >"$TMP/out" 2>&1
   got=$?
   if [ "$got" -ne "$2" ]; then echo "FAIL: $1 - expected exit $2, got $got"; cat "$TMP/out"; fail=1; else echo "ok: $1 (exit $got)"; fi
 }
+
+# THE FIXTURE MARKER, BOTH HALVES.
+#
+# AUDIT_JSON_FILE alone must not substitute a fixture for the real scan: anything
+# that sets it in the environment would otherwise replace the advisory scan with a
+# file and report a pass. And the legitimate path must still work, or the guard
+# would break its own test and get removed.
+marker_cases() {
+    vuln ""
+    # subject: the fixture is named but not declared -> could-not-run, exit 2.
+    out=$(AUDIT_JSON_FILE="$TMP/audit.json" "$GUARD" 2>&1); rc=$?
+    if [ "$rc" -eq 2 ]; then echo "ok: an undeclared fixture is could-not-run (exit 2)"
+    else echo "FAIL: undeclared fixture exited $rc, wanted 2"; echo "$out"; fail=1; fi
+    case "$out" in
+        *"refusing to substitute"*AUDIT_FIXTURE_OK*|*AUDIT_FIXTURE_OK*"refusing to substitute"*)
+            echo "ok: and the REFUSAL names the marker it wanted" ;;
+        *) echo "FAIL: the refusal does not name AUDIT_FIXTURE_OK (matching the marker alone also matches the success note)"; echo "$out"; fail=1 ;;
+    esac
+    # control: declared -> the fixture is used and an empty report passes. Without
+    # this the subject above would pass even if the marker blocked EVERYTHING.
+    out=$(AUDIT_JSON_FILE="$TMP/audit.json" AUDIT_FIXTURE_OK=1 "$GUARD" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then echo "ok: a declared fixture is used (exit 0)"
+    else echo "FAIL: declared fixture exited $rc, wanted 0"; echo "$out"; fail=1; fi
+    # and it says it substituted, so a fixture run is never mistaken for a real scan
+    case "$out" in
+        *"using the fixture"*) echo "ok: and a fixture run announces itself" ;;
+        *) echo "FAIL: a fixture run does not announce itself"; echo "$out"; fail=1 ;;
+    esac
+}
+marker_cases
 
 vuln ""; check "no advisories passes" 0
 vuln "$(entry RUSTSEC-X otherplatform)"; check "advisory in a lockfile-only crate does not block" 0
