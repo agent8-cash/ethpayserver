@@ -267,6 +267,7 @@ test.describe('Status socket tenant isolation', () => {
     // proxy timeout, say) it records nothing, so a leak after the closure is
     // invisible: that run is reported NOT VERIFIED, never as a clean pass.
     let precondition: string | null = null;
+    const statusFailures: string[] = [];
     async function expectOwnEvent(socket: RecordingSocket, invoiceId: string, who: string): Promise<void> {
       if (precondition) return;
       let frame: Frame;
@@ -276,8 +277,12 @@ test.describe('Status socket tenant isolation', () => {
         precondition = `${who}: ${(e as Error).message}`;
         return;
       }
-      // Outside the try: a wrong status is a product failure, not a missing precondition.
-      expect(frame.status, `${who} was told something other than expiry about its own invoice`).toBe('expired');
+      // Outside the try: a wrong status is a product failure, not a missing
+      // precondition. Recorded rather than thrown so the leak check below still
+      // runs; it is raised after the verdict.
+      if (frame.status !== 'expired') {
+        statusFailures.push(`${who} was told '${frame.status}' rather than expiry about its own invoice ${invoiceId}`);
+      }
     }
 
     const s2First = await expireOne(s2, b);
@@ -294,13 +299,20 @@ test.describe('Status socket tenant isolation', () => {
 
     // Isolation first (a leak is a failure even with no own event), then the
     // positive controls, whose absence is NOT VERIFIED rather than a failure.
+    // A leak is detectable only while a socket is alive. One the peer closed
+    // may have missed frames, so it cannot support a clean verdict.
+    for (const [who, socket] of [['A', socketA], ['B', socketB]] as const) {
+      const closed = socket.closedReason();
+      if (closed && !precondition) precondition = `${who}: ${closed}`;
+    }
     judgeIsolation([
       { label: 'A', frames: socketA.frames, own: [s1Only] },
       { label: 'B', frames: socketB.frames, own: [s2First, s2Second] },
     ]);
+    if (statusFailures.length) throw new Error(statusFailures.join('; '));
     if (precondition) {
       throw new Error(
-        `NOT VERIFIED - isolation could not run: an expected expiry event never arrived (${precondition}). ` +
+        `NOT VERIFIED - isolation could not run: an expected expiry event never arrived or a socket was closed (${precondition}). ` +
           'No foreign frame was seen, which proves nothing. This is not an isolation result.',
       );
     }

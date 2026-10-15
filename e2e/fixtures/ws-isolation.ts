@@ -104,6 +104,8 @@ export interface RecordingSocket {
   frames: Frame[];
   /** Resolves once a frame about `invoiceId` has arrived, rejects after `timeoutMs`. */
   waitForInvoice(invoiceId: string, timeoutMs: number): Promise<Frame>;
+  /** Why the peer closed the socket, or null while it is still open. */
+  closedReason(): string | null;
   close(): void;
 }
 
@@ -173,6 +175,7 @@ export async function openAuthenticatedSocket(sessionToken: string, timeoutMs = 
         waiters.add(check);
       });
     },
+    closedReason: () => closed,
     close() {
       socket.close();
     },
