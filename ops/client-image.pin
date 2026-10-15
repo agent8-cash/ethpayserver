@@ -30,5 +30,7 @@
 # distance, and bump when it is worth the selector work: move the pin and the
 # e2e selectors in the same commit, since a client rename leaves one half
 # looking for controls the other no longer labels that way. The drift job in
-# ci.yml measures the distance and stays non-blocking on purpose.
+# ci.yml stays non-blocking on purpose. It prints the commit count in its own
+# log and warns past a threshold, but nothing yet carries that count anywhere
+# a person reads it, so do not mistake the warning for a report.
 ghcr.io/randomcash/payserver-client:sha-7d807b1
