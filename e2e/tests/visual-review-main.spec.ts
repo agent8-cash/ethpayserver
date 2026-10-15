@@ -215,7 +215,7 @@ test('reviews every route in the manifest and writes their results in one combin
   expect(errors[0].reason).not.toContain('leaky-stderr-should-not-be-published');
   expect(reviewed).toBe(1);
   // One write covering both routes, not one per route.
-  expect(result.stdout).toContain('1 finding(s), 1 error(s), 1 route(s) reviewed');
+  expect(result.stdout).toContain('1 finding(s), 1 error(s), 1 routes reviewed, total unknown');
 
   // One route judged is an advisory run, so it DOES publish - the failed
   // route appears as an error beside the finding, not instead of it.

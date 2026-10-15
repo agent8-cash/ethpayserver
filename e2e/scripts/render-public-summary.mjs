@@ -19,7 +19,7 @@
  * they cannot tell from a broken URL.
  */
 import * as fs from 'node:fs';
-import { renderPublicSummary } from './visual-review-report.mjs';
+import { renderPublicSummary, coverageLabel } from './visual-review-report.mjs';
 
 const [, , outPath, findingsPath, runUrl, runNote = ''] = process.argv;
 
@@ -28,13 +28,14 @@ let errors = [];
 // Zero unless the review step says otherwise, so a report can never claim
 // "no findings" over routes it never counted — see renderReport.
 let reviewed = 0;
+let total = null;
 if (fs.existsSync(findingsPath)) {
-  ({ findings = [], errors = [], reviewed = 0 } = JSON.parse(fs.readFileSync(findingsPath, 'utf8')));
+  ({ findings = [], errors = [], reviewed = 0, total = null } = JSON.parse(fs.readFileSync(findingsPath, 'utf8')));
 } else {
   errors = [{ route: null, viewport: null, reason: 'findings.json missing — the review step produced no output at all' }];
 }
 
-const body = renderPublicSummary(findings, errors, runUrl, reviewed, runNote);
+const body = renderPublicSummary(findings, errors, runUrl, reviewed, runNote, total);
 if (body === null) {
   // Two different nothings, and they must not print the same line: a run that
   // looked at every route and found nothing wrong, and a run that looked at
@@ -43,9 +44,9 @@ if (body === null) {
   console.log(
     reviewed === 0
       ? 'No route was reviewed — publishing nothing. The review step fails in this case; see its log.'
-      : `Visual review ran cleanly across ${reviewed} route(s) and found nothing to report.`,
+      : `Visual review ran cleanly (${coverageLabel(reviewed, total)}) and found nothing to report.`,
   );
 } else {
   fs.writeFileSync(outPath, body);
-  console.log(`wrote ${outPath} (${findings.length} finding(s), ${errors.length} error(s), ${reviewed} route(s) reviewed)`);
+  console.log(`wrote ${outPath} (${findings.length} finding(s), ${errors.length} error(s), ${coverageLabel(reviewed, total)})`);
 }
