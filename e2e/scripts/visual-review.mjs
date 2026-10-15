@@ -231,8 +231,14 @@ async function main() {
   let reviewed = 0;
   for (const [route, group] of routes) {
     try {
-      findings.push(...(await reviewRoute(route, group)));
+      const routeFindings = await reviewRoute(route, group);
+      findings.push(...routeFindings);
       reviewed += 1;
+      // One line per route that was actually judged, naming it. The counts in
+      // the summary say how many; only this says WHICH, and "which" is the
+      // question asked of a nightly that once reported on nothing at all.
+      // Safe in this log: the route path and a count, no model-authored text.
+      console.log(`${route} (${group.path}): judged, ${routeFindings.length} finding(s)`);
     } catch (err) {
       const reason = `review failed: ${err instanceof Error ? err.message : err}`;
       // Not `reason` itself in the console log: `reason` is safe to publish
