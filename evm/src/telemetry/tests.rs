@@ -153,17 +153,14 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     }
 }
 
-/// Short lines, and lines whose words are not set off from each other, keep what
-/// they say: a URL, path or identifier is not a phrase however many letter runs
-/// it has, so a provider error keeps its host and a diagnostic its fields.
+/// Short lines, and URLs whose hostname has many labels, keep what they say, so
+/// a provider error keeps its host and a diagnostic its fields.
 #[test]
 fn diagnostic_lines_without_word_gaps_are_untouched() {
     for line in [
         r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia"}"#,
         "GET https://eth-sepolia.g.alchemy.com/v2/abc123 failed",
-        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner",
-        "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z",
-        "https://api.example.com/v1/invoices/refunds/payouts/stores/users/wallets/chains/rates/hooks/logs/x",
+        "https://a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z.example.org/v1/x",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
     }
@@ -945,13 +942,53 @@ fn key_value_rule_takes_the_whole_value() {
     }
 }
 
-/// The deliberate limit of the narrowed rule, pinned so it is a choice: words
-/// joined by punctuation alone, with no whitespace anywhere, are not read as a
-/// phrase, because the same shape is a URL or an identifier and telling them
-/// apart is not something a shape rule can do. Held to the Sentry half only;
-/// the same limit is why this rule does not belong on the stdout path.
+/// Twelve words joined by punctuation alone are a phrase: a compact JSON array,
+/// a CSV paste, hyphens, pipes, slashes. The rule does not enumerate separators,
+/// so none of these may survive. Each row is checked against its eleven-word
+/// form too, so a pass cannot mean the rule matches everything.
 #[test]
-fn words_joined_by_punctuation_alone_are_not_a_phrase() {
-    let joined = "legal-winner-thank-year-wave-sausage-worth-useful-legal-winner-thank-yellow";
-    assert_eq!(redact_secrets(joined), joined);
+fn words_joined_by_punctuation_alone_are_redacted() {
+    let words: Vec<&str> =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow"
+            .split(' ')
+            .collect();
+    for sep in [",", "-", "|", ":", "/", "_", ";", "\",\"", ".", "+"] {
+        let twelve = words.join(sep);
+        let out = redact_secrets(&format!("[\"{twelve}\"]"));
+        assert!(
+            out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
+            "{sep:?}: {out}"
+        );
+        let eleven = words[..11].join(sep);
+        assert_eq!(redact_secrets(&eleven), eleven, "{sep:?} eleven");
+    }
+    let compact = serde_json::to_string(&words).expect("serialise");
+    let out = redact_secrets(&compact);
+    assert!(!out.contains("sausage"), "compact json array: {out}");
+}
+
+/// The host of a URL is one word, wherever it sits, so a provider error keeps
+/// the host it names; the path stays visible to the rules, and a phrase beside
+/// or inside a URL is still redacted.
+#[test]
+fn url_hosts_count_as_one_word() {
+    let msg = "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/k) \
+               (wss://a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.example.org:8546/)";
+    let out = redact_secrets(msg);
+    assert!(out.contains("eth-sepolia.g.alchemy.com"), "{out}");
+    assert!(
+        out.contains("a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.example.org:8546"),
+        "{out}"
+    );
+    let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    for text in [
+        format!("https://example.com {phrase}"),
+        format!("https://example.com/{}", phrase.replace(' ', "/")),
+        format!("https://example.com/?w={}", phrase.replace(' ', ",")),
+        format!("https://{}@example.com/", phrase.replace(' ', "-")),
+        format!("see https://example.com URLHOSTSTANDINaaaa {phrase}"),
+    ] {
+        let out = redact_secrets(&text);
+        assert!(!out.contains("sausage"), "{text} -> {out}");
+    }
 }

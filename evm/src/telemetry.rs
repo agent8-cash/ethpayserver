@@ -47,6 +47,63 @@ pub const FAIL_OPEN_ALERT_MESSAGE: &str = "invoice creation allowed on a standin
 /// towards a surrounding run.
 const ALERT_STAND_IN: &str = "ALERTSTANDIN";
 
+/// Prefix of the letters-only stand-in for a URL host while rules run; a
+/// four-letter index follows it, so each host is restored to its own place.
+const HOST_STAND_IN: &str = "URLHOSTSTANDIN";
+
+/// The letters-only stand-in for the `index`th masked host.
+fn host_stand_in(index: usize) -> String {
+    let mut token = HOST_STAND_IN.to_string();
+    let mut rest = index;
+    for _ in 0..4 {
+        token.push(char::from(b'a' + (rest % 10) as u8));
+        rest /= 10;
+    }
+    token
+}
+
+/// Swap the `host[:port]` of every `scheme://host[:port]` for one letters-only
+/// word, so a hostname's labels are not counted as a phrase's words. Only the host: the
+/// path and query stay visible to every rule, so a key in a path is still
+/// redacted and a phrase after the host is still a phrase. A host followed by
+/// `@` is userinfo, not a host, and is left in the text. Returns the masked text
+/// and the hosts in index order, or `None` when there is nothing to mask or the
+/// input could forge a stand-in.
+fn mask_url_hosts(input: &str) -> Option<(String, Vec<&str>)> {
+    static SCHEME: OnceLock<Regex> = OnceLock::new();
+    let scheme = SCHEME.get_or_init(|| {
+        Regex::new(r"[A-Za-z][A-Za-z0-9+.\-]*://").expect("static url scheme pattern is valid")
+    });
+    if input.contains(HOST_STAND_IN) {
+        return None;
+    }
+    let mut masked = String::with_capacity(input.len());
+    let mut hosts = Vec::new();
+    let mut last = 0;
+    for m in scheme.find_iter(input) {
+        let start = m.end();
+        if start < last || hosts.len() >= 10_000 {
+            continue;
+        }
+        let len = input[start..]
+            .find(|c: char| c.is_whitespace() || "/?#@\"'\\)]>".contains(c))
+            .unwrap_or(input.len() - start);
+        let end = start + len;
+        if len == 0 || input[end..].starts_with('@') {
+            continue;
+        }
+        masked.push_str(&input[last..start]);
+        masked.push_str(&host_stand_in(hosts.len()));
+        hosts.push(&input[start..end]);
+        last = end;
+    }
+    if hosts.is_empty() {
+        return None;
+    }
+    masked.push_str(&input[last..]);
+    Some((masked, hosts))
+}
+
 /// Ordered `(pattern, replacement)` redaction rules applied to every free-text
 /// field. Compiled once and reused for the life of the process.
 fn rules() -> &'static [(Regex, &'static str)] {
@@ -85,23 +142,16 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // error report loses hashes rather than risk a key.
             (build(r"\b[0-9a-fA-F]{64,}\b"), "[redacted-hex]"),
             // Recovery phrases: 12 or more runs of letters, of any case, script
-            // or wordlist, divided by separators. Membership is deliberately not
-            // checked: a wordlist would let other languages, typos and
-            // non-BIP-39 seeds through, and a destroyed line costs less than a
-            // leaked seed. A separator is either digits alone (`legal1 winner2`,
-            // a typo such as `sau5age`) or any run of non-letters that holds
-            // whitespace of any kind, a zero-width, bidi or combining character, or a JSON
-            // escape of a line break or code point (`1. legal 2. winner`, a
-            // bullet list, a pasted non-breaking space). Punctuation with no
-            // whitespace beside it (`eth-sepolia.g.alchemy.com/v2/`) does not
-            // join words, so a URL, path or identifier is not read as a phrase
-            // and a provider error keeps its host: a word run is words set off
-            // from each other, as the deployed rule required, not any twelve
-            // letter runs.
+            // or wordlist, divided by anything that is not a letter. Membership
+            // is deliberately not checked: a wordlist would let other languages,
+            // typos and non-BIP-39 seeds through, and a destroyed line costs less
+            // than a leaked seed. The separator is not enumerated either: a
+            // phrase joined by commas, hyphens, pipes, slashes, a compact JSON
+            // array, digits, a pasted non-breaking space or a zero-width
+            // character is still twelve words. The one thing exempted is the
+            // host of a URL, which `redact_secrets` masks before the rules run.
             (
-                build(
-                    r#"(?:\p{L}+(?:[\p{N}]+|[^\p{L}]*(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[\p{Z}\p{Cc}\p{Cf}\p{M}])[^\p{L}]*)){11,}\p{L}+"#,
-                ),
+                build(r"(?:\p{L}+[^\p{L}]+){11,}\p{L}+"),
                 PHRASE_PLACEHOLDER,
             ),
             // Email addresses (customer PII).
@@ -181,6 +231,13 @@ pub fn redact_secrets(input: &str) -> String {
             masked.push_str(&input[last..]);
             return redact_secrets(&masked).replace(ALERT_STAND_IN, FAIL_OPEN_ALERT_MESSAGE);
         }
+    }
+    if let Some((masked, hosts)) = mask_url_hosts(input) {
+        let mut out = redact_secrets(&masked);
+        for (i, host) in hosts.iter().enumerate() {
+            out = out.replace(&host_stand_in(i), host);
+        }
+        return out;
     }
     let mut out = std::borrow::Cow::Borrowed(input);
     for (re, replacement) in rules() {
