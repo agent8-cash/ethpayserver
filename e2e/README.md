@@ -314,24 +314,17 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
    prints the address and its balance on every run, and fails with that address
    when the balance hits zero.
 3. Create a user on testnet, mint an API key, store it as `E2E_API_TOKEN`.
-   **The key must be an operator credential** (`api_keys.is_operator = true`).
-   The test settles a real payment daily, so its account's rolling 30-day
-   settled volume only grows; without the flag, a plugin that limits volume
-   refuses invoice creation for good (`403 invoice_creation_blocked`) and the
-   run goes red permanently. The flag is per credential, set in the database,
-   and exempts only that key - other merchants stay limited, which
-   `server/tests/plugin_invoice_creation_filter.rs` pins through the real
-   extractor.
-   There is no approaching-the-limit signal to read: an operator credential is never
-   asked about volume, and a non-operator one learns its standing only from the
-   refusal. So losing the flag (a rotated key, a reset column) shows up as that
-   refusal, which the spec now explains, rather than as an earlier warning.
-   An early volume warning is deliberately deferred. Responses now carry an
-   `X-Account-Warning` header, but only for a paid period that is ending: the server
-   holds no volume figure to warn from, so there is still nothing for this test to
-   read ahead of the refusal. It needs either a fresh account per run (which removes
-   the accumulation) or the volume half of that header, and both are server-side or
-   provisioning work.
+   **Do not exempt this account from the volume limit** - not with the operator
+   flag, not with an allowance override. The test passes through the real
+   enforcement, and exempting it would stop it exercising the mechanism it
+   proves. The test settles a real payment daily, so this account's rolling
+   30-day settled volume only grows; once it passes its allowance, invoice
+   creation is refused for good (`403 invoice_creation_blocked`) and the run
+   goes red until the account is replaced. The spec turns that refusal into an
+   error saying so, but only after the fact: nothing readable warns ahead of it.
+   The lasting fix is a fresh account per run, which needs headless account
+   registration and API-key minting, and a way to remove an account that has
+   settled payments (account deletion refuses those). None of that exists yet.
 4. Store a Sepolia RPC endpoint as `E2E_SEPOLIA_RPC_URL`.
 5. Set `SENTRY_CRON_E2E_URL` to a Sentry Cron Monitor check-in URL. This is
    required, not optional, and the workflow enforces it — the check-in step

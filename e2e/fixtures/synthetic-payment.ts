@@ -167,8 +167,9 @@ export function explainInvoiceCreationRefusal(e: unknown): unknown {
   if (e instanceof ApiError && e.status === 403 && e.body.includes('invoice_creation_blocked')) {
     return new Error(
       'invoice creation refused for the E2E_API_TOKEN account. The daily payment ' +
-        'accumulates settled volume, so this will not clear on a re-run. The key must ' +
-        'be an operator credential (api_keys.is_operator) - see e2e/README.md. ' +
+        'accumulates settled volume, so this will not clear on a re-run. Exempting the ' +
+        'account is not the remedy; the test must run on an account with allowance - see ' +
+        'e2e/README.md. ' +
         e.message,
     );
   }
