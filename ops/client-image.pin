@@ -33,5 +33,5 @@
 # ci.yml stays non-blocking on purpose, and its warning is not the report: the
 # deploy host's scheduled-check watcher measures the same distance and sends it,
 # with the count, to the message bus each time it crosses a step (10, 25, 50,
-# 100 commits), so 42 commits behind does not look like 1.
-ghcr.io/randomcash/payserver-client:sha-7d807b1
+# 100 commits), so a large gap does not look like a small one.
+ghcr.io/randomcash/payserver-client:sha-ca147e2
