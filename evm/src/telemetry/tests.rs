@@ -132,9 +132,9 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     let words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let separators = [
         ("space (control)", " "),
-        ("comma", ","),
-        ("semicolon", ";"),
-        ("pipe", "|"),
+        ("comma and space", ", "),
+        ("semicolon and space", "; "),
+        ("pipe with spaces", " | "),
         ("quoted list", "\", \""),
         ("bidi control U+202E", "\u{202E}"),
         ("bidi isolate U+2066", "\u{2066}"),
@@ -153,51 +153,48 @@ fn phrase_is_redacted_whatever_glues_its_words() {
     }
 }
 
-/// Short lines keep what they say: a digit is a separator, not a word, so a
-/// body or URL with fewer than twelve letter runs is untouched. Anything with
-/// twelve letter runs is a phrase as far as the rule can tell (see
-/// `twelve_words_joined_by_punctuation_are_redacted`).
+/// Short lines, and lines whose words are not set off from each other, keep what
+/// they say: a URL, path or identifier is not a phrase however many letter runs
+/// it has, so a provider error keeps its host and a diagnostic its fields.
 #[test]
-fn lines_under_twelve_letter_runs_are_untouched() {
+fn diagnostic_lines_without_word_gaps_are_untouched() {
     for line in [
         r#"{"invoice":"inv_1","amount":"10","currency":"USD","status":"underpaid","store":"s1","chain":"sepolia"}"#,
         "GET https://eth-sepolia.g.alchemy.com/v2/abc123 failed",
         "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner",
+        "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z",
+        "https://api.example.com/v1/invoices/refunds/payouts/stores/users/wallets/chains/rates/hooks/logs/x",
     ] {
         assert_eq!(redact_secrets(line), line, "over-redacted: {line}");
     }
 }
 
-/// The cost of failing closed, pinned so it is a choice and not a surprise: a
-/// diagnostic line made of twelve or more letter runs is destroyed whole, even
-/// when it is not a phrase, because the alternative is listing the separators a
-/// pasted phrase may use and losing the one we forgot. An eleven-run line is
-/// untouched, and the provider key never survives either way.
+/// Twelve words set off by whitespace, a bullet, a numbering or digits are a
+/// phrase whatever the punctuation around them; eleven are not. Every row must
+/// redact, and the plain-space control keeps a pass from meaning the rule went
+/// inert.
 #[test]
-fn twelve_words_joined_by_punctuation_are_redacted() {
-    let eleven = "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank";
+fn twelve_set_off_words_are_redacted_in_every_layout() {
+    let eleven = "legal winner thank year wave sausage worth useful legal winner thank";
     assert_eq!(redact_secrets(eleven), eleven);
     for line in [
-        "legal:winner:thank:year:wave:sausage:worth:useful:legal:winner:thank:yellow",
+        "legal winner thank year wave sausage worth useful legal winner thank yellow",
         "- legal\n- winner\n- thank\n- year\n- wave\n- sausage\n- worth\n- useful\n- legal\n- winner\n- thank\n- yellow",
         "\u{2022} legal \u{2022} winner \u{2022} thank \u{2022} year \u{2022} wave \u{2022} sausage \u{2022} worth \u{2022} useful \u{2022} legal \u{2022} winner \u{2022} thank \u{2022} yellow",
         "legal. Winner. Thank. Year. Wave. Sausage. Worth. Useful. Legal. Winner. Thank. Yellow.",
         "legal * winner * thank * year * wave * sausage * worth * useful * legal * winner * thank * yellow",
-        "legal!winner!thank!year!wave!sausage!worth!useful!legal!winner!thank!yellow",
         "legal winner thank year wave - sausage worth useful legal winner thank yellow",
         "legal1 winner2 thank3 year4 wave5 sausage6 worth7 useful8 legal9 winner10 thank11 yellow12",
         "1legal 2winner 3thank 4year 5wave 6sausage 7worth 8useful 9legal 10winner 11thank 12yellow",
         "legal winner thank year wave sau5age worth useful legal winner thank yellow",
-        "legal\u{b9} winner\u{b2} thank year wave sausage worth useful legal winner thank yellow",
         "legal winner thank year wave sausage worth useful legal winner thank 12345678 yellow",
-        "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)",
+        "1. legal 2. winner 3. thank 4. year 5. wave 6. sausage 7. worth 8. useful 9. legal 10. winner 11. thank 12. yellow",
     ] {
         let out = redact_secrets(line);
         assert!(
             out.contains("[redacted: 12+ word run]") && !out.contains("sausage"),
             "not redacted: {line} -> {out}"
         );
-        assert!(!out.contains("EPqFizwy30"), "key leaked: {out}");
     }
 }
 
@@ -277,6 +274,10 @@ fn redacts_rpc_key_inside_a_provider_error_string() {
     assert!(
         !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),
         "key leaked: {out}"
+    );
+    assert!(
+        out.contains("eth-sepolia.g.alchemy.com"),
+        "host should survive for diagnosis: {out}"
     );
 }
 
@@ -892,8 +893,7 @@ fn phrase_is_redacted_whatever_separates_its_words() {
     }
 }
 
-/// Numbered backups and single-punctuation joins are how a phrase is printed or
-/// pasted; none may keep a word. The plain-space row is the control.
+/// Numbered backups are how a phrase is printed or pasted; none may keep a word. The plain-space row is the control.
 #[test]
 fn phrase_is_redacted_in_numbered_and_joined_layouts() {
     let w = [
@@ -901,17 +901,6 @@ fn phrase_is_redacted_in_numbered_and_joined_layouts() {
         "winner", "thank", "yellow",
     ];
     let mut cases = vec![("space (control)", w.join(" "))];
-    for (name, sep) in [
-        ("hyphen", "-"),
-        ("underscore", "_"),
-        ("dot", "."),
-        ("colon", ":"),
-        ("slash", "/"),
-        ("plus", "+"),
-        ("equals", "="),
-    ] {
-        cases.push((name, w.join(sep)));
-    }
     let numbered = |f: &dyn Fn(usize) -> String| {
         w.iter()
             .enumerate()
@@ -954,4 +943,15 @@ fn key_value_rule_takes_the_whole_value() {
         let out = redact_secrets(input);
         assert!(!out.contains(tail), "{input} -> {out}");
     }
+}
+
+/// The deliberate limit of the narrowed rule, pinned so it is a choice: words
+/// joined by punctuation alone, with no whitespace anywhere, are not read as a
+/// phrase, because the same shape is a URL or an identifier and telling them
+/// apart is not something a shape rule can do. Held to the Sentry half only;
+/// the same limit is why this rule does not belong on the stdout path.
+#[test]
+fn words_joined_by_punctuation_alone_are_not_a_phrase() {
+    let joined = "legal-winner-thank-year-wave-sausage-worth-useful-legal-winner-thank-yellow";
+    assert_eq!(redact_secrets(joined), joined);
 }

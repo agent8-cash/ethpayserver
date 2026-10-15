@@ -88,18 +88,19 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // or wordlist, divided by separators. Membership is deliberately not
             // checked: a wordlist would let other languages, typos and
             // non-BIP-39 seeds through, and a destroyed line costs less than a
-            // leaked seed. A separator is anything that is not a letter -
-            // whitespace of every kind, zero-width and bidi characters, bullets,
-            // dashes, dots, slashes, quotes, commas, a JSON escape of a line
-            // break or of a code point, and digits of any script, length or
-            // position (`1. legal 2. winner`, `legal1 winner2`, `1legal`, a typo
-            // such as `sau5age`) - so the set is not one we enumerate, and a
-            // numbered or mistyped backup does not escape. The cost is that
-            // ids, hex and URLs with twelve letter runs are redacted too; that
-            // is chosen, because telling them from a phrase is a blocklist.
+            // leaked seed. A separator is either digits alone (`legal1 winner2`,
+            // a typo such as `sau5age`) or any run of non-letters that holds
+            // whitespace of any kind, a zero-width, bidi or combining character, or a JSON
+            // escape of a line break or code point (`1. legal 2. winner`, a
+            // bullet list, a pasted non-breaking space). Punctuation with no
+            // whitespace beside it (`eth-sepolia.g.alchemy.com/v2/`) does not
+            // join words, so a URL, path or identifier is not read as a phrase
+            // and a provider error keeps its host: a word run is words set off
+            // from each other, as the deployed rule required, not any twelve
+            // letter runs.
             (
                 build(
-                    r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[^\p{L}])+){11,}\p{L}+"#,
+                    r#"(?:\p{L}+(?:[\p{N}]+|[^\p{L}]*(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|[\p{Z}\p{Cc}\p{Cf}\p{M}])[^\p{L}]*)){11,}\p{L}+"#,
                 ),
                 PHRASE_PLACEHOLDER,
             ),
