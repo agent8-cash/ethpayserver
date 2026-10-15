@@ -278,6 +278,23 @@ fn redacts_rpc_key_inside_a_provider_error_string() {
     );
 }
 
+/// The full alloy connection-failure message is over the phrase threshold once
+/// every non-letter counts as a word gap, so it is redacted whole, host and
+/// all. That is a known cost of a rule that fails closed on separators, pinned
+/// here so it is a visible decision rather than something the shorter inputs
+/// above quietly avoid: a destroyed provider error costs legibility, and the
+/// key must never survive it either way.
+#[test]
+fn full_provider_error_is_redacted_whole_and_never_leaks_the_key() {
+    let msg = "error sending request for url (https://eth-sepolia.g.alchemy.com/v2/alch_EPqFizwy30wuSFY4ewmD-)";
+    let out = redact_secrets(msg);
+    assert!(
+        !out.contains("alch_EPqFizwy30wuSFY4ewmD-"),
+        "key leaked: {out}"
+    );
+    assert!(out.contains("[redacted: 12+ word run]"), "{out}");
+}
+
 #[test]
 fn keeps_keyless_rpc_urls_readable() {
     for url in [
