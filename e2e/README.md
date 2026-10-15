@@ -371,6 +371,14 @@ dropped — it lands in `findings.json`'s `errors` array and in `report.md`
 as "could not be reviewed," so a broken run reads as incomplete rather than
 as a clean pass with nothing to say.
 
+Coverage is checked against the client router, not the sidebar:
+`fixtures/client-routes.txt` is a copy of the list payserver-client tests
+against its router, and `tests/route-coverage.spec.ts` fails when a route in it
+has neither a capture nor a stated reason in `ROUTE_DISPOSITION`. In-page states
+(the four store tabs) are listed by hand in `TAB_STATES` and are deliberately
+not exhaustive. A nightly run that misses any promised capture at either
+viewport fails its `Coverage` test; the model's judgement stays advisory.
+
 **Off by default**, same reasoning as the synthetic payment: `npx playwright
 test` with no filter is what `ci.yml`'s `e2e` job runs, and a screenshot pass
 nobody reviews has no business slowing down every push. Run it explicitly:

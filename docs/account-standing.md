@@ -6,9 +6,8 @@ An external service decides whether each account is in good standing and
 pushes that decision to this server. The receiver (slice 1 below) is
 built: `POST /plugins/entitlements` answers, and `server/tests/account_standing_push.rs`
 shows it refusing a stale version. The sender's delivery was held back until
-exactly that was shown; whether the sender has lifted that hold is the
-sender's own state, not something this repository can see, so do not read this
-page as saying either way. The later slices (reserved slug, read-only import,
+exactly that was shown; that hold has since been lifted, and the sender no
+longer has a withhold guard or a build feature that bypasses one. The later slices (reserved slug, read-only import,
 filter) are not built here yet.
 
 The push, as the sender emits it:
@@ -214,8 +213,9 @@ In order; each is one PR. **S** marks sensitive (human review first).
 4. **Filter reads the standing (billing, private).** Ships only after 3 is
    deployed, per section 1.
 5. **Sender (billing, private).** Use the second key; push every account once
-   (initial full push); then lift the sender's hold on delivery, citing
-   slice 1's acceptance test. Slice 1 is done; this step belongs to the sender.
+   (initial full push). The sender's hold on delivery, which waited on
+   slice 1's acceptance test, has been lifted. Slice 1 is done; this step
+   belongs to the sender.
 
 Mainnet gets each of these only through a release tag, after testnet has run
 the full sequence, because mainnet holds real merchant funds and there is no
