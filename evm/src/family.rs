@@ -165,6 +165,16 @@ mod tests {
     /// Worth asserting literally rather than reading from the enum: this one
     /// number is the entire difference between a merchant being paid and a
     /// merchant's money landing somewhere only a seed re-import reaches.
+    /// The xpub depth check assumes one depth for every family; if a family's
+    /// account path ever differs, its correct key would be refused.
+    #[test]
+    fn every_family_account_path_is_at_the_depth_the_xpub_check_expects() {
+        for family in [ChainFamily::Evm, ChainFamily::Tron] {
+            let derivations = family.account_path().split('/').skip(1).count();
+            assert_eq!(derivations, usize::from(crate::wallet::ACCOUNT_XPUB_DEPTH));
+        }
+    }
+
     #[test]
     fn each_family_uses_its_own_slip44_coin_type() {
         assert_eq!(ChainFamily::Evm.coin_type(), 60);

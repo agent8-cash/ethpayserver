@@ -57,10 +57,21 @@ function run(dir: string, env: Record<string, string>): Promise<{ status: number
 
 test('no API key: skips silently, writing no findings.json at all', async () => {
   const dir = freshDir();
-  const result = await run(dir, { ANTHROPIC_API_KEY: '' });
+  const result = await run(dir, { ANTHROPIC_API_KEY: '', E2E_VISUAL_REVIEW: '' });
 
   expect(result.stdout).toContain('ANTHROPIC_API_KEY unset — skipping visual review');
   expect(fs.existsSync(path.join(visualDir(dir), 'findings.json'))).toBe(false);
+});
+
+test('no API key in the scheduled run: fails the step and records an error, never a silent skip', async () => {
+  const dir = freshDir();
+  const result = await run(dir, { ANTHROPIC_API_KEY: '', E2E_VISUAL_REVIEW: 'true' });
+
+  expect(result.status).toBe(1);
+  const { findings, errors } = readFindings(dir);
+  expect(findings).toEqual([]);
+  expect(errors).toHaveLength(1);
+  expect(errors[0].reason).toContain('ANTHROPIC_API_KEY is not set');
 });
 
 test('no manifest: a pipeline error, not the empty findings.json a clean run would leave', async () => {

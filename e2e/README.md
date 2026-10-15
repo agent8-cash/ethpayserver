@@ -404,4 +404,6 @@ ANTHROPIC_API_KEY=... node scripts/visual-review.mjs
 ```
 
 `ANTHROPIC_API_KEY` is the only new secret this needs; without it the review
-script logs and exits cleanly rather than failing.
+script logs and exits cleanly locally, but under `E2E_VISUAL_REVIEW=true` (as the
+scheduled workflow sets it) it exits 1 — a missing secret there is a broken
+pipeline, not an empty run. The repository secret must be created by a person.

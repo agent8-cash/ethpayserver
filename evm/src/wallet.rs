@@ -399,6 +399,35 @@ pub fn validate_xpub(xpub_str: &str) -> bool {
     MainnetEncoder::xpub_from_base58(xpub_str).is_ok()
 }
 
+/// BIP-32 depth of the key the deriver expects: `m/44'/{coin}'/0'` is three
+/// derivations below the master key.
+pub const ACCOUNT_XPUB_DEPTH: u8 = 3;
+
+/// If `xpub_str` parses but is not at the account depth, say so.
+///
+/// Derivation appends `0/{index}` to whatever was registered, so a key one
+/// level too deep (the receive branch, `m/44'/60'/0'/0`) yields addresses at
+/// `.../0/0/{index}` - valid, owned by the merchant, and never shown by their
+/// wallet's standard scan. Nothing errors, so the key is refused up front
+/// with the depth named. A string that does not parse returns `None`; that
+/// is `validate_xpub`'s refusal to make.
+///
+/// A dedicated hardened account such as `m/44'/60'/7'` is also depth 3 and
+/// is accepted.
+pub fn xpub_depth_problem(xpub_str: &str) -> Option<String> {
+    let xpub = MainnetEncoder::xpub_from_base58(xpub_str).ok()?;
+    let info: &coins_bip32::primitives::XKeyInfo = xpub.as_ref();
+    let depth = info.depth;
+    if depth == ACCOUNT_XPUB_DEPTH {
+        return None;
+    }
+    Some(format!(
+        "invalid_xpub_depth: this key is at depth {depth}; register the account-level key at \
+         depth {ACCOUNT_XPUB_DEPTH} (the m/44'/<coin>'/<account>' level your wallet exports, \
+         e.g. m/44'/60'/0' for Ethereum), not a deeper or shallower one"
+    ))
+}
+
 /// Names the more likely reason a string failed `validate_xpub`: it looks
 /// like a pasted *private* key rather than a typo or truncation - either an
 /// extended private key (`xprv`/`tprv`) or the raw 32-byte secp256k1 key a
