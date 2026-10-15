@@ -162,10 +162,7 @@ pub fn redact_secrets(input: &str) -> String {
             let end = start + m.len();
             let before = input[..start].chars().next_back();
             let after = input[end..].chars().next();
-            if start >= last
-                && !before.is_some_and(char::is_alphabetic)
-                && !after.is_some_and(char::is_alphabetic)
-            {
+            if !before.is_some_and(char::is_alphabetic) && !after.is_some_and(char::is_alphabetic) {
                 masked.push_str(&input[last..start]);
                 masked.push_str(ALERT_STAND_IN);
                 last = end;

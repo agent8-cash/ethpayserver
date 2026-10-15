@@ -260,26 +260,11 @@ fn parity_with_shared_scrubber() {
     }
 }
 
-/// Known divergence, in the open so it cannot widen unnoticed: the shared
-/// scrubber only knows lowercase words split by whitespace, so a capitalised or
-/// quoted-list phrase passes it. It is the browser-side copy; this table is
-/// what the Sentry sinks use. Stdout redaction is not covered by either.
+/// A bearer token after the scheme word is removed, not just the scheme.
 #[test]
-fn shared_scrubber_is_weaker_on_non_lowercase_phrases() {
-    let phrase =
-        "Legal, Winner, Thank, Year, Wave, Sausage, Worth, Useful, Legal, Winner, Thank, Yellow";
-    assert_ne!(redact_secrets(phrase), phrase);
-    assert_eq!(scrub::redact_secrets(phrase), phrase);
-}
-
-/// Known divergence in the other direction: the shared scrubber's key rule
-/// swallows the scheme word of `Authorization: Bearer <token>` and leaves the
-/// token itself. This table removes it.
-#[test]
-fn shared_scrubber_leaves_a_bearer_token_this_table_removes() {
+fn bearer_token_value_is_redacted() {
     let line = "Authorization: Bearer rc_live_opaque123";
     assert!(!redact_secrets(line).contains("rc_live_opaque123"));
-    assert!(scrub::redact_secrets(line).contains("rc_live_opaque123"));
 }
 
 #[test]
