@@ -92,15 +92,17 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // a digit - whitespace of every kind, zero-width and bidi
             // characters, bullets, dashes, dots, slashes, quotes, commas - so
             // the set is not one we enumerate, and a JSON escape of a line break
-            // or of a code point. A list number set off from the words and
-            // closed by `.`, `)`, `:` or `-` is one too (`1. legal 2. winner`,
-            // `1) legal`), which is how wallets print a backup, and so is a
-            // bare number between spaces
-            // (`1 legal 2 winner`). A number in quotes or glued to a word is not,
+            // or of a code point. A short number (up to three digits) set off from the
+            // words by separators on both sides is one too, whatever brackets or
+            // punctuation surround it (`1. legal 2. winner`, `[1] legal [2]`,
+            // `#1 legal`, `1, legal`), which is how backups are printed and
+            // pasted, so numbering styles are not enumerated either. A number glued to a
+            // word is not, nor is a long one, so amounts and hex (`a1b2c3...`,
+            // `1234567`) break a run.
             // so ids and amounts (`inv_1`, `"10"`, `a1b2c3...`, hex) break a run.
             (
                 build(
-                    &r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|SEP\d{1,3}[.):\-]+|\d{1,3}[.):\-]+SEP|\s\d{1,3}\s|SEP)+){11,}\p{L}+"#
+                    &r#"(?:\p{L}+(?:\\+u[0-9a-fA-F]{4}|\\+[nrt]|SEP\d{1,3}SEP|SEP)+){11,}\p{L}+"#
                         .replace("SEP", r#"[^\p{L}\p{N}]"#),
                 ),
                 PHRASE_PLACEHOLDER,

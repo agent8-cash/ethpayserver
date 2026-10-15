@@ -918,6 +918,10 @@ fn phrase_is_redacted_in_numbered_and_joined_layouts() {
     cases.push(("dot-numbered", numbered(&|i| format!("{i}. "))));
     cases.push(("paren-numbered", numbered(&|i| format!("{i}) "))));
     cases.push(("bare-numbered", numbered(&|i| format!("{i} "))));
+    cases.push(("bracketed", numbered(&|i| format!("[{i}] "))));
+    cases.push(("comma-numbered", numbered(&|i| format!("{i}, "))));
+    cases.push(("hash-numbered", numbered(&|i| format!("#{i} "))));
+    cases.push(("close-bracket-only", numbered(&|i| format!("{i}] "))));
     cases.push((
         "newline list",
         w.iter()
