@@ -7,6 +7,13 @@ import { test, expect } from '@playwright/test';
 import { assertSafeTarget, OPT_IN_VARIABLE, RESERVED_PORTS_VARIABLE } from '../fixtures/target-guard';
 
 // An arbitrary port inside the local range, reserved only for these tests.
+//
+// EVERY REFUSAL TEST BELOW INJECTS ITS OWN LIST, so none of them exercises the
+// set the harness actually runs with. They passed while the built-in set was
+// empty and the no-override refusal could not fire at all - a fixture holding
+// the tests outside the condition they are named for. The three cases at the
+// bottom of this file cover the REAL default instead, and must be read as the
+// ones that fail if the built-in set is emptied again.
 const RESERVED = 3077;
 const reserved = { [RESERVED_PORTS_VARIABLE]: `3001, ${RESERVED}` };
 const live = `http://localhost:${RESERVED}`;
@@ -54,4 +61,46 @@ test('remote mode is untouched', () => {
 
 test('an IPv6 loopback target inside the range passes without the opt-in', () => {
   expect(() => assertSafeTarget({ E2E_API_URL: 'http://[::1]:3000' })).not.toThrow();
+});
+
+// ---------------------------------------------------------------------------
+// THE REAL DEFAULT, with no E2E_RESERVED_PORTS at all. The live service's port
+// is published in docker/nginx/example.conf and is 3100; the guard must refuse
+// it with nothing configured, because an environment that forgets the variable
+// is exactly the one that needs the refusal.
+const LIVE = 3100;
+
+test('the live service port is refused with no E2E_RESERVED_PORTS set', () => {
+  expect(() => assertSafeTarget({ E2E_API_URL: `http://localhost:${LIVE}` })).toThrow(
+    /live service's port/,
+  );
+  expect(() => assertSafeTarget({ E2E_API_URL: `http://127.0.0.1:${LIVE}` })).toThrow(
+    /live service's port/,
+  );
+});
+
+test('the opt-in cannot unlock the live service port with nothing configured', () => {
+  // Without the built-in set this does not merely weaken: the port falls
+  // through to the loopback/range check, where the opt-in DOES let it pass. So
+  // this case is the difference between an unconditional refusal and an
+  // overridable one, and it is the one to break when checking this file.
+  expect(() =>
+    assertSafeTarget({ E2E_API_URL: `http://localhost:${LIVE}`, [OPT_IN_VARIABLE]: 'true' }),
+  ).toThrow(/live service's port/);
+});
+
+test('E2E_RESERVED_PORTS adds to the built-in set and cannot empty it', () => {
+  const extra = { [RESERVED_PORTS_VARIABLE]: `${RESERVED}` };
+  // the variable's own port is refused ...
+  expect(() => assertSafeTarget({ ...extra, E2E_API_URL: `http://localhost:${RESERVED}` })).toThrow(
+    /live service's port/,
+  );
+  // ... and the built-in one still is, which a replacing implementation breaks.
+  expect(() => assertSafeTarget({ ...extra, E2E_API_URL: `http://localhost:${LIVE}` })).toThrow(
+    /live service's port/,
+  );
+  // An explicitly empty variable must not disarm it either.
+  expect(() =>
+    assertSafeTarget({ [RESERVED_PORTS_VARIABLE]: '', E2E_API_URL: `http://localhost:${LIVE}` }),
+  ).toThrow(/live service's port/);
 });
