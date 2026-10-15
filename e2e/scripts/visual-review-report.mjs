@@ -99,13 +99,27 @@ export function crashOutputs(err) {
 // disappearing from the published report undetected.
 // Returns null for a clean run with nothing to report, so the caller can
 // skip opening or commenting on an issue at all.
-export function renderPublicSummary(findings, errors, runUrl, reviewed = 0) {
+export function renderPublicSummary(findings, errors, runUrl, reviewed = 0, runNote = '') {
+  // NOTHING IS PUBLISHED FOR A RUN THAT JUDGED NO ROUTE. Not even the errors
+  // that say why: a run with nothing behind it has no business adding text to
+  // a public issue, and the nineteen void comments on that issue are what
+  // happens when it does. The caller fails the step in that case, so the
+  // reason is in the (private) job log, where a broken pipeline belongs.
+  // This guard lives here rather than in the workflow's `if:` because a
+  // condition in YAML is editable without any of these tests running.
+  if (reviewed === 0) return null;
   if (findings.length === 0 && errors.length === 0) return null;
+
+  // The run link is labelled, not bare: the job lives in a private
+  // repository, so an outside reader following it gets a 404 that is
+  // indistinguishable from a broken link. Saying which it is costs one line.
+  const run = runNote ? `Run: ${runUrl}\n${runNote}\n` : `Run: ${runUrl}\n`;
 
   return (
     renderReport(findings, errors, reviewed).trimEnd() +
     '\n\n' +
-    `Run: ${runUrl}\n\n` +
+    run +
+    '\n' +
     'This is advisory — a model judging layout will produce false positives.\n'
   );
 }

@@ -379,6 +379,18 @@ the asked-for JSON) is not silently dropped — it lands in `findings.json`'s
 `errors` array and in `report.md` as "could not be reviewed," so a broken run
 reads as incomplete rather than as a clean pass with nothing to say.
 
+**The exit contract:** under `E2E_VISUAL_REVIEW=true` the review script exits
+0 if and only if at least one route was judged. A per-route model error,
+refusal or unparseable answer stays advisory and exits 0 — a model judging
+layout produces false positives, and a check that goes red on one gets
+disabled. But a run that judged *no* route is a broken pipeline, not a verdict
+on the page: an absent credential, a revoked one (every route's call fails), a
+capture that produced nothing. Those exit 1, and nothing is published for them
+— `renderPublicSummary` returns null, so there is no issue body to post and
+not even the errors reach the public issue. The reason is in the job log,
+which is private. An advisory green reading "no route was reviewed" would be
+the nineteen-night failure rebuilt one layer up.
+
 `findings.json` also carries `reviewed`: how many routes were actually
 judged. "No findings" is a claim about routes that were looked at, so the
 report may not print it without the count it is out of. That is not a

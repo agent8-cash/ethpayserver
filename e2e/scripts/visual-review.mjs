@@ -19,12 +19,19 @@
  *
  * Reads test-results/visual/manifest.json (written by the spec), writes
  * test-results/visual/findings.json ({ findings, errors, reviewed }) and
- * test-results/visual/report.md. Advisory only: findings never fail it, and a
- * crash or a model error exits 0. The one exception is a missing credential
- * under E2E_VISUAL_REVIEW=true, which exits 1 — the pipeline is broken, not
- * the page. A model judging layout will produce false positives, and a check
- * that can fail on a false positive gets disabled — see
- * scripts/health-gate.sh's history for what that looks like.
+ * test-results/visual/report.md.
+ *
+ * THE EXIT CONTRACT, under E2E_VISUAL_REVIEW=true: exit 0 if and only if at
+ * least one route was judged. Findings never fail it and a per-route model
+ * error, refusal or unparseable answer stays advisory, because a model
+ * judging layout produces false positives and a check that can go red on one
+ * gets disabled — see scripts/health-gate.sh's history. But a run that judged
+ * NO route is a broken pipeline rather than a verdict on the page, and that
+ * covers an absent credential, a revoked one (every route's call fails) and a
+ * capture that produced nothing. It exits 1, and renderPublicSummary
+ * publishes nothing for it. Nineteen nightly runs were green having judged
+ * nothing; an advisory green saying "no route was reviewed" is that same
+ * failure rebuilt one layer up.
  *
  * "errors" is not "findings": a route that could not be captured or
  * reviewed goes there, so it never renders the same as a route that was
@@ -155,6 +162,21 @@ async function reviewRoute(route, { path: routePath, shots }) {
   return parseFindings(stdout).map((f) => ({ route, path: routePath, ...f }));
 }
 
+// A run that judged no route failed, whatever stopped it: an absent
+// credential, a revoked one (every route's CLI call fails), a capture that
+// produced nothing. It exits non-zero so the job is RED, and
+// renderPublicSummary refuses to publish it, so it files nothing. Only a
+// run that judged at least one route is advisory - that is the line between
+// "the page may be fine" and "we did not look", and the nineteen green
+// nights that judged nothing are what it is drawn for.
+function finish(findings, errors, reviewed) {
+  writeOutputs(findings, errors, reviewed);
+  if (reviewed === 0 && process.env.E2E_VISUAL_REVIEW === 'true') {
+    console.error('no route was judged — failing the step rather than reporting a run that looked at nothing');
+    process.exitCode = 1;
+  }
+}
+
 function writeOutputs(findings, errors, reviewed) {
   fs.mkdirSync(VISUAL_DIR, { recursive: true });
   fs.writeFileSync(
@@ -184,9 +206,8 @@ async function main() {
     // (normal CI has no credential and no manifest) the skip stays silent.
     if (process.env.E2E_VISUAL_REVIEW === 'true') {
       errors.push({ route: null, viewport: null, reason: 'CLAUDE_CODE_OAUTH_TOKEN is not set — the review did not run' });
-      writeOutputs(findings, errors, 0);
       console.error('CLAUDE_CODE_OAUTH_TOKEN is not set in a scheduled visual review — failing rather than skipping');
-      process.exitCode = 1;
+      finish(findings, errors, 0);
       return;
     }
     console.log('CLAUDE_CODE_OAUTH_TOKEN unset — skipping visual review');
@@ -196,14 +217,14 @@ async function main() {
   const manifest = loadManifest();
   if (!manifest || manifest.length === 0) {
     errors.push({ route: null, viewport: null, reason: `no manifest at ${MANIFEST_PATH} — review did not run` });
-    writeOutputs(findings, errors, 0);
+    finish(findings, errors, 0);
     return;
   }
 
   const routes = groupByRoute(manifest, errors);
   if (routes.size === 0) {
     errors.push({ route: null, viewport: null, reason: 'every capture in the manifest failed — nothing to review' });
-    writeOutputs(findings, errors, 0);
+    finish(findings, errors, 0);
     return;
   }
 
@@ -222,7 +243,7 @@ async function main() {
     }
   }
 
-  writeOutputs(findings, errors, reviewed);
+  finish(findings, errors, reviewed);
 }
 
 main().catch((err) => {

@@ -71,6 +71,24 @@ function run(dir: string, env: Record<string, string>): Promise<{ status: number
   });
 }
 
+// The second half of "a broken run files nothing": whatever the review step
+// wrote, this is the script the workflow asks for an issue body, and it must
+// produce no file for a run that judged nothing.
+function renderSummary(dir: string): Promise<{ status: number | null; stdout: string }> {
+  const script = path.resolve('scripts', 'render-public-summary.mjs');
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'node',
+      [script, 'test-results/visual/public-summary.md', 'test-results/visual/findings.json', 'https://example.invalid/run/7'],
+      { cwd: dir },
+    );
+    let stdout = '';
+    child.stdout.on('data', (c: Buffer) => (stdout += c));
+    child.once('error', reject);
+    child.once('close', (status) => resolve({ status, stdout }));
+  });
+}
+
 test('no credential: skips silently, writing no findings.json at all', async () => {
   const dir = freshDir();
   const result = await run(dir, { CLAUDE_CODE_OAUTH_TOKEN: '', E2E_VISUAL_REVIEW: '' });
@@ -115,6 +133,53 @@ test('every capture in the manifest failed: still a pipeline error, never a sile
   expect(reviewed).toBe(0);
 });
 
+test('a scheduled run with nothing to review is red, not an advisory green', async () => {
+  const dir = freshDir();
+  writeManifest(dir, [{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', file: null, error: 'timeout' }]);
+
+  const result = await run(dir, { CLAUDE_CODE_OAUTH_TOKEN: 'test-token', E2E_VISUAL_REVIEW: 'true' });
+
+  expect(result.status).toBe(1);
+  expect(readFindings(dir).reviewed).toBe(0);
+});
+
+// The failure chef named: a credential that is present but dead. Every route's
+// CLI call fails, so nothing is judged - and an advisory green saying "no route
+// was reviewed" would be the nineteen-night failure rebuilt one layer up.
+test('a credential that is present but rejected is red and publishes nothing', async () => {
+  const dir = freshDir();
+  writeManifest(dir, [
+    { route: 'wallets', path: '/evm/wallets', viewport: 'mobile', file: 'wallets-mobile.png', error: null },
+    { route: 'settings', path: '/evm/settings', viewport: 'mobile', file: 'settings-mobile.png', error: null },
+  ]);
+  fs.writeFileSync(path.join(visualDir(dir), 'wallets-mobile.png'), Buffer.from([0]));
+  fs.writeFileSync(path.join(visualDir(dir), 'settings-mobile.png'), Buffer.from([0]));
+
+  const bin = fakeClaude(
+    dir,
+    `process.stderr.write('Invalid API key · Please run /login');
+process.exit(1);`,
+  );
+
+  const result = await run(dir, {
+    CLAUDE_CODE_OAUTH_TOKEN: 'revoked-token',
+    E2E_VISUAL_REVIEW: 'true',
+    VISUAL_REVIEW_CLAUDE_BIN: bin,
+  });
+
+  expect(result.status).toBe(1);
+  const { findings, errors, reviewed } = readFindings(dir);
+  expect(findings).toEqual([]);
+  expect(errors).toHaveLength(2);
+  expect(reviewed).toBe(0);
+
+  // ...and nothing reaches the public issue: no body file to post.
+  const summary = await renderSummary(dir);
+  expect(summary.status).toBe(0);
+  expect(summary.stdout).toContain('No route was reviewed');
+  expect(fs.existsSync(path.join(visualDir(dir), 'public-summary.md'))).toBe(false);
+});
+
 test('reviews every route in the manifest and writes their results in one combined findings.json', async () => {
   const dir = freshDir();
   writeManifest(dir, [
@@ -151,6 +216,14 @@ test('reviews every route in the manifest and writes their results in one combin
   expect(reviewed).toBe(1);
   // One write covering both routes, not one per route.
   expect(result.stdout).toContain('1 finding(s), 1 error(s), 1 route(s) reviewed');
+
+  // One route judged is an advisory run, so it DOES publish - the failed
+  // route appears as an error beside the finding, not instead of it.
+  const summary = await renderSummary(dir);
+  const body = fs.readFileSync(path.join(visualDir(dir), 'public-summary.md'), 'utf8');
+  expect(summary.status).toBe(0);
+  expect(body).toContain('raw decimal shown for balance');
+  expect(body).toContain('could not be reviewed');
 });
 
 test('output that is not the asked-for JSON is an error carrying its size, never its text', async () => {

@@ -104,6 +104,7 @@ test.describe('renderPublicSummary', () => {
       [{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'raw decimal shown for balance' }],
       [],
       'https://example.invalid/run',
+      6,
     );
 
     expect(summary).not.toBeNull();
@@ -121,6 +122,7 @@ test.describe('renderPublicSummary', () => {
       ],
       [],
       'https://example.invalid/run',
+      6,
     );
 
     expect(summary).toContain('3 finding(s) across 2 route(s)');
@@ -137,22 +139,44 @@ test.describe('renderPublicSummary', () => {
     expect(summary).toContain('No findings among the 5 route(s) that were reviewed.');
   });
 
-  // The issue body is the only thing anyone reads, so the zero-review
-  // wording has to survive the whole way out to it, not just renderReport.
-  test('a published summary for a run that reviewed nothing never claims no findings', () => {
-    const summary = renderPublicSummary(
-      [],
-      [{ route: null, viewport: null, reason: 'CLAUDE_CODE_OAUTH_TOKEN is not set — the review did not run' }],
-      'https://example.invalid/run',
-    );
+  // The issue body is the only thing anyone reads, and nineteen of them were
+  // text backed by no judgement. A run that reviewed nothing publishes
+  // NOTHING - not its errors either; the step fails and the private log
+  // carries the reason.
+  test('a run that reviewed nothing publishes nothing at all', () => {
+    expect(
+      renderPublicSummary(
+        [],
+        [{ route: null, viewport: null, reason: 'CLAUDE_CODE_OAUTH_TOKEN is not set — the review did not run' }],
+        'https://example.invalid/run',
+        0,
+      ),
+    ).toBeNull();
 
-    expect(summary).toContain('No route was reviewed');
-    expect(summary).not.toContain('No findings among');
-    expect(summary).not.toContain('No issues found');
+    // Every capture failing is the same nothing by a different route.
+    expect(
+      renderPublicSummary(
+        [],
+        [{ route: 'wallets', viewport: 'mobile', reason: 'capture failed' }],
+        'https://example.invalid/run',
+        0,
+      ),
+    ).toBeNull();
+  });
+
+  test('the run link is labelled when a note is given, so a 404 is not mistaken for a bad link', () => {
+    const findings = [{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'x' }];
+    const labelled = renderPublicSummary(findings, [], 'https://example.invalid/run/42', 6, 'Private to the ops repository.');
+    const bare = renderPublicSummary(findings, [], 'https://example.invalid/run/42', 6);
+
+    expect(labelled).toContain('Run: https://example.invalid/run/42');
+    expect(labelled).toContain('Private to the ops repository.');
+    expect(bare).toContain('Run: https://example.invalid/run/42');
+    expect(bare).not.toContain('Private to the ops repository.');
   });
 
   test('carries the run URL so the issue still points back to the run that produced it', () => {
-    const summary = renderPublicSummary([{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'x' }], [], 'https://example.invalid/run/42');
+    const summary = renderPublicSummary([{ route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'x' }], [], 'https://example.invalid/run/42', 6);
 
     expect(summary).toContain('https://example.invalid/run/42');
   });
