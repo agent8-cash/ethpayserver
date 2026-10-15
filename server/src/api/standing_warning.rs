@@ -326,6 +326,9 @@ mod tests {
         // The rule: "It does NOT count if it carries neither." There is no renewal
         // endpoint to name, so no route means no warning - not a vague one.
         assert!(
+            // THIS `None` IS THE SUBJECT, not an oversight: the test asserts
+            // that a standing with no means to act produces no warning. A sweep
+            // giving this fixture a url would delete the case.
             warning_for(&held(true, Some(now + Duration::days(2)), None), now).is_none(),
             "a warning with neither an invoice url nor a renewal action must not be \
              emitted at all: under on-demand issuance this is the COMMON case, and an \
@@ -546,10 +549,13 @@ mod tests {
 
     #[tokio::test]
     async fn adds_nothing_outside_the_window() {
+        // A url, so the absent header is the WINDOW's doing. With `None` this
+        // passed whatever the middleware did, because `warning_for` returns
+        // early and there was never a warning to stamp.
         let s = store(Some(held(
             true,
             Some(Utc::now() + Duration::days(20)),
-            None,
+            Some(SILENCE_URL),
         )));
         let r = call(&app(s, true)).await;
         assert!(r.headers().get(&X_ACCOUNT_WARNING).is_none());
@@ -557,7 +563,16 @@ mod tests {
 
     #[tokio::test]
     async fn an_unauthenticated_request_reads_nothing_and_gets_nothing() {
-        let s = store(Some(held(true, Some(Utc::now() + Duration::days(2)), None)));
+        // Inside the window AND with a url, so a warning is genuinely available
+        // to stamp: the only reason the header is absent is the missing identity.
+        // With `None` this test passed even if authentication were ignored
+        // entirely - not a case the reviewer named, found by sweeping the rest of
+        // the file after it named one.
+        let s = store(Some(held(
+            true,
+            Some(Utc::now() + Duration::days(2)),
+            Some(SILENCE_URL),
+        )));
         let r = call(&app(s.clone(), false)).await;
         assert!(r.headers().get(&X_ACCOUNT_WARNING).is_none());
         assert_eq!(s.reads.load(Ordering::SeqCst), 0);
