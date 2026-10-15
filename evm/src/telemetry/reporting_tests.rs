@@ -229,22 +229,16 @@ fn parity_with_shared_scrubber() {
         "0x742d35Cc6634C0532925a3b844Bc454e4438f44e paid 0x1234",
         "tx deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef mined",
         "zzdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefzz",
-        // Kept under twelve letter runs, placeholders included: a redacted key
-        // adds three, and a longer line is redacted whole as a phrase.
-        "https://eth-mainnet.g.alchemy.com/v2/9f8e7d6c5b4a3210zz failed",
+        "GET https://eth-mainnet.g.alchemy.com/v2/9f8e7d6c5b4a3210zz failed",
         "wss://polygon-mainnet.infura.io:443/ws/v3/0123456789abcdefzz closed",
         "https://api.coingecko.com/api/v3/simple/price?ids=ethereum",
         "https://telemetry.example.com/api/random.cash/envelope/",
-        // Split in two: any non-letter divides words, so the three together
-        // are a twelve-word run the table redacts whole.
-        "no store for merchant@example.com or a@b.co.uk",
-        "or bad@b.c",
+        "no store for merchant@example.com or a@b.co.uk or bad@b.c",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",
-        "api-key: k1 apikey:k2 API_KEY = k3",
-        "private-key k4 passwd:\tk5",
-        "twelve plain lowercase words here really do read as ordinary prose ok now",
+        "api-key: k1 apikey:k2 API_KEY = k3 private-key k4 passwd:\tk5",
         "secretariat: not a word with a key after it",
         "seed abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "twelve plain lowercase words here really do trip the mnemonic rule ok now",
         "façade ↔ merchant@example.com ↔ 0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "token",
         "token=",
@@ -258,6 +252,17 @@ fn parity_with_shared_scrubber() {
             "shared `scrub` diverged from the audited regex table on: {input}"
         );
     }
+}
+
+/// The narrowed bare-word rule (a credential word needs a `:` or `=` before
+/// its value) deliberately differs from the shared scrubber, so it is pinned
+/// here rather than in the parity corpus.
+#[test]
+fn bare_credential_word_keeps_the_next_word() {
+    assert_eq!(
+        redact_secrets("secretariat: not a secret keyword"),
+        "secretariat: not a secret keyword"
+    );
 }
 
 /// A bearer token after the scheme word is removed, not just the scheme.

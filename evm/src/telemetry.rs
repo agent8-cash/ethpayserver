@@ -88,14 +88,16 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // or wordlist, divided by anything that is not a letter. Membership
             // is deliberately not checked: a wordlist would let other languages,
             // typos and non-BIP-39 seeds through, and a destroyed line costs less
-            // than a leaked seed. The separator is not enumerated either: a
-            // phrase joined by commas, hyphens, pipes, slashes, a compact JSON
-            // array, digits, a pasted non-breaking space or a zero-width
-            // character is still twelve words. Nothing else is exempted: a URL
-            // host's labels count as words like any other, because any shape an
-            // exemption accepts is a shape a phrase can be split across.
+            // than a leaked seed. The separator is not enumerated: whitespace
+            // (a pasted non-breaking space), format characters (zero-width,
+            // invisible separators), commas, bullets, numbering and JSON escapes
+            // all divide words. The one exception is `.`, `/` or `:` with a
+            // letter straight after it, which is the joining of a URL or a
+            // path rather than the spacing of a list; counting those
+            // would destroy any report that quotes a URL, such as a provider's
+            // connection error. Nothing is exempted by shape beyond that.
             (
-                build(r"(?:\p{L}+[^\p{L}]+){11,}\p{L}+"),
+                build(r"(?:\p{L}+(?:[^\p{L}./:]|[./:]+[^\p{L}./:])+){11,}\p{L}+"),
                 PHRASE_PLACEHOLDER,
             ),
             // Email addresses (customer PII).
