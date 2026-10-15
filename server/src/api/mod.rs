@@ -294,6 +294,8 @@ where
         .route("/me/email", delete(users::remove_email::<A>))
         .route("/me/email/status", get(users::get_email_status::<A>))
         .route("/me/standing", get(users::get_standing::<A>))
+        // Enrols the caller and creates an invoice: a POST, never a link.
+        .route("/me/signup", post(users::signup::<A>))
         .route(
             "/me/email/confirm",
             post(users::confirm_email_change::<A>),

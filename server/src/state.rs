@@ -184,6 +184,10 @@ pub struct AppState<D, A, E> {
     /// the same way `webauthn` is - not re-read from the environment on
     /// request, since the environment is the thing being reported on.
     pub safe_mode: bool,
+
+    /// The external signup service, if this instance is configured to offer
+    /// signup. `None` makes the signup route answer 404.
+    pub signup_service: Option<Arc<crate::services::signup_service::SignupServiceConfig>>,
 }
 
 // Manual Clone impl since we only need Arc::clone
@@ -208,6 +212,7 @@ impl<D, A, E> Clone for AppState<D, A, E> {
             plugin_dir: self.plugin_dir.clone(),
             plugin_pools: self.plugin_pools.clone(),
             safe_mode: self.safe_mode,
+            signup_service: self.signup_service.clone(),
         }
     }
 }
@@ -240,6 +245,7 @@ impl<D, A, E> AppState<D, A, E> {
             plugin_dir: std::path::PathBuf::from("./plugins"),
             plugin_pools: None,
             safe_mode: false,
+            signup_service: None,
         }
     }
 }
