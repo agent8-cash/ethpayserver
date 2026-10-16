@@ -1,0 +1,243 @@
+name: Scheduled E2E (testnet)
+
+# Nothing else in the stack proves the deployed system works. Unit tests, the
+# integration gate and the deploy health assertion all stop
+# short of a browser and of an actual on-chain payment — the client loader
+# overlay (#38) broke the login page for seven weeks and no build could have
+# caught it. This runs the Playwright suite against https://testnet.random.cash
+# on a clock, and then sends a real Sepolia transaction through the money path.
+#
+# Runs on hosted runners on purpose. The deploy host is also the self-hosted
+# runner, so a job there cannot report on a box that is down —
+# the Sentry cron check-in below covers the "no run at all" case.
+
+on:
+  schedule:
+    # 05:37 UTC daily — before the Monday audit, so a red testnet is
+    # already on the desk when the weekly retro starts.
+    # An odd minute on purpose: the top of the hour, 06:00 especially, is the
+    # most contended scheduled slot, and at 0 6 this was dispatched 4-7 hours
+    # late every day, which made the Sentry cron monitor miss its window daily.
+    # The monitor's schedule lives in Sentry, not here: it must read
+    # `37 5 * * *` UTC with a check-in margin of about an hour. Keep the margin
+    # tight - a run that never happens is the only thing it exists to catch.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  E2E_REMOTE: "true"
+  E2E_BASE_URL: https://testnet.random.cash
+  E2E_API_URL: https://testnet.random.cash
+
+jobs:
+  browser:
+    name: Playwright vs testnet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: testnet
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22, not 20: the synthetic spec waits on the checkout socket with a
+          # global `WebSocket`, which Node only exposes unflagged from v22.4.
+          # On 20 it is a ReferenceError thrown *after* the on-chain send.
+          node-version: 22
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: npm ci && npx playwright install --with-deps chromium
+
+      # Only the specs that can actually pass against a remote origin. The
+      # other five (stores, invoices, payment-methods, webhooks,
+      # ui-interactions) all build on the `registeredPage` fixture.
+      #
+      # This used to say passkey registration "cannot succeed against
+      # testnet.random.cash" because the virtual authenticator's RP ID is
+      # localhost. That was wrong: addVirtualAuthenticator has no RP ID, the
+      # server logs rp_id=testnet.random.cash, and a single registration against
+      # live testnet completes end to end. The real limit is rate limiting - the
+      # auth tier allows 5 req/min/IP, so a spec that registers repeatedly gets
+      # 429s (see e2e/README.md).
+      #
+      # Running the full suite here would fail from the first scheduled run,
+      # fail the check-in every morning and file a testnet-is-failing
+      # issue daily — desensitising the dead-man's switch before it ever
+      # carries signal. Widen this list only as specs are made remote-capable.
+      - name: Run E2E suite
+        working-directory: e2e
+        # perf only. scout.spec.ts drives passkey registration, and against a
+        # remote origin that does not establish a session — the first real run
+        # (32643377127) left it on the Sign In page and timed out, while perf
+        # passed and the synthetic payment succeeded. Keeping scout here would
+        # paint the dead-man's switch red every morning for a known cause.
+        # Re-add it when remote registration works.
+        run: npx playwright test tests/perf.spec.ts
+
+      # Two ordinary accounts, one /ws socket each, one store each (each
+      # account owns its own; the admin only deletes the accounts): each socket must hear
+      # its own store's event and never the other's. `always()` so a red perf
+      # run does not hide a tenancy regression, and the reverse.
+      - name: Status socket tenant isolation
+        if: always()
+        working-directory: e2e
+        env:
+          E2E_WS_ISOLATION: "true"
+          E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
+        run: npx playwright test tests/ws-tenant-isolation.spec.ts
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-testnet
+          path: e2e/playwright-report/
+          retention-days: 14
+
+  synthetic-payment:
+    name: Synthetic payment (Sepolia)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Independent of `browser`: a broken checkout page must not hide a broken
+    # money path, and vice versa.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: testnet
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22, not 20: the synthetic spec waits on the checkout socket with a
+          # global `WebSocket`, which Node only exposes unflagged from v22.4.
+          # On 20 it is a ReferenceError thrown *after* the on-chain send.
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: e2e
+        run: npm ci
+
+      # The store webhook URL must be HTTPS, and the server's own `localhost`
+      # is inside its container, so the sink needs a public tunnel.
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Invoice → on-chain tx → paid → webhook
+        working-directory: e2e
+        env:
+          E2E_SYNTHETIC_PAYMENT: "true"
+          E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
+          E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
+          E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}
+        run: npx playwright test tests/synthetic-payment.spec.ts
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-synthetic
+          path: e2e/playwright-report/
+          retention-days: 14
+
+  report:
+    name: Report
+    runs-on: ubuntu-latest
+    needs: [browser, synthetic-payment]
+    if: always()
+    steps:
+      # Dead-man's switch: a success check-in every green run, error on red.
+      # Silence — a box that never ran the workflow at all — is what actually
+      # alerts, since Sentry pages on a cron that missed its expected window.
+      # No-op if the secret is unset, so a fork or a fresh clone does not fail
+      # here. Alerting for this and the deep-health watchdog
+      # (health-monitor.yml) lives in one place.
+      - name: Check in to Sentry cron monitor
+        env:
+          SENTRY_CRON_URL: ${{ secrets.SENTRY_CRON_E2E_URL }}
+          BROWSER: ${{ needs.browser.result }}
+          SYNTHETIC: ${{ needs.synthetic-payment.result }}
+        run: |
+          # Fail loud, every run, until a human creates the monitor - the same
+          # posture check-health-deep.sh takes. Skipping quietly is the exact
+          # failure this change exists to close: with the secret unset, neither
+          # a passing run, nor a failing one, nor a run that never happens at
+          # all would ever reach a person. The README beside this already says
+          # the secret is required; this is the code agreeing with it.
+          if [ -z "$SENTRY_CRON_URL" ]; then
+            echo "::error title=SENTRY_CRON_E2E_URL unset::No check-in was sent. Create the Sentry cron monitor and set this secret, or e2e failures page nobody."
+            exit 1
+          fi
+          if [ "$BROWSER" = success ] && [ "$SYNTHETIC" = success ]; then
+            status="ok"
+          else
+            status="error"
+          fi
+          curl -fsS -m 10 --retry 3 -o /dev/null "${SENTRY_CRON_URL}?status=${status}"
+
+      - name: File an issue on failure
+        if: needs.browser.result != 'success' || needs.synthetic-payment.result != 'success'
+        uses: https://github.com/actions/github-script@v7
+        env:
+          BROWSER: ${{ needs.browser.result }}
+          SYNTHETIC: ${{ needs.synthetic-payment.result }}
+        with:
+          script: |
+            const title = 'Scheduled E2E: testnet is failing';
+            const body = [
+              'The daily E2E run against https://testnet.random.cash failed.',
+              '',
+              `- Playwright suite: **${process.env.BROWSER}**`,
+              `- Synthetic payment: **${process.env.SYNTHETIC}**`,
+              '',
+              `Run (reports are attached as artifacts): ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'If the synthetic payment timed out waiting for `paid`, check the chain',
+              'monitors first — empty RPC URLs in the runner `.env` leave payment',
+              'detection dead:',
+              '',
+              '```',
+              'docker exec ethpayserver_testnet_redis redis-cli get evmmonitor:health',
+              '```',
+            ].join('\n');
+
+            // Reuse the open issue if there is one, so a testnet that stays red
+            // does not file a fresh issue every morning.
+            // per_page defaults to 30 and the listing includes pull requests,
+            // so without this the exact-title match silently misses once the
+            // repo has 30+ open e2e-labelled items and files a duplicate
+            // issue every morning.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'e2e',
+              per_page: 100,
+            });
+            const match = existing.data.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                // `e2e`, not `security`: a nightly browser/chain failure is an
+                // availability signal, and filing it as `security` pushes
+                // routine flakes into the security triage queue.
+                labels: ['e2e'],
+              });
+            }

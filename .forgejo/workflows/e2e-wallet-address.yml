@@ -1,0 +1,36 @@
+# Where does the nightly's synthetic payment spend from?
+#
+# The address is derived from E2E_TEST_MNEMONIC, so it changes when that secret
+# changes and cannot be looked up anywhere. Deriving it locally needs node plus
+# an EC library and keccak, which the cockpit account has none of - so it is
+# done here, where the toolchain already exists, and the answer is an address
+# rather than anything secret.
+#
+# Run this after changing E2E_TEST_MNEMONIC to find out which address to fund.
+name: E2E wallet address
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  address:
+    name: Where to send SepoliaETH
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install e2e deps
+        working-directory: e2e
+        run: npm ci
+      - name: Derive
+        working-directory: e2e
+        env:
+          E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
+        run: |
+          node wallet-address.mjs
