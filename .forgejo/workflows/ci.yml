@@ -1,29 +1,38 @@
+# Forgejo copy of .github/workflows/ci.yml - the GATE only, on the rcs-docker
+# runner.
+#
+# Six of the twelve jobs are here: Lint, Client pin drift, E2E static checks,
+# Test, Audit and Build. The three that branch protection requires - Lint, Test
+# and Audit - are among them, so what a merge is gated on can be measured here.
+#
+# What is NOT ported, and why. Each is a measured platform gap, not a choice:
+#   - `E2E`: it consumes the binaries `Build` uploads, and actions/upload-artifact
+#     fails on rcs-docker (measured 2026-10-16 with a probe workflow). With no
+#     artifact handoff there is nothing for it to download. `Build`'s upload step
+#     is dropped here for the same reason - it still proves the workspace
+#     compiles in release.
+#   - `Docker`: it needs a reachable docker daemon to build, and keyless cosign
+#     proves identity with a GitHub OIDC token. rcs-docker has the docker CLI and
+#     no daemon socket (unprivileged, by design), and Forgejo issues no such
+#     token, so keyless signing cannot work here at all.
+#   - the deploy chain (`Notify Deploy`, `Verify testnet deploy`, the status
+#     jobs): each fires a repository_dispatch at the private deploy repository,
+#     and this Forgejo release has no repository_dispatch.
+# The scheduled workflows (audit, e2e, health monitor, loadtest) are not ported
+# either: they need secrets that are not provisioned here yet, and a nightly red
+# run on a forge nobody watches is worse than no run.
+#
+# All of that still runs on GitHub, which reads only .github/workflows while
+# Forgejo reads only .forgejo/workflows, so the two coexist and neither platform
+# runs the same job twice.
+#
+# `uses:` lines carry full URLs where the action is not published on
+# code.forgejo.org - a form GitHub rejects, which is why this is a copy and not
+# a move.
 name: CI
 
 on:
   pull_request:
-  # A merge queue tests the *merged* result before it lands, which is the only
-  # thing that catches a pull request that is green against a base it no longer
-  # merges into. That failure is what this trigger exists for: on 2026-09-15 a
-  # change adding a parameter to `PgAppState::new` was green on its own branch
-  # while four callsites merged in the meantime had not been updated, and two
-  # branches picked the same migration version, each green alone.
-  #
-  # Required checks ARE strict today (verified against the branch-protection
-  # API on 2026-10-06; this comment previously said they were not, which was
-  # true when it was written and has since become false). Strict forces a
-  # branch up to date before it can merge, so the commit that gets tested is
-  # the base merged into the head - close to the merge result. The gap a queue
-  # still closes is that NOTHING PERFORMS THAT UPDATE: every merge leaves every
-  # other open pull request behind and therefore unmergeable, with no signal
-  # saying so, until a person updates each one by hand. On 2026-10-06 ten of
-  # thirteen open pull requests were in that state, one of them for ten days.
-  #
-  # Without this trigger a queue would hang forever - Lint, Test and Audit are
-  # required, and on a `refs/heads/gh-readonly-queue/...` ref they would never
-  # be asked to run. The trigger is safe before the queue is switched on and
-  # necessary before it is.
-  merge_group:
   push:
     branches: [main, testnet]
     tags: ["v*"]
@@ -37,7 +46,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -254,7 +263,7 @@ jobs:
   # visible without holding anything up.
   client-pin-drift:
     name: Client pin drift
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 5
     permissions:
       contents: read
@@ -331,7 +340,7 @@ jobs:
   # of them touches.
   e2e-static-checks:
     name: E2E static checks
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -353,7 +362,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 40
     needs: [lint]
     services:
@@ -464,7 +473,7 @@ jobs:
   # objected could not run on a PR.
   audit:
     name: Audit
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 30
     needs: [lint]
     env:
@@ -495,7 +504,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: rcs-docker
     timeout-minutes: 60
     # Deliberately no `needs`. Build and E2E used to queue behind Lint, Audit
     # and Test, so E2E - not the longest job, just the last - landed its whole
@@ -564,674 +573,3 @@ jobs:
           export SENTRY_RELEASE="${SENTRY_RELEASE::7}"
           ./scripts/check-sentry-release.sh "$SENTRY_RELEASE"
           cargo build --release --bin evmmonitor --features monitor-bin
-
-      # upload-artifact@v4 roots the archive at the least common ancestor of the
-      # paths given. While `client/dist/` was in this list that ancestor was the
-      # repo root, so the archive carried a `target/release/` prefix and both
-      # consumers below unpacked into place. Dropping the client made
-      # `target/release` itself the ancestor, the prefix vanished, and the
-      # binaries landed loose in the workspace - which is why the download steps
-      # now name an explicit destination. Do not remove those.
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries
-          path: |
-            target/release/ethpayserver
-            target/release/migrate_postgres
-            target/release/evmmonitor
-          retention-days: 1
-
-  # Gating. This job carried `continue-on-error: true` for its
-  # whole life, so it could never report a regression, and under that cover the
-  # suite rotted: 7/62, then 34/62 once the proxy and reset defects were fixed.
-  # The rest was read as selector drift against a UI that moved on. Most of it
-  # was not: the job browsed 127.0.0.1 while the server's WebAuthn rp_origin is
-  # http://localhost:8080, so every passkey registration failed that check and
-  # every test needing a session timed out behind it (#78). It now runs 62
-  # passed / 1 skipped in 2.1 minutes, against 30-minute cap timeouts before.
-  #
-  # Removing the flag blocks nothing: the deploy dispatch needs [docker], not
-  # this job, so a red E2E cannot hold up a deploy. What it does is make a
-  # regression show as a red run instead of a green one - which is the whole
-  # point, and was impossible while the flag was set.
-  #
-  # The skip is the synthetic payment spec, which needs a funded wallet.
-  #
-  # The synthetic payment spec stays out of this job regardless: it needs a
-  # funded wallet and a live chain, so it only runs where
-  # `E2E_SYNTHETIC_PAYMENT=true` is set (see e2e-scheduled.yml).
-  #
-  # Also runs on pull_request, deliberately. It used to be branch-only, so a
-  # change that broke every test in a file (a fixture inserting a value a
-  # JSONB column rejects outright, so `beforeAll` throws before a single test
-  # runs) was invisible until after it merged: CI was green on the PR because
-  # this job never ran, and the branch it landed on stayed red for days
-  # because nothing about a red e2e job on a branch push stops anything either
-  # (see `e2e-status` below). Running it here costs a build plus the suite on
-  # every PR, which is not free - if that cost turns out to dominate on a
-  # contended runner, narrowing this back to changes under `e2e/` would cover
-  # the case above for a fraction of it, at the price of missing a
-  # server-side change that breaks e2e without touching `e2e/` itself.
-  e2e:
-    name: E2E
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [build]
-    # The frontend image comes from another repository, so this job pulls it
-    # anonymously and that only works while the payserver-client package is
-    # public. If it is ever made private, this pull fails with a denied
-    # manifest rather than anything mentioning visibility - so: make it public,
-    # or add a login here with a token that can read that package.
-    permissions:
-      contents: read
-      packages: read
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testnet' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: ethpayserver_e2e
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          # The archive is rooted at target/release (see the upload step), so
-          # unpack it back there rather than into the workspace root.
-          path: target/release
-
-      - name: Make binaries executable
-        run: chmod +x target/release/ethpayserver target/release/migrate_postgres
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          # 22, as the scheduled run uses: the isolation spec opens sockets with
-          # the global WebSocket, which Node 20 does not have.
-          node-version: 22
-
-      - name: Run migrations
-        env:
-          DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
-        run: ./target/release/migrate_postgres
-
-      # Before the server starts, deliberately. The host instantiates plugins
-      # at boot, so a plugin installed through the API afterwards is recorded
-      # and not running - `POST /admin/plugins` answers `restart_required`.
-      # Seeding it here is what a restart would have left behind, and it is
-      # the only way the page tests exercise a plugin that is genuinely
-      # loaded rather than skipping.
-      #
-      # `npm ci` here rather than with the browsers below: this needs `pg`,
-      # and it needs it before the server exists.
-      - name: Install e2e dependencies
-        working-directory: e2e
-        run: npm ci
-
-      - name: Seed the fixture plugin
-        working-directory: e2e
-        env:
-          E2E_DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
-        run: node scripts/seed-plugin.mjs "$GITHUB_WORKSPACE/e2e-plugins"
-
-      - name: Start server
-        env:
-          DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
-          # Where the seed step wrote the fixture's artifact. Absolute,
-          # because the server's working directory is not this step's.
-          ETHPAY_PLUGIN_DIR: ${{ github.workspace }}/e2e-plugins
-          REDIS_URL: redis://127.0.0.1:6379
-          # The limiter is per IP, and the entire suite is one IP (127.0.0.1)
-          # driven by a single worker. On the defaults - auth 5/min, write
-          # 10/min, ws 5/min - the sixth registration of the run starts getting
-          # 429s and every later spec fails on a fixture it never reaches. With
-          # `retries: 1` each of those costs its timeout twice, which is how this
-          # job spent 30 minutes and hit its own timeout on push after push.
-          #
-          # Raised, not disabled: the middleware still runs, so a change that
-          # breaks it outright still shows up here. Its actual thresholds are
-          # covered by unit tests in server/src/api/rate_limit.rs, which is the
-          # right place for them - a shared-IP test suite is precisely the
-          # traffic shape the production limits exist to stop.
-          RATE_LIMIT_AUTH: "10000"
-          RATE_LIMIT_WRITE: "10000"
-          RATE_LIMIT_READ: "10000"
-          RATE_LIMIT_WS: "10000"
-          # Without this the server refuses to start outright. Error reporting
-          # fails closed: no SENTRY_DSN plus an unset or unrecognised
-          # SENTRY_ENVIRONMENT is a hard exit, so that a missing DSN can never
-          # be mistaken for a working one. "dev" is one of the two values
-          # permitted to run with reporting off, and is what this job wants -
-          # a CI run has nowhere to report to and nothing worth reporting.
-          #
-          # That gate landed while this job was already red-by-default (see
-          # the readiness check below), so it broke E2E on every testnet push
-          # from the moment it merged and the job stayed green-looking for two
-          # steps afterwards.
-          SENTRY_ENVIRONMENT: dev
-          # The ws isolation spec expires real invoices and waits for the
-          # cleanup service's expiry sweeps, then deletes its accounts, which
-          # is refused while any expired invoice's address is still watched.
-          # The defaults (60s grace, 60s sweep tick) make that minutes per
-          # run; these keep it to seconds without changing what is tested.
-          #
-          # Trade-off: this lane no longer exercises the production cleanup
-          # timing. A defect that only appears inside the 60s grace window
-          # would not show up here; the isolation spec is not testing the
-          # grace period, so that is accepted.
-          CLEANUP_UNWATCH_GRACE_PERIOD_SECS: "1"
-          CLEANUP_FALLBACK_INTERVAL_SECS: "5"
-        # Fails here if the server does not come up, rather than letting a dead
-        # server surface two steps later as "frontend proxy is not reaching the
-        # API" - which reads as a client or nginx problem and is why this took
-        # a while to find. The old loop was:
-        #
-        #   for i in $(seq 1 30); do curl -sf .../health/live && break || sleep 1; done
-        #
-        # whose last command on total failure is `sleep 1`, so the step exited
-        # 0 having never reached the server once.
-        run: |
-          ./target/release/ethpayserver &
-          server_pid=$!
-
-          for _ in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:3000/health/live >/dev/null; then
-              echo "server is up"
-              exit 0
-            fi
-            # Distinguishes "still starting" from "exited": polling a process
-            # that is already gone for the full 30s only delays the report and
-            # loses the reason, which the server has already printed.
-            if ! kill -0 "$server_pid" 2>/dev/null; then
-              echo "::error::the server exited during startup - see the lines above for why"
-              wait "$server_pid" || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          echo "::error::the server did not answer /health/live within 30s"
-          exit 1
-
-      # `npx serve` has no API proxy, so every /api call fell through to the SPA
-      # fallback and the client parsed index.html as JSON ("Parse error: expected
-      # value at line 1 column 1"). That failed all 30 authenticated tests and was
-      # invisible while this job carried continue-on-error. So the frontend here
-      # is the real published image, nginx config and all, and E2E exercises the
-      # production routing rules rather than an approximation of them.
-      #
-      # It is the image this repo pins for testing (ops/client-image.pin). Note
-      # that is no longer the same thing as the image that gets deployed: the
-      # frontend deploys on its own cadence from payserver-client,
-      # so this pin says "the client we verified against", not "the client that
-      # is live". Moving it is a deliberate act, which is the point.
-      - name: Serve frontend
-        run: |
-          CLIENT_IMAGE="$(grep -v '^[[:space:]]*#' ops/client-image.pin | tr -d '[:space:]')"
-          [ -n "$CLIENT_IMAGE" ] || { echo "::error::ops/client-image.pin is empty"; exit 1; }
-          echo "frontend: $CLIENT_IMAGE"
-          docker pull "$CLIENT_IMAGE"
-
-          # Take the routing rules from the image rather than keeping a second
-          # copy here: a stale copy would pass CI and then diverge from what is
-          # actually served. Only the upstream address and listen port change.
-          cid="$(docker create "$CLIENT_IMAGE")"
-          docker cp "$cid:/etc/nginx/conf.d/default.conf" /tmp/ci-client-nginx.conf.orig
-          docker rm -f "$cid" >/dev/null
-
-          # Dual-stack on purpose. The suite browses http://localhost:8080 so
-          # the WebAuthn origin matches the server's rp_origin, and `localhost`
-          # can resolve to ::1 before 127.0.0.1; a v4-only listener turns that
-          # into a connection refused.
-          sed -e 's|http://server:3000|http://127.0.0.1:3000|g' \
-              -e 's|listen 80;|listen 8080;\n    listen [::]:8080;|' \
-              /tmp/ci-client-nginx.conf.orig > /tmp/ci-client-nginx.conf
-
-          docker run -d --name e2e-frontend --network host \
-            -v /tmp/ci-client-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
-            "$CLIENT_IMAGE"
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:8080/ >/dev/null && break || sleep 1
-          done
-          curl -sf http://localhost:8080/api/health/live \
-            || { echo "::error::frontend proxy is not reaching the API"; docker logs e2e-frontend; exit 1; }
-
-      - name: Install Playwright browsers
-        working-directory: e2e
-        run: npx playwright install --with-deps chromium
-
-      # Steps print regardless of TTY; plain `list` only prints tests as they
-      # FINISH, so a job killed at the 30-minute cap would name the last
-      # completed test and never the one actually hanging.
-      - name: Run E2E tests
-        working-directory: e2e
-        env:
-          # localhost, NOT 127.0.0.1. The browser sends its own origin in the
-          # WebAuthn ceremony and the server checks it against rp_origin, which
-          # defaults to http://localhost:8080 (the CI log says so:
-          # "WebAuthn configured rp_id=localhost rp_origin=http://localhost:8080").
-          # Browsing 127.0.0.1 made every passkey registration fail that check.
-          # Fixing it the other way round is not possible: an IP address is not
-          # a valid RP ID, so the server cannot be pointed at 127.0.0.1 either.
-          E2E_API_URL: http://localhost:3000
-          E2E_BASE_URL: http://localhost:8080
-          E2E_DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
-          # Tenant isolation of the status socket, against this server. The
-          # spec seeds two ordinary accounts that each own a store, through
-          # the API, so no database access is needed and a local run and the
-          # nightly take the same path (they differ only in how the admin
-          # token is obtained). The pull request job runs only the lifecycle
-          # subset below, so this spec first runs on the push after a merge,
-          # and in the nightly.
-          E2E_WS_ISOLATION: "true"
-          PLAYWRIGHT_LIST_PRINT_STEPS: "1"
-          EVENT_NAME: ${{ github.event_name }}
-        # A pull request runs the money-adjacent lifecycles - create, use,
-        # delete - so a behaviour change is caught on the change that caused
-        # it, at a fraction of the runtime. Pushes and merge-queue runs keep
-        # the whole suite: the nightly run only drives remote-capable specs
-        # against testnet, so it is not a substitute for it. The account
-        # deletion regression that only this suite caught is in
-        # account-lifecycle, which the subset includes.
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            npx playwright test \
-              tests/account-lifecycle.spec.ts \
-              tests/wallet-lifecycle.spec.ts \
-              tests/stores.spec.ts \
-              tests/invoices.spec.ts
-          else
-            npx playwright test
-          fi
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: e2e/playwright-report/
-          retention-days: 7
-
-  docker:
-    name: Docker
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Lint, audit and test are listed here because `build` no longer waits on
-    # them: this is the gate between a failing check and a published image.
-    needs: [lint, audit, test, build]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testnet' || startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: read
-      packages: write
-      # Keyless cosign: the job proves its identity with a GitHub OIDC token
-      # instead of a long-lived private key. Nothing to store, nothing to rotate,
-      # nothing to leak.
-      id-token: write
-    outputs:
-      sha_tag: ${{ steps.tag.outputs.sha_tag }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          # The archive is rooted at target/release (see the upload step), so
-          # unpack it back there rather than into the workspace root.
-          path: target/release
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install cosign
-        # Pinned to a commit, not a tag. There is no floating `v4` tag - only
-        # exact versions - and beyond that, an action that performs signing is
-        # the last place to accept a mutable reference: whoever can move the tag
-        # can change what signs our images.
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        # The release is named, though it is the installer's default today: the
-        # deploy that verifies these signatures compares its own cosign release
-        # with this one, and a release that lives only inside the installer
-        # cannot be compared. cosign 3 writes signatures in a bundle format that
-        # cosign 2 does not look for, so a mismatch reads as "no signatures
-        # found" for an image that is correctly signed. Change this and the
-        # verifier's pin together.
-        with:
-          cosign-release: v3.0.6
-
-      - name: Compute image tags
-        id: tag
-        run: |
-          # Two tags per build. The moving one (testnet-latest) is
-          # what humans pull; the per-commit one is never reused, so the
-          # previous build keeps a name after the next push and rolling back
-          # is a `compose up` instead of revert -> rebuild -> redeploy.
-          # 7 chars matches `git rev-parse --short`, i.e. the build_sha the
-          # server reports on /health — so a running container can be matched
-          # to the image it came from.
-          echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}-latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Signed by DIGEST, never by tag. A tag is a moving pointer: signing
-      # `:testnet-latest` says "something called that was signed once", which is
-      # not a statement about the bytes anyone actually pulls. The digest is the
-      # bytes. `cosign verify` on a tag resolves it to a digest and checks that,
-      # so verifying by tag still works for humans.
-      - name: Build & push server
-        run: |
-          docker build -f docker/ethpayserver.Dockerfile \
-            -t ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.tag }} \
-            -t ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }} .
-          docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.tag }}
-          docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }}
-          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the server image"; exit 1; }
-          cosign sign --yes "$DIGEST"
-          echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build & push monitor
-        run: |
-          docker build -f docker/evmmonitor.Dockerfile \
-            -t ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.tag }} \
-            -t ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }} .
-          docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.tag }}
-          docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }}
-          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the monitor image"; exit 1; }
-          cosign sign --yes "$DIGEST"
-          echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
-
-  # staging (main) + production (tags) deploy via SSH push — see central-infrastructure/deploy.yml
-  # testnet deploys by dispatch like every other environment. It used
-  # to run here, on a self-hosted runner attached to this PUBLIC repository -
-  # which GitHub warns against, because a fork PR can execute on it. The only
-  # thing standing between that and code execution on the box was one `if:`
-  # line, and nobody would notice it going missing in a refactor. The job body
-  # also described the deploy host in detail: compose layout, ports, health
-  # probes, rollback.
-  #
-  # NOTE: removing the job does NOT deregister the runner. `debianbase` (id 22)
-  # is still registered and online on this repository, so any workflow file
-  # saying `runs-on: [self-hosted, debianbase]` still lands on the deploy box -
-  # and now there is no `if:` guarding it, because nothing references it. This
-  # change removes the only current use, not the exposure. Deregistering it
-  # (and removing the runner service on the box) is the step that finishes the
-  # job; until then, treat this as half done.
-  #
-  # Separate from notify-deploy below because the payload differs: this targets
-  # central-infrastructure's deploy-testnet.yml, which takes `sha_tag` and runs
-  # docker compose locally on the box. The other targets deploy.yml, which takes
-  # {service, environment, tag} and goes over SSH.
-  notify-deploy-testnet:
-    name: Notify Deploy (testnet)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [docker]
-    if: github.ref == 'refs/heads/testnet'
-    # Nothing here uses GITHUB_TOKEN - the dispatch authenticates with
-    # RCS_DISPATCH_PAT, which is a different credential. Handing this job the
-    # repository's default token scope while it holds a cross-repo PAT is
-    # scope it has no use for.
-    permissions: {}
-    steps:
-      - name: Trigger central-infrastructure deploy
-        env:
-          RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
-        run: |
-          set -e
-          [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          SHA_TAG="${{ needs.docker.outputs.sha_tag }}"
-          [ -n "$SHA_TAG" ] || { echo "::error::docker job produced no sha tag"; exit 1; }
-          # The signing certificate records the full commit it was issued for. Sending
-          # the full sha lets the receiver require that the signature was made for THIS
-          # commit, not merely by this workflow on this branch. Refuse, rather than send
-          # a payload without it, so the receiver never has to guess what absence means.
-          FULL_SHA="$GITHUB_SHA"
-          [[ "$FULL_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GITHUB_SHA is not a 40-character sha: '$FULL_SHA'"; exit 1; }
-          [ "$SHA_TAG" = "sha-${FULL_SHA::7}" ] || { echo "::error::sha tag $SHA_TAG does not belong to commit $FULL_SHA"; exit 1; }
-          curl -sS --fail-with-body -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d "{\"event_type\":\"deploy-testnet\",\"client_payload\":{\"sha_tag\":\"$SHA_TAG\",\"sha\":\"$FULL_SHA\"}}"
-          echo "dispatched deploy-testnet $SHA_TAG ($FULL_SHA)" >> "$GITHUB_STEP_SUMMARY"
-
-  # Mainnet handles real merchant funds, so it takes release tags and nothing
-  # else. `staging` was dropped with the rename: no staging host exists, and the
-  # `main` branch that fed it has been dormant since April while `testnet` is the
-  # trunk - so the dispatch it sent could only ever have failed on a host with no
-  # such directory.
-  notify-deploy:
-    name: Notify Deploy (mainnet)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [docker]
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Resolve tag, and refuse anything that is not a release
-        id: resolve
-        run: |
-          REF="${{ github.ref }}"
-
-          # `refs/tags/v*` is not a release filter: it matches v1.0.0-beta.1 and
-          # v1.0.0-rc1 exactly as readily as v1.0.0. The only tag this repo has
-          # ever carried is v0.1.0-alpha, so under the old rule the single
-          # existing tag was one push away from deploying to the environment
-          # that holds real funds.
-          #
-          # A release is vMAJOR.MINOR.PATCH and nothing more. Hotfixes are
-          # release tags too, so they pass; prereleases build and publish their
-          # image but stop here.
-          if [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "environment=mainnet" >> "$GITHUB_OUTPUT"
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ github.ref_name }} is a prerelease; image published, mainnet deploy skipped."
-            echo "\`${{ github.ref_name }}\` is a prerelease - image published, mainnet deploy skipped." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Trigger central-infrastructure deploy
-        if: steps.resolve.outputs.deploy == 'true'
-        env:
-          RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
-        run: |
-          set -e
-          # Same guards the testnet dispatch already carries: a missing token or
-          # a silent HTTP failure must not read as a successful deploy.
-          [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          curl -sS --fail-with-body -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d '{"event_type": "deploy", "client_payload": {"service": "ethpayserver", "environment": "${{ steps.resolve.outputs.environment }}", "sha": "${{ github.sha }}", "tag": "${{ steps.resolve.outputs.tag }}"}}'
-          echo "dispatched mainnet deploy ${{ steps.resolve.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-
-  # The dispatch above is fire-and-forget: a 202 from GitHub's API means the
-  # event was accepted, not that anything deployed. `scripts/health-gate.sh`
-  # was written for exactly this and documented in
-  # docs/deployment/mainnet-gate.md as a `post-deploy:health-gate` job - but
-  # that job description was GitLab CI and never came across, so the script has
-  # been in the tree unreferenced. This is the reference.
-  deploy-verify-testnet:
-    name: Verify testnet deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [notify-deploy-testnet]
-    if: github.ref == 'refs/heads/testnet'
-    permissions: {}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Poll /health/deep until it reports this commit
-        env:
-          # The `/api` prefix is load-bearing. testnet.random.cash serves the
-          # client, whose SPA fallback answers `/health/deep` with 200 and a
-          # page of HTML - a gate pointed there would pass on a server that
-          # never restarted. The API lives under `/api`.
-          HEALTH_URL: https://testnet.random.cash/api/health/deep
-          # Long enough for the dispatch to be picked up, the image pulled and
-          # migrations to run. Short enough that a deploy which never lands is
-          # reported on the same run that should have produced it. Four
-          # testnet deploys measured 380-488s to verify; 600s left as little
-          # as 112s of headroom and one of those four timed out despite the
-          # deploy succeeding seconds later. 900s keeps real headroom over the
-          # observed worst case.
-          HEALTH_TIMEOUT: "900"
-        run: |
-          set -e
-          export EXPECTED_SHA="${GITHUB_SHA::7}"
-          echo "expecting build_sha=$EXPECTED_SHA at $HEALTH_URL"
-          bash scripts/health-gate.sh
-
-  # The one red X that names the deploy.
-  #
-  # A failed `audit` does not fail the deploy - it makes every job after it
-  # `skipped`, which in the UI reads as "nothing to do here" rather than "we
-  # did not ship". On 2026-09-15 twenty-two merges landed on testnet while the
-  # deployed image stayed on a commit from two days earlier, and no job
-  # anywhere was red for the deploy. This job is.
-  testnet-deploy-status:
-    name: Testnet deploy status
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [lint, test, audit, build, docker, notify-deploy-testnet, deploy-verify-testnet]
-    if: always() && github.ref == 'refs/heads/testnet'
-    permissions: {}
-    steps:
-      - name: Fail if testnet did not deploy this commit
-        run: |
-          lint="${{ needs['lint'].result }}"
-          test="${{ needs['test'].result }}"
-          audit="${{ needs['audit'].result }}"
-          build="${{ needs['build'].result }}"
-          image="${{ needs['docker'].result }}"
-          dispatch="${{ needs['notify-deploy-testnet'].result }}"
-          verify="${{ needs['deploy-verify-testnet'].result }}"
-
-          printf 'lint=%s test=%s audit=%s build=%s docker=%s dispatch=%s verify=%s\n' \
-            "$lint" "$test" "$audit" "$build" "$image" "$dispatch" "$verify"
-
-          if [ "$verify" = "success" ]; then
-            echo "testnet is serving ${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # Name the first link that broke rather than the last, so the message
-          # points at the cause and not at the skip it produced.
-          for pair in "lint:$lint" "test:$test" "audit:$audit" "build:$build" "docker:$image" \
-                      "dispatch:$dispatch" "verify:$verify"; do
-            stage="${pair%%:*}"
-            result="${pair#*:}"
-            if [ "$result" != "success" ]; then
-              echo "::error::testnet did NOT deploy ${GITHUB_SHA::7} - '$stage' was '$result'. The branch has moved; the running image has not."
-              exit 1
-            fi
-          done
-          exit 1
-
-  # A red check that nobody reads is not a signal.
-  #
-  # The E2E job sat red on every testnet push for a day without anyone
-  # noticing, because it gates nothing: `notify-deploy-testnet` needs only
-  # `docker`, so the deploy went out regardless and no other job turned red.
-  #
-  # Gating the deploy on it is the wrong trade - testnet deploys on every push
-  # and is the development feedback loop, so a flaky browser suite would block
-  # the thing it exists to verify. Instead this leaves a durable artefact,
-  # the same mechanism `e2e-scheduled.yml` already uses for the nightly run
-  # against live testnet: an issue survives being ignored, and shows up in
-  # `gh issue list` long after a run has scrolled out of view.
-  e2e-status:
-    name: E2E status
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [e2e]
-    # `failure` specifically, not `!= success`. When an upstream job breaks,
-    # `e2e` is skipped rather than run, and filing an E2E issue for that would
-    # blame the browser suite for a build that never produced a binary -
-    # `testnet-deploy-status` already reports that case.
-    if: always() && github.ref == 'refs/heads/testnet' && needs.e2e.result == 'failure'
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: File or update the E2E issue
-        uses: https://github.com/actions/github-script@v7
-        env:
-          E2E_RESULT: ${{ needs.e2e.result }}
-        with:
-          script: |
-            const title = 'CI E2E is failing on testnet';
-            const body = [
-              `The \`E2E\` job in \`ci.yml\` was **${process.env.E2E_RESULT}** for ` +
-              `\`${context.sha.slice(0, 7)}\` on \`testnet\`.`,
-              '',
-              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '',
-              'This job starts a local server from the built binaries. If the',
-              'failure is "frontend proxy is not reaching the API", read the',
-              '`Start server` step first - the server printing a reason and',
-              'exiting looks identical from nginx, and that is what it was the',
-              'last time this fired.',
-              '',
-              'Distinct from the nightly run in `e2e-scheduled.yml`, which tests',
-              'live testnet and starts no local server.',
-            ].join('\n');
-
-            // Reuse an open issue rather than filing one per push: testnet
-            // takes several pushes a day, and a fresh issue for each would bury
-            // the signal it exists to carry. Same reason, and the same
-            // per_page: 100, as e2e-scheduled.yml - the default 30 includes
-            // pull requests, so an exact-title match silently misses once the
-            // repo has 30+ open e2e-labelled items.
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'e2e',
-              per_page: 100,
-            });
-            const match = existing.data.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['e2e'],
-              });
-            }
