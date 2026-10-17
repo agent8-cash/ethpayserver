@@ -16,7 +16,7 @@ use ::types::ChainId;
 use auth::repository::StoreRepository;
 use auth::{ServerSettings, ServerSettingsRepository, SessionService, StoreId};
 use data_service::{self, StorePaymentMethodReader, StorePaymentMethodWriter};
-use evm::validate_xpub;
+use evm::{validate_xpub, xpub_depth_problem};
 
 use super::super::extractors::StoreScopedUser;
 use super::{ApiErr, repository_error, require_store_settings_permission};
@@ -209,6 +209,11 @@ where
     {
         return Err(StatusCode::BAD_REQUEST.into());
     }
+    if let Some(ref xpub) = req.xpub
+        && let Some(reason) = xpub_depth_problem(xpub)
+    {
+        return Err((StatusCode::BAD_REQUEST, reason).into());
+    }
 
     // Refuse a chain nothing here can watch. See `chain_has_no_adapter` -
     // otherwise the option gets an address (the same curve derives one for
@@ -323,6 +328,11 @@ where
         && !validate_xpub(xpub)
     {
         return Err(StatusCode::BAD_REQUEST.into());
+    }
+    if let Some(ref xpub) = req.xpub
+        && let Some(reason) = xpub_depth_problem(xpub)
+    {
+        return Err((StatusCode::BAD_REQUEST, reason).into());
     }
 
     // Verify method exists and belongs to this store
