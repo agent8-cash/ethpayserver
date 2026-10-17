@@ -483,6 +483,10 @@ jobs:
         run: ./scripts/check-wasmtime-ignores.test.sh
       - name: wasmtime ignores still valid
         run: ./scripts/check-wasmtime-ignores.sh
+      - name: zip ignore guard self-test
+        run: ./scripts/check-zip-ignores.test.sh
+      - name: zip ignores still valid
+        run: ./scripts/check-zip-ignores.sh
       # cargo audit reads the lockfile, which lists crates no target builds.
       # This blocks on an advisory in a crate in the build graph and only
       # reports one that is lockfile-only; the job output labels each.
