@@ -37,11 +37,17 @@ ALLOWED_DEPENDENTS="utoipa-swagger-ui"
 if [ -n "${ZIP_EDGES_FILE:-}" ]; then
   edges="$(cat "$ZIP_EDGES_FILE")"
 else
-  meta="$(cargo metadata --locked --format-version 1 2>&1)" || {
-    echo "cargo metadata failed:"; echo "$meta"; exit 2; }
-  edges="$(jq -r '.packages[] | .name as $p | .dependencies[]?
-                  | select(.name == "zip") | "\($p) \(.kind // "normal")"' <<<"$meta")" || {
-    echo "could not read zip edges from cargo metadata - not a pass"; exit 2; }
+  # stderr kept OUT of the JSON: cargo writes progress and warnings there, and
+  # folding them into stdout fed jq a document that does not parse, which is how
+  # this guard first reported "could not run" on a tree it should have passed.
+  err="$(mktemp)"; trap 'rm -f "$err"' EXIT
+  if ! edges="$(cargo metadata --locked --format-version 1 2>"$err" \
+      | jq -r '.packages[] | .name as $p | .dependencies[]?
+               | select(.name == "zip") | "\($p) \(.kind // "normal")"')"; then
+    echo "could not read zip edges - cargo metadata or jq failed, which is not a pass:"
+    tail -5 "$err" | sed 's/^/  /'
+    exit 2
+  fi
 fi
 
 if [ -z "${edges//[[:space:]]/}" ]; then
@@ -49,6 +55,11 @@ if [ -z "${edges//[[:space:]]/}" ]; then
   echo "If zip has genuinely left the tree, remove the ignores and this guard together."
   exit 2
 fi
+
+# Print what was measured, every run: the verdict below is only as good as this,
+# and a reader (or the next person to touch utoipa-swagger-ui) can see the edge
+# set the ignores were justified against rather than infer it.
+echo "edges to zip:"; sed 's/^/  /' <<<"$edges"
 
 rc=0
 while read -r dep kind; do
