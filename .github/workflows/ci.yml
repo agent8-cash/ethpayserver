@@ -324,7 +324,7 @@ jobs:
   # none of that: route-coverage.spec.ts only reads scout.spec.ts as text,
   # visual-review-report.spec.ts only exercises plain functions, and
   # visual-review-main.spec.ts spawns visual-review.mjs as a subprocess
-  # against a stand-in HTTP server in place of the Anthropic API - none of the
+  # against a stand-in script in place of the Claude Code CLI - none of the
   # three touches a browser or the server/DB stack. Running them here, with
   # E2E_REMOTE=true so playwright.config.ts skips its `webServer` entries
   # entirely, catches a regression before merge without paying for what none
