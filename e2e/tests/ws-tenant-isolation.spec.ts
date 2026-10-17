@@ -37,6 +37,11 @@
  * `E2E_API_TOKEN` key remotely. The admin owns nothing under test; it only
  * deletes the two accounts afterwards.
  *
+ * The isolation verdict does not depend on any expiry arriving. A wait that
+ * times out is recorded, the isolation check still runs on the frames that did
+ * arrive, and a leak fails the run. With no leak but a missing own event the
+ * run fails as NOT VERIFIED (isolation could not run), never as a bare timeout.
+ *
  * If an ordinary account is refused invoice creation on standing, setup has
  * not worked and nothing has been tested: that is reported as NOT VERIFIED,
  * naming the status and body, and never as an isolation result.
@@ -53,8 +58,8 @@ import { HDKey, generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { api, ApiError, V4_UUID } from '../fixtures/api';
 import { createUserWithApiKey } from '../fixtures/db';
 import {
-  expectNothingForeign,
-  expectReceived,
+  judgeIsolation,
+  type Frame,
   openAuthenticatedSocket,
   type RecordingSocket,
 } from '../fixtures/ws-isolation';
@@ -254,26 +259,60 @@ test.describe('Status socket tenant isolation', () => {
       return invoice.id;
     }
 
+    // A wait that times out is recorded, not thrown: the isolation verdict
+    // below must run on whatever frames arrived, so a broken expiry path cannot
+    // take the isolation check with it. Once one event is missing, later waits
+    // would only repeat the same timeout, so the remaining invoices are still
+    // created but not waited on. If the socket was closed meanwhile (an idle
+    // proxy timeout, say) it records nothing, so a leak after the closure is
+    // invisible: that run is reported NOT VERIFIED, never as a clean pass.
+    let precondition: string | null = null;
+    const statusFailures: string[] = [];
+    async function expectOwnEvent(socket: RecordingSocket, invoiceId: string, who: string): Promise<void> {
+      if (precondition) return;
+      let frame: Frame;
+      try {
+        frame = await socket.waitForInvoice(invoiceId, EXPIRY_WAIT_MS);
+      } catch (e) {
+        precondition = `${who}: ${(e as Error).message}`;
+        return;
+      }
+      // Outside the try: a wrong status is a product failure, not a missing
+      // precondition. Recorded rather than thrown so the leak check below still
+      // runs; it is raised after the verdict.
+      if (frame.status !== 'expired') {
+        statusFailures.push(`${who} was told '${frame.status}' rather than expiry about its own invoice ${invoiceId}`);
+      }
+    }
+
     const s2First = await expireOne(s2, b);
-    const gotB1 = await socketB.waitForInvoice(s2First, EXPIRY_WAIT_MS);
-    expect(gotB1.status, 'B was told something other than expiry about its own invoice').toBe('expired');
+    await expectOwnEvent(socketB, s2First, 'B');
 
     const s1Only = await expireOne(s1, a);
-    const gotA = await socketA.waitForInvoice(s1Only, EXPIRY_WAIT_MS);
-    expect(gotA.status, 'A was told something other than expiry about its own invoice').toBe('expired');
+    await expectOwnEvent(socketA, s1Only, 'A');
 
     const s2Second = await expireOne(s2, b);
-    await socketB.waitForInvoice(s2Second, EXPIRY_WAIT_MS);
+    await expectOwnEvent(socketB, s2Second, 'B');
 
     // The one pair nothing orders: S2's second event against A.
     await new Promise((r) => setTimeout(r, SETTLE_MS));
 
-    // Positive controls, both sockets.
-    expectReceived('A', socketA.frames, [s1Only]);
-    expectReceived('B', socketB.frames, [s2First, s2Second]);
-    // Isolation: nothing outside the socket's own store, in either direction.
-    expectNothingForeign('A', socketA.frames, [s1Only]);
-    expectNothingForeign('B', socketB.frames, [s2First, s2Second]);
+    // Isolation first (a leak is a failure even with no own event), then the
+    // positive controls, whose absence is NOT VERIFIED rather than a failure.
+    // A leak is detectable only while a socket is alive. One the peer closed
+    // may have missed frames, so it cannot support a clean verdict.
+    for (const [who, socket] of [['A', socketA], ['B', socketB]] as const) {
+      const closed = socket.closedReason();
+      if (closed && !precondition) precondition = `${who}: ${closed}`;
+    }
+    judgeIsolation(
+      [
+        { label: 'A', frames: socketA.frames, own: [s1Only] },
+        { label: 'B', frames: socketB.frames, own: [s2First, s2Second] },
+      ],
+      statusFailures,
+      precondition ?? '',
+    );
 
     console.log(
       `A (S1 owner) frames: ${socketA.frames.length}, B (S2 owner) frames: ${socketB.frames.length}; ` +
