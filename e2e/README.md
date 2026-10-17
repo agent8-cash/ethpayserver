@@ -392,7 +392,10 @@ which is private. An advisory green reading "no route was reviewed" would be
 the nineteen-night failure rebuilt one layer up.
 
 `findings.json` also carries `reviewed`: how many routes were actually
-judged. "No findings" is a claim about routes that were looked at, so the
+judged, and `total`: how many the capture step set out to produce (read from
+`expected-routes.json`, null if absent). Every rendering says "N of M routes
+reviewed" and a run with `reviewed < total` is marked INCOMPLETE, so one route
+of eight cannot read as a full clean night. "No findings" is a claim about routes that were looked at, so the
 report may not print it without the count it is out of. That is not a
 hypothetical — between 2026-09-27 and 2026-10-15 nineteen consecutive nightly
 runs filed "No findings among the routes that were reviewed" having reviewed

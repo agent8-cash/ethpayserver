@@ -42,10 +42,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
-import { groupByRoute, renderReport, crashOutputs } from './visual-review-report.mjs';
+import { groupByRoute, renderReport, crashOutputs, coverageLabel } from './visual-review-report.mjs';
 
 const VISUAL_DIR = path.join('test-results', 'visual');
 const MANIFEST_PATH = path.join(VISUAL_DIR, 'manifest.json');
+const EXPECTED_PATH = path.join(VISUAL_DIR, 'expected-routes.json');
 // Measured against the installed CLI, not guessed: `claude-sonnet-5-5` is not
 // in its model catalog, and asking for it prints an "isn't described by this
 // version's model catalog" warning - on STDOUT, carrying a JSON object of its
@@ -93,6 +94,18 @@ right answer when both viewports are fine.`;
 function loadManifest() {
   if (!fs.existsSync(MANIFEST_PATH)) return null;
   return JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+}
+
+// How many routes the capture step meant to produce, as it recorded them.
+// null when the file is absent or unreadable: an unknown denominator is
+// reported as such rather than defaulted to the number that was reviewed.
+function loadExpectedTotal() {
+  try {
+    const { routes } = JSON.parse(fs.readFileSync(EXPECTED_PATH, 'utf8'));
+    return Array.isArray(routes) ? routes.length : null;
+  } catch {
+    return null;
+  }
 }
 
 function runClaude(prompt) {
@@ -193,24 +206,24 @@ async function reviewRoute(route, { path: routePath, shots }) {
 // run that judged at least one route is advisory - that is the line between
 // "the page may be fine" and "we did not look", and the nineteen green
 // nights that judged nothing are what it is drawn for.
-function finish(findings, errors, reviewed) {
-  writeOutputs(findings, errors, reviewed);
+function finish(findings, errors, reviewed, total = loadExpectedTotal()) {
+  writeOutputs(findings, errors, reviewed, total);
   if (reviewed === 0 && process.env.E2E_VISUAL_REVIEW === 'true') {
     console.error('no route was judged — failing the step rather than reporting a run that looked at nothing');
     process.exitCode = 1;
   }
 }
 
-function writeOutputs(findings, errors, reviewed) {
+function writeOutputs(findings, errors, reviewed, total = null) {
   fs.mkdirSync(VISUAL_DIR, { recursive: true });
   fs.writeFileSync(
     path.join(VISUAL_DIR, 'findings.json'),
-    JSON.stringify({ findings, errors, reviewed }, null, 2),
+    JSON.stringify({ findings, errors, reviewed, total }, null, 2),
   );
-  const report = renderReport(findings, errors, reviewed);
+  const report = renderReport(findings, errors, reviewed, total);
   fs.writeFileSync(path.join(VISUAL_DIR, 'report.md'), report);
   console.log(
-    `${findings.length} finding(s), ${errors.length} error(s), ${reviewed} route(s) reviewed — see report.md`,
+    `${findings.length} finding(s), ${errors.length} error(s), ${coverageLabel(reviewed, total)} — see report.md`,
   );
 }
 

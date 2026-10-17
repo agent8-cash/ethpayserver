@@ -51,10 +51,10 @@ test.describe('renderReport', () => {
     const incomplete = renderReport([], [{ route: 'wallets', viewport: 'mobile', reason: 'capture failed' }], 5);
 
     expect(clean).not.toBe(incomplete);
-    expect(clean).toContain('No issues found across 6 route(s).');
+    expect(clean).toContain('No issues found (6 routes reviewed, total unknown).');
     expect(incomplete).not.toContain('No issues found');
     expect(incomplete).toContain('could not be reviewed — treat this run as incomplete, not clean');
-    expect(incomplete).toContain('No findings among the 5 route(s) that were reviewed.');
+    expect(incomplete).toContain('No findings among the routes that were reviewed (5 routes reviewed, total unknown).');
   });
 
   // The defect this count exists for: with no reviewed count to print, the
@@ -81,7 +81,7 @@ test.describe('renderReport', () => {
 
     expect(report).toContain('could not be reviewed — treat this run as incomplete, not clean');
     expect(report).toContain('settings (desktop): capture failed');
-    expect(report).toContain('1 finding(s) across 1 route(s).');
+    expect(report).toContain('1 finding(s) across 1 route(s) (5 routes reviewed, total unknown).');
     expect(report).toContain('/evm/wallets (wallets)');
     expect(report).toContain('raw decimal shown for balance');
   });
@@ -136,7 +136,7 @@ test.describe('renderPublicSummary', () => {
     expect(summary).not.toBeNull();
     expect(summary).toContain('could not be reviewed — treat this run as incomplete, not clean');
     expect(summary).toContain('wallets (mobile): capture failed');
-    expect(summary).toContain('No findings among the 5 route(s) that were reviewed.');
+    expect(summary).toContain('No findings among the routes that were reviewed (5 routes reviewed, total unknown).');
   });
 
   // The issue body is the only thing anyone reads, and nineteen of them were
@@ -201,5 +201,30 @@ test.describe('crashOutputs', () => {
 
     expect(findings).toEqual([]);
     expect(errors[0].reason).toContain('manifest.json is not valid JSON');
+  });
+});
+
+test.describe('denominator', () => {
+  test('a 1-of-8 run states the 8 in both the report and the public summary', () => {
+    const finding = { route: 'wallets', path: '/evm/wallets', viewport: 'mobile', what_is_wrong: 'x' };
+    for (const text of [
+      renderReport([], [], 1, 8),
+      renderReport([finding], [], 1, 8),
+      renderPublicSummary([], [], 'https://example.invalid/run', 1, '', 8),
+      renderPublicSummary([finding], [], 'https://example.invalid/run', 1, '', 8),
+    ]) {
+      expect(text).toContain('1 of 8 routes reviewed');
+      expect(text).toContain('INCOMPLETE');
+    }
+  });
+
+  test('a partial run with no recorded error is published, not skipped as clean', () => {
+    expect(renderPublicSummary([], [], 'https://example.invalid/run', 1, '', 8)).not.toBeNull();
+  });
+
+  test('a full clean run is not flagged incomplete and publishes nothing', () => {
+    expect(renderReport([], [], 8, 8)).not.toContain('INCOMPLETE');
+    expect(renderReport([], [], 8, 8)).toContain('8 of 8 routes reviewed');
+    expect(renderPublicSummary([], [], 'https://example.invalid/run', 8, '', 8)).toBeNull();
   });
 });
