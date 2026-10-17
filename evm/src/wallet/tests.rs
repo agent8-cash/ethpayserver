@@ -364,3 +364,51 @@ fn looks_like_a_private_key_flags_raw_hex_secp256k1_keys() {
     // Right length, but not hex - `g` is outside the hex alphabet.
     assert!(!looks_like_a_private_key(&"g".repeat(64)));
 }
+
+fn xpub_string_at(path: &str) -> String {
+    let wallet = HdWallet::from_mnemonic(TEST_MNEMONIC, "").unwrap();
+    let key = wallet
+        .master_key
+        .derive_path(DerivationPath::from_str(path).unwrap())
+        .unwrap();
+    MainnetEncoder::xpub_to_base58(&key.verify_key()).unwrap()
+}
+
+/// The receive-branch key (`m/44'/60'/0'/0`) is the easy wrong paste: it
+/// parses, and appending `0/i` to it produces addresses the merchant's
+/// wallet never shows. It is refused with the depth named, while the real
+/// account key - the string a wallet exports, with the published first
+/// address - and a dedicated hardened account both still pass.
+#[test]
+fn a_child_depth_xpub_is_refused_naming_its_depth() {
+    let receive_branch = xpub_string_at("m/44'/60'/0'/0");
+    assert!(
+        validate_xpub(&receive_branch),
+        "it parses, which is the trap"
+    );
+    let problem = xpub_depth_problem(&receive_branch).expect("depth 4 must be refused");
+    assert!(problem.contains("depth 4"), "message was: {problem}");
+
+    // What accepting it would have done: not the published address.
+    let misderived = XpubDeriver::from_xpub("eip155", &receive_branch).unwrap();
+    assert_ne!(
+        misderived.derive_address(0).unwrap().to_lowercase(),
+        "0x9858effd232b4033e47d90003d41ec34ecaeda94"
+    );
+
+    let master = xpub_string_at("m");
+    assert!(xpub_depth_problem(&master).unwrap().contains("depth 0"));
+
+    // Control: the exported account key and a hardened account are depth 3.
+    assert_eq!(xpub_depth_problem(EVM_ACCOUNT_XPUB), None);
+    assert_eq!(xpub_depth_problem(TRON_ACCOUNT_XPUB), None);
+    assert_eq!(xpub_depth_problem(&xpub_string_at("m/44'/60'/7'")), None);
+    assert_eq!(xpub_depth_problem("not an xpub"), None);
+
+    // Existing derivation is untouched.
+    let evm = XpubDeriver::from_xpub("eip155", EVM_ACCOUNT_XPUB).unwrap();
+    assert_eq!(
+        evm.derive_address(0).unwrap().to_lowercase(),
+        "0x9858effd232b4033e47d90003d41ec34ecaeda94"
+    );
+}

@@ -200,3 +200,52 @@ async fn an_xpub_derive_xpub_prints_is_accepted_by_the_real_wallet_endpoint() {
 
     cleanup(&pool, user_id).await;
 }
+
+/// The receive-branch key (`m/44'/60'/0'/0`, depth 4) parses, but deriving
+/// `0/i` from it gives addresses the merchant's wallet never shows. The real
+/// `POST /wallets` handler must refuse it naming the depth, and store nothing.
+#[tokio::test]
+#[ignore]
+async fn a_child_depth_xpub_is_refused_by_the_real_wallet_endpoint() {
+    const CHILD_XPUB: &str = "xpub6EF8jXqFeFEW5bwMU7RpQtHkzE4KJxcqJtvkCjJumzW8CPpacXkb92ek4WzLQXjL93HycJwTPUAcuNxCqFPKKU5m5Z2Vq4nCyh5CyPeBFFr";
+    let state = state().await;
+    let pool = state.data_service.pool().clone();
+    let user_id = Uuid::new_v4();
+    let email = format!("wallet-depth-{user_id}@example.com");
+    seed_user(&pool, user_id, &email).await;
+    let user = UserInfo {
+        id: UserId(user_id),
+        email: Some(email),
+        primary_wallet_address: None,
+        created_at: Utc::now(),
+        last_login_at: None,
+        role: Role::User,
+    };
+
+    let result = create_wallet(
+        AuthenticatedUser(user),
+        State(state),
+        Json(CreateWalletRequest {
+            xpub: CHILD_XPUB.to_string(),
+            name: None,
+            namespace: NAMESPACE_EIP155.to_string(),
+        }),
+    )
+    .await;
+    let err = result.expect_err("a depth-4 key must be refused");
+    let response = axum::response::IntoResponse::into_response(err);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("depth 4"), "must name the depth: {body}");
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wallets WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "a refused key must not be stored");
+    cleanup(&pool, user_id).await;
+}
