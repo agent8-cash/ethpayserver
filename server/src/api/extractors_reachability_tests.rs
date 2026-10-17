@@ -187,6 +187,44 @@ async fn an_invalid_api_key_is_still_rejected_by_store_scoped_user() {
     );
 }
 
+/// Pins the exact 401 response body for the two ways a request fails to
+/// authenticate. The status is asserted elsewhere; the body is what a client
+/// shows a person, and nothing else records it. This is a baseline: a change
+/// to the auth path that alters these strings should have to say so here.
+#[tokio::test]
+#[ignore]
+async fn the_401_body_is_pinned_for_a_missing_and_an_invalid_credential() {
+    let service = pg_service().await;
+    let app = echo_app(test_state(service));
+
+    let cases = [
+        (None, "Missing Authorization header"),
+        (
+            Some("Bearer ak_does_not_exist_0000000000"),
+            "Invalid API key",
+        ),
+    ];
+    for (header, expected_body) in cases {
+        let mut builder = Request::builder().method("GET").uri("/echo");
+        if let Some(h) = header {
+            builder = builder.header("Authorization", h);
+        }
+        let resp = app
+            .clone()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{header:?}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            expected_body,
+            "401 body for {header:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The ServerAdmin downgrade, joined to a real bare-role check.
 //
