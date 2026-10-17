@@ -81,7 +81,7 @@ test.describe('renderReport', () => {
 
     expect(report).toContain('could not be reviewed — treat this run as incomplete, not clean');
     expect(report).toContain('settings (desktop): capture failed');
-    expect(report).toContain('1 finding(s) across 1 route(s).');
+    expect(report).toContain('1 finding(s) across 1 route(s) (5 routes reviewed, total unknown).');
     expect(report).toContain('/evm/wallets (wallets)');
     expect(report).toContain('raw decimal shown for balance');
   });
@@ -136,7 +136,7 @@ test.describe('renderPublicSummary', () => {
     expect(summary).not.toBeNull();
     expect(summary).toContain('could not be reviewed — treat this run as incomplete, not clean');
     expect(summary).toContain('wallets (mobile): capture failed');
-    expect(summary).toContain('No findings among the 5 route(s) that were reviewed.');
+    expect(summary).toContain('No findings among the routes that were reviewed (5 routes reviewed, total unknown).');
   });
 
   // The issue body is the only thing anyone reads, and nineteen of them were
