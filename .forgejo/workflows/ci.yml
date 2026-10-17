@@ -6,6 +6,11 @@
 # and Audit - are among them, so what a merge is gated on can be measured here.
 #
 # What is NOT ported, and why. Each is a measured platform gap, not a choice:
+#   - `Test`: it needs Postgres and Redis as service containers, and this runner
+#     cannot create them - measured 2026-10-17, and the numbers are beside the
+#     place the job used to be. Two of branch protection's three required checks
+#     run here; this is the third, so a green run on this forge is not yet
+#     evidence that a merge is safe.
 #   - `E2E`: it consumes the binaries `Build` uploads, and actions/upload-artifact
 #     fails on rcs-docker (measured 2026-10-16 with a probe workflow). With no
 #     artifact handoff there is nothing for it to download. `Build`'s upload step
@@ -360,109 +365,26 @@ jobs:
           E2E_REMOTE: "true"
         run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts
 
-  test:
-    name: Test
-    runs-on: rcs-docker
-    timeout-minutes: 40
-    needs: [lint]
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: ethpayserver_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # `-p server` below runs that package's `#[ignore]`d integration tests,
-      # and some need a real Redis the same way the rest need the Postgres
-      # above - without this, the first such test can only fail, and it does
-      # so by hanging until some ambient timeout fires rather than with a
-      # message saying Redis was never there. That now includes the
-      # admin-deletion tests exercising the unwatch step against a real
-      # `RedisEVMMonitor` rather than the `None` branch.
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
+  # `test` IS NOT PORTED, and this is the one gap that keeps the gate from being
+  # the gate here. It needs Postgres and Redis as service containers, and this
+  # runner cannot create them. Measured on 2026-10-17, per job, on the run that
+  # produced the rest of this file's green:
+  #
+  #   Lint 20m pass | Client pin drift 11s pass | E2E static 2m pass
+  #   Build 31m pass | Audit pass
+  #   Test 2s FAIL   <- declares services
+  #   a throwaway probe declaring the same two services: 10s FAIL
+  #
+  # Two for two against five for five, with the difference stated in the
+  # workflow rather than inferred. So Test stays on GitHub until the runner can
+  # reach a docker daemon, or until a Postgres and a Redis exist on the host for
+  # a job to connect to - at which point this job comes back, reading
+  # DATABASE_URL and TEST_REDIS_URL instead of declaring containers.
+  #
+  # Branch protection's required checks are Lint, Test and Audit. Two of the
+  # three run here; the third does not, so a green run on this forge is NOT yet
+  # evidence that a merge is safe.
 
-
-      - uses: https://github.com/dtolnay/rust-toolchain@stable
-
-      - uses: https://github.com/Swatinem/rust-cache@v2
-
-      - name: Install mold + nextest
-        run: |
-          # apt on hosted runners hangs often enough to matter: a stuck
-          # `apt-get update` held the pipeline for 30+ minutes against a
-          # 3-hour job timeout. Bound each attempt and retry.
-          for attempt in 1 2 3; do
-            timeout 180 sudo apt-get update \
-              && timeout 180 sudo apt-get install -y mold \
-              && break
-            echo "::warning::apt attempt $attempt failed or timed out; retrying"
-            sleep 15
-            if [ "$attempt" = 3 ]; then echo "::error::apt failed 3 times"; exit 1; fi
-          done
-          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
-
-      - name: Unit tests
-        # Every test binary, not just `--lib`. The integration binaries -
-        # evm/tests, server/tests - were compiled by clippy and never run, so
-        # they could go red and stay red without anything noticing: on
-        # 2026-09-16 three tests in evm/tests/payment_flow.rs and two in
-        # server/tests/payment_flow.rs were failing on testnet while this job
-        # reported green. `#[ignore]`d tests still need a database and are run
-        # separately below.
-        run: cargo nextest run --workspace --no-fail-fast -j 2
-
-      - name: Integration tests
-        # Gating. These were non-blocking and 18 of 27 had been failing
-        # unnoticed on an FK the fixtures never satisfied, so CI reported green
-        # over dead multi-chain and fractional-amount aggregation coverage.
-        #
-        # `-p server` covers the plugin-storage tests (schema
-        # creation, migration runner, search_path scoping): they were
-        # `#[ignore]`'d like the rest of this suite but, unlike data-service,
-        # had no CI job ever passing `--run-ignored`, so nothing here actually
-        # ran them.
-        run: |
-          DATABASE_URL="postgres://test:test@127.0.0.1:5432/ethpayserver_test" \
-            cargo run --release --bin migrate_postgres
-          DATABASE_URL="postgres://test:test@127.0.0.1:5432/ethpayserver_test" \
-          TEST_REDIS_URL="redis://127.0.0.1:6379" \
-            cargo nextest run -p data-service -p server --no-fail-fast --run-ignored only -j 1
-
-      # `evm`'s `redis` feature is off by default, so evm/tests/redis_bridge.rs
-      # (the only coverage for the production Redis event bridge - XADD/XREAD
-      # entry-ID framing, epoch persistence, retention-loss detection) was
-      # compiled by neither this job nor the "Unit tests" step above, and ran
-      # in no CI workflow at all. A test that never runs is worse than no
-      # test: this crate's Redis-specific invariants shipped with zero
-      # automated coverage until this step existed.
-      #
-      # Scoped to `--test redis_bridge` rather than `-p evm`: `evm/tests/`
-      # also has `payment_flow.rs` and `rpc_cost.rs`, which fail to compile
-      # on their own (pre-existing, unrelated to Redis) unless built as part
-      # of the whole `--workspace`, where feature unification with `server`
-      # papers over it. `-p evm` alone hits that failure and would sink this
-      # step; naming the one binary this step actually needs sidesteps it.
-      - name: Redis event bridge integration tests
-        run: |
-          REDIS_URL="redis://127.0.0.1:6379" \
-            cargo nextest run -p evm --features redis --test redis_bridge --no-fail-fast --run-ignored only -j 1
 
   # Runs on pull requests too, deliberately. This used to be branch-only, so a
   # dependency a PR introduced was invisible until after it merged - and then
