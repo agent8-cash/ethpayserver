@@ -21,6 +21,26 @@ export interface ReceivedWebhook {
   body: Record<string, unknown>;
 }
 
+/**
+ * The quick-tunnel service did not hand out a URL in time.
+ *
+ * Thrown only from the tunnel's own provisioning — the 60s no-URL timeout,
+ * which is how a `409` from Cloudflare's free provisioning API surfaces, or
+ * cloudflared exiting early with that same refusal. A
+ * missing binary, or anything after the sink has a URL, is a normal failure:
+ * this type means "a third party we do not control was unavailable", so a
+ * caller that catches it broadly would relabel real defects as an outage.
+ */
+export class TunnelUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TunnelUnavailableError';
+  }
+}
+
+/** Quick-tunnel attempts before giving up; each can burn the full 60s. */
+const TUNNEL_ATTEMPTS = 2;
+
 export class WebhookSink {
   private constructor(
     private readonly server: Server,
@@ -66,7 +86,7 @@ export class WebhookSink {
     if (process.env.E2E_WEBHOOK_PUBLIC_URL) {
       publicUrl = process.env.E2E_WEBHOOK_PUBLIC_URL.replace(/\/$/, '') + path;
     } else {
-      const started = await startQuickTunnel(port).catch((err: Error) => {
+      const started = await startQuickTunnelWithRetry(port).catch((err: Error) => {
         server.close();
         throw err;
       });
@@ -139,6 +159,28 @@ export function verifySignature(hook: ReceivedWebhook, secret: string): boolean 
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * The free provisioning API is best-effort and rate-limited, so one refusal
+ * says little; retry only the unavailable case, never a spawn failure.
+ */
+export async function startQuickTunnelWithRetry(
+  port: number,
+): Promise<{ proc: ChildProcess; url: string }> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await startQuickTunnel(port);
+    } catch (err) {
+      if (!(err instanceof TunnelUnavailableError) || attempt >= TUNNEL_ATTEMPTS) throw err;
+      console.log(
+        `quick tunnel attempt ${attempt}/${TUNNEL_ATTEMPTS} failed, retrying: ${err.message}`,
+      );
+    }
+  }
+}
+
+/** What cloudflared prints when the quick-tunnel API refuses to hand out a tunnel. */
+const PROVISIONING_REFUSED = /quick tunnel provisioning failed|Tunnelstore request failed/i;
+
 /** Spawn `cloudflared tunnel --url` and resolve the assigned trycloudflare host. */
 function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: string }> {
   const bin = process.env.E2E_CLOUDFLARED_BIN || 'cloudflared';
@@ -148,10 +190,15 @@ function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: stri
 
   return new Promise((resolve, reject) => {
     let output = '';
+    const timeoutMs = Number(process.env.E2E_TUNNEL_URL_TIMEOUT_MS) || 60_000;
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new Error(`cloudflared did not report a URL within 60s. Output:\n${output}`));
-    }, 60_000);
+      reject(
+        new TunnelUnavailableError(
+          `cloudflared did not report a URL within ${timeoutMs / 1000}s. Output:\n${output}`,
+        ),
+      );
+    }, timeoutMs);
 
     const onChunk = (chunk: Buffer) => {
       output += chunk.toString();
@@ -165,6 +212,18 @@ function startQuickTunnel(port: number): Promise<{ proc: ChildProcess; url: stri
     };
     proc.stdout?.on('data', onChunk);
     proc.stderr?.on('data', onChunk);
+
+    // `close`, not `exit`: it fires after the pipes drain, so the provisioning
+    // error text is in `output` by the time we classify.
+    proc.on('close', (code, signal) => {
+      clearTimeout(timer);
+      const detail = `cloudflared exited (${signal ?? `code ${code}`}) before reporting a URL. Output:\n${output}`;
+      // Only Cloudflare refusing to provision is "unavailable". A crash, a bad
+      // flag or a wrong-architecture binary also exits early and is our fault.
+      reject(
+        PROVISIONING_REFUSED.test(output) ? new TunnelUnavailableError(detail) : new Error(detail),
+      );
+    });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
