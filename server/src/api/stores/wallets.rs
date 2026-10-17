@@ -28,7 +28,7 @@ use auth::{SessionService, StoreId};
 use data_service::{
     self, StorePaymentMethod, StorePaymentMethodReader, WalletReader, WalletWriter,
 };
-use evm::{XpubDeriver, looks_like_a_private_key, validate_xpub};
+use evm::{XpubDeriver, looks_like_a_private_key, validate_xpub, xpub_depth_problem};
 use types::NAMESPACE_EIP155;
 
 use super::super::extractors::{AuthenticatedUser, StoreScopedUser, key_grants_store_permission};
@@ -249,6 +249,9 @@ where
 {
     if !validate_xpub(&req.xpub) {
         return Err(StatusCode::BAD_REQUEST.into());
+    }
+    if let Some(reason) = xpub_depth_problem(&req.xpub) {
+        return Err((StatusCode::BAD_REQUEST, reason).into());
     }
 
     // Refuse a family this build cannot derive for, before the key is stored.
@@ -801,6 +804,9 @@ where
             "invalid_xpub: not a valid base58-encoded extended public key"
         };
         return Err((StatusCode::BAD_REQUEST, reason.to_string()).into());
+    }
+    if let Some(reason) = xpub_depth_problem(&req.xpub) {
+        return Err((StatusCode::BAD_REQUEST, reason).into());
     }
 
     // And the family it is being rotated into. A namespace this build cannot
