@@ -15,6 +15,15 @@ ignore = [
     "RUSTSEC-2026-0012", # upstream transitive dep (warning)
     "RUSTSEC-2026-0002", # lru unsoundness (via alloy-provider)
     "RUSTSEC-2026-0235", # rkyv 0.7 via rust_decimal's optional `rkyv` feature — not enabled, never compiled
+    # zip < 9.0.0, reached only by utoipa-swagger-ui's build script, which
+    # unpacks the Swagger UI dist vendored inside that crate. All three are
+    # extraction advisories - symlink targets and permission bits - so they
+    # describe a risk to whoever extracts an archive they did not author.
+    # scripts/check-zip-ignores.sh fails if any non-build edge reaches zip, if
+    # a dependent it does not name appears, or once the lock reaches 9.0.0.
+    "RUSTSEC-2026-0367", # zip extraction: symlink targets not validated
+    "RUSTSEC-2026-0368", # zip extraction: symlink targets not validated
+    "RUSTSEC-2026-0369", # zip extraction: privileged permission bits
     # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
