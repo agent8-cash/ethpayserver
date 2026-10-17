@@ -52,13 +52,59 @@ export function expectReceived(label: string, frames: Frame[], invoiceIds: strin
  * invoices. Any other invoice id, or a data frame naming no invoice at all,
  * is a leak.
  */
+export const FOREIGN_FRAME_MESSAGE = 'outside its stores';
+
 export function expectNothingForeign(label: string, frames: Frame[], ownInvoiceIds: string[]): void {
   const own = new Set(ownInvoiceIds);
   const foreign = dataFrames(frames).filter((f) => !f.invoice_id || !own.has(f.invoice_id));
   if (foreign.length > 0) {
     throw new Error(
-      `${label}: received ${foreign.length} frame(s) for invoices outside its stores: ` +
+      `${label}: received ${foreign.length} frame(s) for invoices ${FOREIGN_FRAME_MESSAGE}: ` +
         `[${describe(foreign)}]`,
+    );
+  }
+}
+
+/** One socket's evidence: what it heard, and which invoices are its own. */
+export interface SocketEvidence {
+  label: string;
+  frames: Frame[];
+  own: string[];
+}
+
+/**
+ * Decide the isolation result from both sockets, in an order that keeps the
+ * three outcomes apart. A foreign frame is a leak whether or not any own event
+ * ever arrived, so it is checked first and reported as a failure. Only when
+ * nothing leaked does a missing own event matter, and then the isolation
+ * claim is unproven rather than false: that is `NOT VERIFIED`, a state
+ * distinct from a failed isolation check.
+ *
+ * `productFailures` are genuine failures already observed (an own event with
+ * the wrong status): they are raised after the leak check but before any
+ * `NOT VERIFIED`, so a missing event elsewhere cannot relabel them as "could
+ * not run". `context` is the recorded cause of a missing event (a timeout, a
+ * closed socket) and is appended to the `NOT VERIFIED` message.
+ */
+export function judgeIsolation(evidence: SocketEvidence[], productFailures: string[] = [], context = ''): void {
+  for (const e of evidence) expectNothingForeign(e.label, e.frames, e.own);
+  if (productFailures.length) throw new Error(productFailures.join('; '));
+  for (const e of evidence) {
+    try {
+      expectReceived(e.label, e.frames, e.own);
+    } catch (err) {
+      throw new Error(
+        `NOT VERIFIED - isolation could not run: the precondition (the socket receiving its own events) ` +
+          `was not established. No foreign frame was seen, but that proves nothing. ` +
+          `This is not an isolation result. ${(err as Error).message}` +
+          (context ? ` Cause: ${context}` : ''),
+      );
+    }
+  }
+  if (context) {
+    throw new Error(
+      `NOT VERIFIED - isolation could not run: ${context}. ` +
+        'No foreign frame was seen, which proves nothing. This is not an isolation result.',
     );
   }
 }
@@ -72,6 +118,8 @@ export interface RecordingSocket {
   frames: Frame[];
   /** Resolves once a frame about `invoiceId` has arrived, rejects after `timeoutMs`. */
   waitForInvoice(invoiceId: string, timeoutMs: number): Promise<Frame>;
+  /** Why the peer closed the socket, or null while it is still open. */
+  closedReason(): string | null;
   close(): void;
 }
 
@@ -141,6 +189,7 @@ export async function openAuthenticatedSocket(sessionToken: string, timeoutMs = 
         waiters.add(check);
       });
     },
+    closedReason: () => closed,
     close() {
       socket.close();
     },
