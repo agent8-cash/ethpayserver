@@ -208,7 +208,17 @@ async fn the_standing_read_exposes_only_these_four_fields() {
 /// and fails the test below until someone adds it here on purpose.
 ///
 /// The list is the transport's own, because that is all this route sends today.
-const ALLOWED_RESPONSE_HEADERS: &[&str] = &["content-length", "content-type"];
+const ALLOWED_RESPONSE_HEADERS: &[&str] = &[
+    "content-length",
+    "content-type",
+    // The expiry/volume warning landed while this branch was open, and the
+    // standing read carries it: a lapsing account gets `x-account-warning` with
+    // `x-account-checkout-url` beside it. Named here because they are deliberate,
+    // which is the whole point of the list - the test failed on exactly this and
+    // its own message said to name them if the warning shipped.
+    "x-account-warning",
+    "x-account-checkout-url",
+];
 
 /// ALLOW-LIST ON THE HEADERS. The whole set, not a prefix.
 ///
@@ -230,7 +240,7 @@ const ALLOWED_RESPONSE_HEADERS: &[&str] = &["content-length", "content-type"];
 /// before it exists.
 #[tokio::test]
 #[ignore]
-async fn the_standing_read_carries_only_transport_headers() {
+async fn the_standing_read_carries_only_the_headers_named_here() {
     let (headers, _) = standing_of_an_expiring_account().await;
 
     let unexpected: Vec<String> = headers
