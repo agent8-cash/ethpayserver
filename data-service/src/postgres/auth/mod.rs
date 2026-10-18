@@ -18,7 +18,10 @@ pub use wallet::WalletReauthChallenge;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
-mod tests;
+// pub(crate) rather than private: `postgres::integration_tests` builds a
+// registration-shaped User from `tests::test_user`, and a second copy of that
+// fixture is how two tests end up asserting about different shapes of row.
+pub(crate) mod tests;
 
 use auth::{DeviceType, error::AuthError};
 

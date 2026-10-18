@@ -32,7 +32,7 @@ pub(super) fn test_encrypted_blob() -> EncryptedBlob {
     }
 }
 
-pub(super) fn test_user() -> User {
+pub(crate) fn test_user() -> User {
     User {
         id: UserId::new(),
         email: Some("test@example.com".to_string()),

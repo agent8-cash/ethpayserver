@@ -34,9 +34,58 @@ env:
   E2E_API_URL: https://testnet.random.cash
 
 jobs:
+  server-not-empty:
+    name: Refuse a wiped server
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # THE FIRST ACCOUNT ON A SERVER BECOMES ITS ADMINISTRATOR, so this suite
+      # must never be the thing that registers it. On a server wiped before
+      # 05:37 the specs below would register synthetic accounts, the first of
+      # them would be promoted, and sweep-e2e-accounts.mjs refuses to delete a
+      # server_admin - leaving an undeletable synthetic administrator and the
+      # operator back to typing SQL, which is the outcome the rule exists to
+      # remove.
+      #
+      # THE CREDENTIAL IS THE PROBE. E2E_API_TOKEN belongs to an account on the
+      # server, so `GET /admin/users` answering 200 means that account still
+      # exists, which means the server is not empty. No separate "how many
+      # accounts" endpoint is needed and none exists unauthenticated.
+      #
+      # IT FAILS CLOSED. 401 is the wiped case (the account is gone) and is also
+      # how a revoked or rotated token reads; both mean do not register. Any
+      # other status, a timeout, or an unreadable body is CANNOT TELL, which is
+      # also a refusal - a guard that proceeds when it cannot see is not a
+      # guard. The only path that continues is a 200.
+      - name: The admin credential must still resolve
+        env:
+          E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
+        run: |
+          if [ -z "$E2E_API_TOKEN" ]; then
+            echo "::error title=E2E_API_TOKEN unset::Cannot tell whether the server has accounts, so the suite will not register into it."
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -m 20 --retry 2 -w '%{http_code}' \
+            -H "Authorization: Bearer $E2E_API_TOKEN" \
+            "$E2E_API_URL/api/admin/users?limit=1&offset=0" || echo 000)
+          case "$code" in
+            200)
+              echo "the admin credential resolves - the server has accounts, proceeding"
+              ;;
+            401)
+              echo "::error title=Server looks wiped::GET /admin/users answered 401, so the account behind E2E_API_TOKEN no longer exists. Register the operator first; this suite must not become the server administrator."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Cannot tell::GET /admin/users answered $code. Refusing to register into a server whose account state cannot be read."
+              exit 1
+              ;;
+          esac
+
   browser:
     name: Playwright vs testnet
     runs-on: ubuntu-latest
+    needs: server-not-empty
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +152,7 @@ jobs:
   synthetic-payment:
     name: Synthetic payment (Sepolia)
     runs-on: ubuntu-latest
+    needs: server-not-empty
     timeout-minutes: 30
     # Independent of `browser`: a broken checkout page must not hide a broken
     # money path, and vice versa.
