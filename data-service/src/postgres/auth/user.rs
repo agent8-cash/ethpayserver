@@ -11,6 +11,14 @@ use auth::{
 
 use super::{PgDataService, sqlx_to_auth_error};
 
+/// Serialises the "is this the first account on this server" decision.
+///
+/// An arbitrary constant, and it only has to be unique among advisory locks this
+/// codebase takes - it is the only one today. It is a named constant rather than
+/// a literal in the query so that a second user of advisory locks collides at
+/// compile time with something greppable instead of at runtime with a deadlock.
+const FIRST_ACCOUNT_LOCK: i64 = 0x7263_735f_6669_7273;
+
 #[async_trait]
 impl UserRepository for PgDataService {
     /// Create an account.
@@ -23,11 +31,24 @@ impl UserRepository for PgDataService {
     /// management and server settings were unreachable. Testnet hit that twice in
     /// two days and both times the way out was UPDATE typed against production.
     ///
-    /// THE DECISION IS IN THE INSERT, not read-then-write around it. A COUNT
-    /// followed by an insert is two statements with a gap, and the gap is on the
-    /// one code path where being wrong grants server administration. As a CASE
-    /// inside the statement the emptiness test is evaluated against the same
-    /// snapshot that does the insert.
+    /// THE DECISION IS SERIALISED BY AN ADVISORY LOCK, and the lock is the whole
+    /// of the guarantee. Putting the emptiness test inside the INSERT removes the
+    /// read-then-write gap but gives NO mutual exclusion: under READ COMMITTED
+    /// two concurrent inserts each evaluate `NOT EXISTS (SELECT 1 FROM users)`
+    /// before either commits, both see an empty table, and both write
+    /// `server_admin`. The first version of this function claimed the single
+    /// statement was enough and was wrong - caught in review.
+    ///
+    /// So the insert runs in a transaction that first takes
+    /// `pg_advisory_xact_lock(FIRST_ACCOUNT_LOCK)`. The second registration
+    /// blocks until the first commits, then sees the row and takes `user`.
+    /// Exactly one account can win. The lock is released by the commit, costs one
+    /// round trip, and only ever contends with another registration - which is a
+    /// rare operation and the one place serialising is the point.
+    ///
+    /// `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` would also work and blocks
+    /// more than it needs to; a unique partial index cannot express "only the
+    /// first".
     ///
     /// IT ONLY EVER UPGRADES THE DEFAULT ROLE. An explicit `server_admin` passes
     /// through untouched, so test fixtures and any future "create this user as
@@ -45,17 +66,28 @@ impl UserRepository for PgDataService {
     ///   signature in `payserver-commons` and a pinned-revision change.
     /// - It does not close the window on a PUBLIC server. Between a fresh deploy
     ///   and the operator registering, whoever registers first becomes the
-    ///   administrator; and two registrations racing on an empty table can see no
-    ///   rows each and both be promoted, since neither has committed when the
-    ///   other evaluates the test. On an instance that is not yet public that
-    ///   window is not open. Closing it needs a bootstrap that is not
-    ///   first-come - a token minted at first start, or a deploy-time flag - and
-    ///   that is a decision about mainnet rather than a detail of this function.
+    ///   administrator. That is first-come-wins working as specified, not a race:
+    ///   the lock above makes "first" well defined, so exactly one account is
+    ///   promoted and never two. Closing the window itself needs a bootstrap that
+    ///   is not first-come - a token minted at first start, or a deploy-time flag
+    ///   - and that is a decision about mainnet rather than a detail of this
+    ///   function. On testnet the bring-up registers the operator before anything
+    ///   else can reach the server, which makes "first" deliberate.
     async fn create_user(&self, user: &User) -> Result<()> {
         let kdf_params = serde_json::to_value(&user.kdf_params)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
         let encrypted_key = serde_json::to_value(&user.encrypted_symmetric_key)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
+
+        // One transaction: the lock must be held while the emptiness test runs and
+        // released only once the row is committed, which is exactly an
+        // xact-scoped advisory lock's lifetime.
+        let mut tx = self.pool.begin().await.map_err(sqlx_to_auth_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(FIRST_ACCOUNT_LOCK)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_to_auth_error)?;
 
         sqlx::query(
             r#"
@@ -83,9 +115,11 @@ impl UserRepository for PgDataService {
         .bind(user.failed_login_attempts as i32)
         .bind(user.locked_until)
         .bind(user.role.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(sqlx_to_auth_error)?;
+
+        tx.commit().await.map_err(sqlx_to_auth_error)?;
 
         Ok(())
     }
