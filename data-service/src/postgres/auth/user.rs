@@ -91,11 +91,11 @@ impl UserRepository for PgDataService {
         // released only once the row is committed, which is exactly an
         // xact-scoped advisory lock's lifetime.
         let mut tx = self.pool.begin().await.map_err(sqlx_to_auth_error)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(FIRST_ACCOUNT_LOCK)
-            .execute(&mut *tx)
-            .await
-            .map_err(sqlx_to_auth_error)?;
+        // ABLATION, NOT A CHANGE TO KEEP. The advisory lock is removed so the
+        // concurrent-registration test can be observed on unlocked code: if it
+        // still passes, the test cannot fail and is the defect. This branch is
+        // deleted as soon as the run is read.
+        let _ = FIRST_ACCOUNT_LOCK;
 
         sqlx::query(
             r#"
