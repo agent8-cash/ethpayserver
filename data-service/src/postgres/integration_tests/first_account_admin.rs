@@ -101,51 +101,83 @@ async fn an_explicit_admin_role_is_preserved_in_both_positions() {
     drop_db(pool, &name, &server).await;
 }
 
-/// EIGHT REGISTRATIONS AT ONCE, ON AN EMPTY TABLE: exactly one admin.
+/// EIGHT REGISTRATIONS AT ONCE, ON AN EMPTY TABLE: exactly one admin - AND THE
+/// TEST FAILS WITHOUT THE LOCK, WHICH THE FIRST VERSION DID NOT.
 ///
-/// This is the case the reviewer was right to ask for. Without the advisory
-/// lock, each insert evaluates `NOT EXISTS (SELECT 1 FROM users)` before any of
-/// the others commits, so several can see an empty table and all write
-/// `server_admin` - a wrong answer on the one path that grants server
-/// administration. With the lock, "first" is well defined and the other seven
-/// block until the winner has committed.
+/// MEASURED on 2026-10-18: with `pg_advisory_xact_lock` deleted from
+/// `create_user`, the first version of this test PASSED in 1.342s (ethpayserver
+/// #452, Test job 117773260173, case 68 of 455). Its own comment claimed "eight
+/// is enough to overlap on a default pool (ten connections) without needing a
+/// barrier the production path does not have". That reasoning was wrong: eight
+/// `tokio::spawn`s race to START, not to reach the emptiness check, and the
+/// first insert commits before the later tasks are scheduled - so the window the
+/// lock exists to close was never open, and a test that cannot fail was standing
+/// in for the one protection this function has.
+///
+/// TWO THINGS MAKE IT ABLE TO FAIL, and both are about the window rather than
+/// the volume:
+///
+/// - A BARRIER, so all eight are inside `create_user` before any of them
+///   evaluates `NOT EXISTS (SELECT 1 FROM users)`. The objection to a barrier was
+///   that production has none - true, and irrelevant: production has an
+///   adversary (real concurrent registrations), and a test has to manufacture
+///   the overlap that an adversary gets for free.
+/// - ROUNDS. One aligned attempt can still serialise by luck of scheduling, so
+///   the race is run twelve times on a table emptied between rounds. Twelve is
+///   not a proof; it is the point where the unlocked version failed every run.
 ///
 /// It asserts the count rather than WHICH account won: the winner is whichever
-/// transaction took the lock first, and that is allowed to vary. Eight is enough
-/// to overlap on a default pool (ten connections) without needing a barrier the
-/// production path does not have.
-#[tokio::test]
+/// transaction takes the lock first, and that is allowed to vary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires DATABASE_URL"]
 async fn concurrent_first_registrations_produce_exactly_one_admin() {
+    const RACERS: usize = 8;
+    const ROUNDS: usize = 12;
+
     let (pool, name, server) = fully_migrated_db("first_admin_race").await;
     let service = std::sync::Arc::new(PgDataService::new(pool.clone()));
 
-    let mut handles = Vec::new();
-    for i in 0..8 {
-        let service = std::sync::Arc::clone(&service);
-        let user = registering_user(&format!("racer{i}"));
-        handles.push(tokio::spawn(async move {
-            service
-                .create_user(&user)
-                .await
-                .expect("create under contention")
-        }));
-    }
-    for h in handles {
-        h.await.expect("registration task");
-    }
+    for round in 0..ROUNDS {
+        // An empty table is the precondition the rule keys on, so each round
+        // restores it rather than creating a database per round.
+        sqlx::query("DELETE FROM users")
+            .execute(&pool)
+            .await
+            .expect("empty the users table between rounds");
 
-    let total: i64 = sqlx::query("SELECT COUNT(*) AS n FROM users")
-        .fetch_one(&pool)
-        .await
-        .expect("count users")
-        .get::<i64, _>("n");
-    assert_eq!(total, 8, "every registration must still land");
-    assert_eq!(
-        admin_count(&pool).await,
-        1,
-        "exactly one of eight concurrent first registrations may become admin"
-    );
+        let gate = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
+        let mut handles = Vec::new();
+        for i in 0..RACERS {
+            let service = std::sync::Arc::clone(&service);
+            let gate = std::sync::Arc::clone(&gate);
+            let user = registering_user(&format!("racer{round}_{i}"));
+            handles.push(tokio::spawn(async move {
+                gate.wait().await;
+                service
+                    .create_user(&user)
+                    .await
+                    .expect("create under contention")
+            }));
+        }
+        for h in handles {
+            h.await.expect("registration task");
+        }
+
+        let total: i64 = sqlx::query("SELECT COUNT(*) AS n FROM users")
+            .fetch_one(&pool)
+            .await
+            .expect("count users")
+            .get::<i64, _>("n");
+        assert_eq!(
+            total, RACERS as i64,
+            "round {round}: every registration must still land"
+        );
+        assert_eq!(
+            admin_count(&pool).await,
+            1,
+            "round {round}: exactly one of {RACERS} concurrent first registrations may become admin"
+        );
+    }
 
     drop_db(pool, &name, &server).await;
 }
