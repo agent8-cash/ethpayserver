@@ -26,6 +26,14 @@ fn registering_user(email: &str) -> User {
     user
 }
 
+async fn admin_count(pool: &PgPool) -> i64 {
+    sqlx::query("SELECT COUNT(*) AS n FROM users WHERE role = 'server_admin'")
+        .fetch_one(pool)
+        .await
+        .expect("count admins")
+        .get::<i64, _>("n")
+}
+
 async fn stored_role(pool: &PgPool, user: &User) -> String {
     sqlx::query("SELECT role FROM users WHERE id = $1")
         .bind(user.id.0)
@@ -88,6 +96,52 @@ async fn an_explicit_admin_role_is_preserved_in_both_positions() {
         stored_role(&pool, &later).await,
         "server_admin",
         "an account created AS an admin stays one, promotion rule or not"
+    );
+
+    drop_db(pool, &name, &server).await;
+}
+
+/// EIGHT REGISTRATIONS AT ONCE, ON AN EMPTY TABLE: exactly one admin.
+///
+/// This is the case the reviewer was right to ask for. Without the advisory
+/// lock, each insert evaluates `NOT EXISTS (SELECT 1 FROM users)` before any of
+/// the others commits, so several can see an empty table and all write
+/// `server_admin` - a wrong answer on the one path that grants server
+/// administration. With the lock, "first" is well defined and the other seven
+/// block until the winner has committed.
+///
+/// It asserts the count rather than WHICH account won: the winner is whichever
+/// transaction took the lock first, and that is allowed to vary. Eight is enough
+/// to overlap on a default pool (ten connections) without needing a barrier the
+/// production path does not have.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn concurrent_first_registrations_produce_exactly_one_admin() {
+    let (pool, name, server) = fully_migrated_db("first_admin_race").await;
+    let service = std::sync::Arc::new(PgDataService::new(pool.clone()));
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let service = std::sync::Arc::clone(&service);
+        let user = registering_user(&format!("racer{i}"));
+        handles.push(tokio::spawn(async move {
+            service.create_user(&user).await.expect("create under contention")
+        }));
+    }
+    for h in handles {
+        h.await.expect("registration task");
+    }
+
+    let total: i64 = sqlx::query("SELECT COUNT(*) AS n FROM users")
+        .fetch_one(&pool)
+        .await
+        .expect("count users")
+        .get::<i64, _>("n");
+    assert_eq!(total, 8, "every registration must still land");
+    assert_eq!(
+        admin_count(&pool).await,
+        1,
+        "exactly one of eight concurrent first registrations may become admin"
     );
 
     drop_db(pool, &name, &server).await;
