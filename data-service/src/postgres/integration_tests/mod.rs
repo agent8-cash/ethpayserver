@@ -13,6 +13,8 @@
 //! - `wallet_migration`: the account-wallets migration run over old-shape data
 //! - `backfill_truncated_payment_symbols`: the truncated-address backfill,
 //!   resolving known tokens and falling back for the rest
+//! - `bootstrap_admin`: the sole-account promotion, against an empty table,
+//!   one account, two accounts, and a server that already has an admin
 //! - `account_standing`: the version compare-and-set and the fail-open read
 //! - `account_deletion`: what blocks deleting an account, against the real FKs
 //! - `store_creation`: a store and the membership that owns it, as one unit
@@ -33,6 +35,7 @@ mod account_standing;
 mod aggregation;
 mod analytics;
 mod backfill_truncated_payment_symbols;
+mod bootstrap_admin;
 mod chain_cursor;
 mod email_change;
 mod expected_watch;
