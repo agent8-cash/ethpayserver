@@ -71,15 +71,16 @@ impl UserRepository for PgDataService {
     ///   promoted and never two. Closing the window itself needs a bootstrap that
     ///   is not first-come - a token minted at first start, or a deploy-time flag
     ///   - and that is a decision about mainnet rather than a detail of this
-    ///   function. NOTHING IN THE TREE MAKES "first" DELIBERATE TODAY - an earlier
-    ///   version of this comment claimed testnet's bring-up registers the operator
-    ///   before anything else can reach the server, and no bring-up step or
-    ///   workflow does that. The scheduled end-to-end suite runs on a cron and
-    ///   registers accounts of its own, so on a server wiped before it fires the
-    ///   first account can be a synthetic one - and the account sweeper refuses to
-    ///   delete a `server_admin`, which would leave it undeletable. Whoever ships
-    ///   the operator-first bring-up, or holds that cron off a server with no
-    ///   accounts, closes this; until then the window is open on testnet too.
+    ///   function. WHAT SHIPS BESIDE IT, in this same change, is the scheduled
+    ///   end-to-end suite refusing a server it cannot prove has accounts
+    ///   (`e2e-scheduled.yml`). That suite fires on a cron and registers accounts
+    ///   of its own, so on a server wiped before it fired, a synthetic account
+    ///   could have been promoted - and the account sweeper refuses to delete a
+    ///   `server_admin`, so it would have been undeletable. An earlier version of
+    ///   this comment claimed testnet's bring-up registers the operator first;
+    ///   nothing did, and the guard is there instead of the claim. The window on a
+    ///   PUBLIC server is still open by design, and closing it needs the bootstrap
+    ///   that is not first-come.
     async fn create_user(&self, user: &User) -> Result<()> {
         let kdf_params = serde_json::to_value(&user.kdf_params)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
