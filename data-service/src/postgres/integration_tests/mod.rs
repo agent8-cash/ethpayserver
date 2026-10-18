@@ -13,6 +13,8 @@
 //! - `wallet_migration`: the account-wallets migration run over old-shape data
 //! - `backfill_truncated_payment_symbols`: the truncated-address backfill,
 //!   resolving known tokens and falling back for the rest
+//! - `first_account_admin`: the first registered account becomes the server
+//!   administrator, and the second does not
 //! - `account_standing`: the version compare-and-set and the fail-open read
 //! - `account_deletion`: what blocks deleting an account, against the real FKs
 //! - `store_creation`: a store and the membership that owns it, as one unit
@@ -36,6 +38,7 @@ mod backfill_truncated_payment_symbols;
 mod chain_cursor;
 mod email_change;
 mod expected_watch;
+mod first_account_admin;
 mod installed_plugins;
 mod invoice;
 mod invoice_creation;

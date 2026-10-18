@@ -13,6 +13,44 @@ use super::{PgDataService, sqlx_to_auth_error};
 
 #[async_trait]
 impl UserRepository for PgDataService {
+    /// Create an account.
+    ///
+    /// THE FIRST ACCOUNT ON A SERVER BECOMES ITS ADMINISTRATOR, which is the
+    /// rule BTCPay Server uses and the reason it needs no bootstrap step. Before
+    /// this, nothing in the codebase ever wrote `server_admin`: the role could
+    /// only be granted through the admin UI, which requires an existing admin to
+    /// reach, so a fresh database had no path to one and plugin install, user
+    /// management and server settings were unreachable. Testnet hit that twice in
+    /// two days and both times the way out was UPDATE typed against production.
+    ///
+    /// THE DECISION IS IN THE INSERT, not read-then-write around it. A COUNT
+    /// followed by an insert is two statements with a gap, and the gap is on the
+    /// one code path where being wrong grants server administration. As a CASE
+    /// inside the statement the emptiness test is evaluated against the same
+    /// snapshot that does the insert.
+    ///
+    /// IT ONLY EVER UPGRADES THE DEFAULT ROLE. An explicit `server_admin` passes
+    /// through untouched, so test fixtures and any future "create this user as
+    /// X" path keep saying what they mean, and a plain `user` is never silently
+    /// demoted.
+    ///
+    /// TWO THINGS IT DOES NOT DO, both deliberate:
+    ///
+    /// - It does not keep `user.role` in step. The caller's struct still says
+    ///   whatever it said, so a registration response can report `user` for the
+    ///   account that just became an admin. Every authorisation decision reads
+    ///   the ROW (`validate_api_key`, the session lookup), so the grant is in
+    ///   force on the next request and the staleness is cosmetic. Fixing it
+    ///   properly means `create_user` returning the effective role, which is a
+    ///   signature in `payserver-commons` and a pinned-revision change.
+    /// - It does not close the window on a PUBLIC server. Between a fresh deploy
+    ///   and the operator registering, whoever registers first becomes the
+    ///   administrator; and two registrations racing on an empty table can see no
+    ///   rows each and both be promoted, since neither has committed when the
+    ///   other evaluates the test. On an instance that is not yet public that
+    ///   window is not open. Closing it needs a bootstrap that is not
+    ///   first-come - a token minted at first start, or a deploy-time flag - and
+    ///   that is a decision about mainnet rather than a detail of this function.
     async fn create_user(&self, user: &User) -> Result<()> {
         let kdf_params = serde_json::to_value(&user.kdf_params)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
@@ -25,7 +63,12 @@ impl UserRepository for PgDataService {
                 id, email, primary_wallet_address, kdf_salt_identifier, kdf_params,
                 encrypted_symmetric_key, recovery_verification_hash, created_at,
                 last_login_at, failed_login_attempts, locked_until, role
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                CASE
+                    WHEN $12 = 'user' AND NOT EXISTS (SELECT 1 FROM users)
+                        THEN 'server_admin'
+                    ELSE $12
+                END)
             "#,
         )
         .bind(user.id.0)
