@@ -78,7 +78,11 @@ async fn the_sole_account_becomes_server_admin() {
     // IDEMPOTENT, because a migration can be re-applied to a restored backup
     // and because the guard's second clause is what makes that safe.
     apply(&pool).await;
-    assert_eq!(admin_count(&pool).await, 1, "re-applying must change nothing");
+    assert_eq!(
+        admin_count(&pool).await,
+        1,
+        "re-applying must change nothing"
+    );
 
     drop_db(pool, &name, &server).await;
 }
@@ -113,7 +117,11 @@ async fn two_accounts_are_left_alone() {
 
     apply(&pool).await;
 
-    assert_eq!(admin_count(&pool).await, 0, "neither account may be promoted");
+    assert_eq!(
+        admin_count(&pool).await,
+        0,
+        "neither account may be promoted"
+    );
     assert_eq!(role_of(&pool, first).await, "user");
     assert_eq!(role_of(&pool, second).await, "user");
 
@@ -132,7 +140,11 @@ async fn an_existing_admin_blocks_any_promotion() {
     apply(&pool).await;
 
     assert_eq!(role_of(&pool, plain).await, "user", "no second admin");
-    assert_eq!(role_of(&pool, admin).await, "server_admin", "and no demotion");
+    assert_eq!(
+        role_of(&pool, admin).await,
+        "server_admin",
+        "and no demotion"
+    );
     assert_eq!(admin_count(&pool).await, 1);
 
     drop_db(pool, &name, &server).await;
