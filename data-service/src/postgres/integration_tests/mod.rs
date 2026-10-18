@@ -15,6 +15,8 @@
 //!   resolving known tokens and falling back for the rest
 //! - `bootstrap_admin`: the sole-account promotion, against an empty table,
 //!   one account, two accounts, and a server that already has an admin
+//! - `first_account_admin`: the first registered account becomes the server
+//!   administrator, and the second does not
 //! - `account_standing`: the version compare-and-set and the fail-open read
 //! - `account_deletion`: what blocks deleting an account, against the real FKs
 //! - `store_creation`: a store and the membership that owns it, as one unit
@@ -39,6 +41,7 @@ mod bootstrap_admin;
 mod chain_cursor;
 mod email_change;
 mod expected_watch;
+mod first_account_admin;
 mod installed_plugins;
 mod invoice;
 mod invoice_creation;
