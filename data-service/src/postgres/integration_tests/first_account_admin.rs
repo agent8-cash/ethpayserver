@@ -75,9 +75,8 @@ async fn the_first_account_becomes_server_admin_and_the_second_does_not() {
     drop_db(pool, &name, &server).await;
 }
 
-/// AN EXPLICIT ROLE PASSES THROUGH. The rule upgrades the default only, so a
-/// caller that says `server_admin` is not "already promoted" and a caller that
-/// says `user` for the second account is not overridden either.
+/// AN EXPLICIT ADMIN IS KEPT. A caller that says `server_admin` gets it whether
+/// or not the table is empty; the rule can raise a role, never lower one.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn an_explicit_admin_role_is_preserved_in_both_positions() {

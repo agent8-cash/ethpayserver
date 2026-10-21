@@ -50,10 +50,10 @@ impl UserRepository for PgDataService {
     /// more than it needs to; a unique partial index cannot express "only the
     /// first".
     ///
-    /// IT ONLY EVER UPGRADES THE DEFAULT ROLE. An explicit `server_admin` passes
-    /// through untouched, so test fixtures and any future "create this user as
-    /// X" path keep saying what they mean, and a plain `user` is never silently
-    /// demoted.
+    /// THE ROLE THE CALLER PASSES IS NEVER LOWERED. `Role` has two variants, so
+    /// the only thing the empty-table branch can do to a caller's role is raise
+    /// `user` to `server_admin`; an explicit `server_admin` is `server_admin`
+    /// either way, and a later account keeps exactly the role it asked for.
     ///
     /// TWO THINGS IT DOES NOT DO, both deliberate:
     ///
@@ -105,7 +105,7 @@ impl UserRepository for PgDataService {
                 last_login_at, failed_login_attempts, locked_until, role
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                 CASE
-                    WHEN $12 = 'user' AND NOT EXISTS (SELECT 1 FROM users)
+                    WHEN NOT EXISTS (SELECT 1 FROM users)
                         THEN 'server_admin'
                     ELSE $12
                 END)
