@@ -314,7 +314,7 @@ jobs:
           echo "distance: $AHEAD_BY commit(s) behind main"
 
           if [ "$AHEAD_BY" -gt "$MAX_COMMITS_BEHIND" ]; then
-            echo "::warning::ops/client-image.pin is $AHEAD_BY commits behind payserver-client main (pinned sha-$PIN_SHA, current $CURRENT_TAG) - past $MAX_COMMITS_BEHIND, e2e may no longer exercise what the client actually ships. Bump it: sed -i '\$ s|.*|ghcr.io/randomcash/payserver-client:$CURRENT_TAG|' ops/client-image.pin"
+            echo "::warning::ops/client-image.pin is $AHEAD_BY commits behind payserver-client main (pinned sha-$PIN_SHA, current $CURRENT_TAG) - past $MAX_COMMITS_BEHIND, e2e may no longer exercise what the client actually ships. Bump it: sed -i '\$ s|.*|ghcr.io/gcannelloni/payserver-client:$CURRENT_TAG|' ops/client-image.pin"
           fi
 
   # The full `e2e` job below needs a built server, a live Postgres/Redis and a
