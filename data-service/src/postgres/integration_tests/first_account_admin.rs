@@ -75,11 +75,20 @@ async fn the_first_account_becomes_server_admin_and_the_second_does_not() {
     drop_db(pool, &name, &server).await;
 }
 
-/// AN EXPLICIT ADMIN IS KEPT. A caller that says `server_admin` gets it whether
-/// or not the table is empty; the rule can raise a role, never lower one.
+/// AN EXPLICIT ADMIN IS KEPT. This pins the `ELSE $12` branch carrying a
+/// non-default role through on a non-empty table; it does not exercise the
+/// promotion rule itself (the first test does).
+///
+/// The empty-table branch writes `server_admin` whatever the caller passed,
+/// which is only "never lowers a role" while `Role` has exactly these two
+/// variants. The exhaustive match below stops compiling when a third is added,
+/// so whoever adds it has to decide what a first account of that role means.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn an_explicit_admin_role_is_preserved_in_both_positions() {
+    match Role::User {
+        Role::User | Role::ServerAdmin => {}
+    }
     let (pool, name, server) = fully_migrated_db("first_admin_explicit").await;
     let service = PgDataService::new(pool.clone());
 
