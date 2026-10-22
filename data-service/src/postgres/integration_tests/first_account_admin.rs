@@ -75,20 +75,22 @@ async fn the_first_account_becomes_server_admin_and_the_second_does_not() {
     drop_db(pool, &name, &server).await;
 }
 
-/// AN EXPLICIT ADMIN IS KEPT. The body creates an explicit admin on an empty
-/// table (which cannot tell the promotion rule from the caller's own role) and
-/// then a second on a non-empty one, where only the `ELSE $12` branch can have
-/// produced `server_admin`. The promotion rule itself is the first test's.
+/// AN EXPLICIT ADMIN IS KEPT on a non-empty table, where only the `ELSE $12`
+/// branch can have produced `server_admin`. (On an empty table the result is
+/// `server_admin` whatever the rule does, so that case is not asserted here;
+/// the promotion rule is the first test's.)
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn an_explicit_admin_role_is_kept_on_a_non_empty_table() {
     let (pool, name, server) = fully_migrated_db("first_admin_explicit").await;
     let service = PgDataService::new(pool.clone());
 
-    let mut sole = registering_user("explicit_first");
-    sole.role = Role::ServerAdmin;
-    service.create_user(&sole).await.expect("create sole");
-    assert_eq!(stored_role(&pool, &sole).await, "server_admin");
+    // Make the table non-empty first; this account takes the promotion.
+    let existing = registering_user("explicit_existing");
+    service
+        .create_user(&existing)
+        .await
+        .expect("create existing");
 
     let mut later = registering_user("explicit_second");
     later.role = Role::ServerAdmin;
