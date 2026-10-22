@@ -75,8 +75,10 @@ async fn the_first_account_becomes_server_admin_and_the_second_does_not() {
     drop_db(pool, &name, &server).await;
 }
 
-/// AN EXPLICIT ADMIN IS KEPT. Pins the `ELSE $12` branch carrying a non-default
-/// role through on a non-empty table; the promotion rule is the first test's.
+/// AN EXPLICIT ADMIN IS KEPT. The body creates an explicit admin on an empty
+/// table (which cannot tell the promotion rule from the caller's own role) and
+/// then a second on a non-empty one, where only the `ELSE $12` branch can have
+/// produced `server_admin`. The promotion rule itself is the first test's.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn an_explicit_admin_role_is_kept_on_a_non_empty_table() {
