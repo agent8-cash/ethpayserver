@@ -56,8 +56,18 @@ export function assertSafeTarget(env: Env): void {
   // Union, not replacement: the variable can only widen the refusal.
   const reserved = new Set<number>(RESERVED_PORTS);
   for (const part of (env[RESERVED_PORTS_VARIABLE] ?? '').split(',')) {
-    const p = Number(part.trim());
-    if (Number.isInteger(p) && p > 0) reserved.add(p);
+    const text = part.trim();
+    if (text === '') continue; // an unset or empty variable, or a trailing comma
+    const p = Number(text);
+    // Dropping a mistyped entry would leave the operator believing a port is
+    // reserved when nothing was added.
+    if (!Number.isInteger(p) || p <= 0 || p > 65535) {
+      throw new Error(
+        `${RESERVED_PORTS_VARIABLE} entry "${text}" is not a port number: refusing to run in local mode. ` +
+          'Use a comma-separated list such as "3001,3002".',
+      );
+    }
+    reserved.add(p);
   }
 
   for (const [name, [low, high]] of Object.entries(LOCAL_PORT_RANGES)) {

@@ -65,8 +65,8 @@ test('an IPv6 loopback target inside the range passes without the opt-in', () =>
 
 // ---------------------------------------------------------------------------
 // THE REAL DEFAULT, with no E2E_RESERVED_PORTS at all. The live service's port
-// is published in docker/nginx/example.conf and is 3100; the guard must refuse
-// it with nothing configured, because an environment that forgets the variable
+// is the one published in docker/nginx/example.conf; the guard must refuse it
+// with nothing configured, because an environment that forgets the variable
 // is exactly the one that needs the refusal.
 const LIVE = 3100;
 
@@ -103,4 +103,16 @@ test('E2E_RESERVED_PORTS adds to the built-in set and cannot empty it', () => {
   expect(() =>
     assertSafeTarget({ [RESERVED_PORTS_VARIABLE]: '', E2E_API_URL: `http://localhost:${LIVE}` }),
   ).toThrow(/live service's port/);
+});
+
+test('an unparseable E2E_RESERVED_PORTS entry is an error, not silently dropped', () => {
+  for (const bad of ['3100x', 'abc', '3001;3002', '3001,abc', '0', '70000']) {
+    expect(() =>
+      assertSafeTarget({ [RESERVED_PORTS_VARIABLE]: bad, E2E_API_URL: 'http://localhost:3000' }),
+    ).toThrow(/not a port number/);
+  }
+  // a trailing comma and surrounding spaces are not mistakes worth refusing
+  expect(() =>
+    assertSafeTarget({ [RESERVED_PORTS_VARIABLE]: ' 3001 , ', E2E_API_URL: 'http://localhost:3000' }),
+  ).not.toThrow();
 });
