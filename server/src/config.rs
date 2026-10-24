@@ -693,4 +693,48 @@ mod tests {
             Some(types::UserId(id))
         );
     }
+
+    // ========================================================================
+    // ENABLE_SWAGGER parsing - case-insensitive "true"/"1", on by default
+    // ========================================================================
+
+    #[test]
+    fn enable_swagger_true_lowercase_is_on() {
+        assert!(parse_enable_swagger(Some("true")));
+    }
+
+    #[test]
+    fn enable_swagger_true_uppercase_is_on() {
+        assert!(parse_enable_swagger(Some("TRUE")));
+    }
+
+    #[test]
+    fn enable_swagger_true_titlecase_is_on() {
+        assert!(parse_enable_swagger(Some("True")));
+    }
+
+    #[test]
+    fn enable_swagger_one_is_on() {
+        assert!(parse_enable_swagger(Some("1")));
+    }
+
+    #[test]
+    fn enable_swagger_false_lowercase_is_off() {
+        assert!(!parse_enable_swagger(Some("false")));
+    }
+
+    #[test]
+    fn enable_swagger_false_uppercase_is_off() {
+        assert!(!parse_enable_swagger(Some("FALSE")));
+    }
+
+    #[test]
+    fn enable_swagger_garbage_is_off() {
+        assert!(!parse_enable_swagger(Some("not-a-boolean")));
+    }
+
+    #[test]
+    fn enable_swagger_unset_defaults_on() {
+        assert!(parse_enable_swagger(None));
+    }
 }
