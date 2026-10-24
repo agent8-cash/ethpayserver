@@ -504,7 +504,11 @@ jobs:
   # read, not where it has to be gone looking for. `if: always()` so it posts
   # whether the jobs above passed or failed - the omission is true either way.
   gate-coverage:
-    name: Gate coverage disclosure
+    # THE NAME CARRIES THE WARNING, not just the summary a passing check
+    # hides behind a click. Whoever scans the check list for "is this green"
+    # is exactly the person who needs to see the gap, and they will not open
+    # a check that says PASS to read what it covered.
+    name: "coverage: Postgres/Docker/E2E NOT run on this forge"
     runs-on: rcs-docker
     needs: [lint, client-pin-drift, e2e-static-checks, audit, build]
     if: always()
