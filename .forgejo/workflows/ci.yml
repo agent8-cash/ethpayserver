@@ -495,3 +495,39 @@ jobs:
           export SENTRY_RELEASE="${SENTRY_RELEASE::7}"
           ./scripts/check-sentry-release.sh "$SENTRY_RELEASE"
           cargo build --release --bin evmmonitor --features monitor-bin
+
+  # A green run here has to SAY what it covered, not just BE green. "5 checks
+  # green" reads as the whole gate - and on 2026-10-24 a PR merged on exactly
+  # that reading while its own new Postgres-gated test, the one thing this
+  # forge cannot run, was broken. The header comment above already lists every
+  # gap; this job is that same list surfaced where a green run is actually
+  # read, not where it has to be gone looking for. `if: always()` so it posts
+  # whether the jobs above passed or failed - the omission is true either way.
+  gate-coverage:
+    name: Gate coverage disclosure
+    runs-on: rcs-docker
+    needs: [lint, client-pin-drift, e2e-static-checks, audit, build]
+    if: always()
+    timeout-minutes: 2
+    steps:
+      - name: State what this gate did not run
+        run: |
+          {
+            echo "### This Forgejo gate is not the whole gate."
+            echo
+            echo "NOT RUN HERE - measured platform gaps, not a choice (see this file's header):"
+            echo
+            echo '- **Postgres/Redis integration tests** (`cargo nextest ... --run-ignored only`) -'
+            echo '  one of branch protections three required checks. rcs-docker cannot create'
+            echo '  service containers (measured 2026-10-17).'
+            echo '- **Docker build + keyless cosign sign** - no docker daemon socket here, and'
+            echo '  Forgejo issues no OIDC token for signing.'
+            echo '- **E2E against a real server/DB** - only the three browser-free static specs'
+            echo '  run here.'
+            echo '- **The deploy chain** (notify/verify testnet, status jobs) - needs a GitHub'
+            echo '  repository_dispatch this forge cannot send.'
+            echo
+            echo "A green run on this forge is evidence for Lint, Client pin drift, E2E static"
+            echo "checks, Audit and Build only. It is NOT evidence the Postgres-gated tests pass"
+            echo "on this commit - that needs GitHub's own run, separately."
+          } >>"$GITHUB_STEP_SUMMARY"
