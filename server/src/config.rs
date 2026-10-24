@@ -160,9 +160,7 @@ impl Config {
         let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let log_format = env::var("LOG_FORMAT").unwrap_or_else(|_| "pretty".to_string());
 
-        let enable_swagger = env::var("ENABLE_SWAGGER")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(true);
+        let enable_swagger = parse_enable_swagger(env::var("ENABLE_SWAGGER").ok().as_deref());
 
         let cli_args: Vec<String> = env::args().collect();
         let safe_mode = safe_mode_requested(|key| env::var(key).ok(), &cli_args);
@@ -381,6 +379,13 @@ where
     let env_disabled = lookup("ETHPAY_DISABLE_PLUGINS").is_some_and(|v| v == "true" || v == "1");
     let flag_present = args.iter().any(|a| a == "--disable-plugins");
     env_disabled || flag_present
+}
+
+/// `ENABLE_SWAGGER` is on by default; only `true` or `1`, in any letter case,
+/// keeps it on once the variable is set. Anything else turns it off.
+fn parse_enable_swagger(raw: Option<&str>) -> bool {
+    raw.map(|v| matches!(v.to_lowercase().as_str(), "true" | "1"))
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
