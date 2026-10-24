@@ -1451,30 +1451,33 @@ mod tests {
 
         let status = update_settings(
             settings_admin(operator),
-            State(state),
+            State(state.clone()),
             Json(settings_body(None)),
         )
         .await
         .expect("an unrelated save must succeed on a fresh instance");
         assert_eq!(status, StatusCode::OK);
 
-        let saved = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT enabled_chain_ids FROM server_settings WHERE id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("settings row must exist after the save");
-        let expected: Vec<String> = unconfigured_chain_ids()
-            .iter()
-            .map(|id| id.as_str().to_string())
-            .collect();
+        // Through the repository, not a raw query: `enabled_chain_ids` is a
+        // `caip2[]` domain column, and sqlx decodes arrays by element type
+        // OID - asking for it as `serde_json::Value` or `Vec<String>` fails
+        // the decode regardless of the values, the exact defect
+        // data-service's own server_settings integration tests exist to
+        // catch. The repository already knows how to read its own column.
+        let saved = state
+            .data_service
+            .get_server_settings()
+            .await
+            .expect("read back settings")
+            .expect("settings row must exist after the save")
+            .enabled_chain_ids;
+        let expected = unconfigured_chain_ids();
         assert_eq!(
-            saved,
-            serde_json::to_value(&expected).unwrap(),
+            saved, expected,
             "must persist the unconfigured (testnet) set, not ServerSettings::default()'s mainnet list"
         );
         assert!(
-            !expected.contains(&"eip155:1".to_string()),
+            !expected.contains(&ChainId::evm(1)),
             "sanity: the set we just asserted equals must not itself be the mainnet default"
         );
 

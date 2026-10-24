@@ -14,6 +14,15 @@
 //!
 //! A unit test could not have found it - there is no `caip2` domain outside a
 //! real database - which is exactly why these live here.
+//!
+//! SECOND OCCURRENCE, 2026-10-24: a `server/src/api/admin` test asserted the
+//! saved value with its own `sqlx::query_scalar::<_, serde_json::Value>(...)`
+//! instead of through `ServerSettingsRepository`, hit the same decode
+//! mismatch, and failed - while the handler it was testing, which does go
+//! through the repository, was correct. **Integration tests assert through
+//! the repository, never raw SQL, unless testing the SQL itself is the
+//! point** - a test with its own query exercises a path production never
+//! takes, so a decode bug lives exactly where nothing is checking.
 
 use crate::test_support::pg_service;
 use types::StoreId;
