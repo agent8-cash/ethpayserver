@@ -160,7 +160,9 @@ impl Config {
         let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let log_format = env::var("LOG_FORMAT").unwrap_or_else(|_| "pretty".to_string());
 
-        let enable_swagger = parse_enable_swagger(env::var("ENABLE_SWAGGER").ok().as_deref());
+        let enable_swagger = env::var("ENABLE_SWAGGER")
+            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1"))
+            .unwrap_or(true);
 
         let cli_args: Vec<String> = env::args().collect();
         let safe_mode = safe_mode_requested(|key| env::var(key).ok(), &cli_args);
@@ -379,13 +381,6 @@ where
     let env_disabled = lookup("ETHPAY_DISABLE_PLUGINS").is_some_and(|v| v == "true" || v == "1");
     let flag_present = args.iter().any(|a| a == "--disable-plugins");
     env_disabled || flag_present
-}
-
-/// `ENABLE_SWAGGER` is on by default; only `true` or `1`, in any letter case,
-/// keeps it on once the variable is set. Anything else turns it off.
-fn parse_enable_swagger(raw: Option<&str>) -> bool {
-    raw.map(|v| matches!(v.to_lowercase().as_str(), "true" | "1"))
-        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -694,47 +689,20 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // ENABLE_SWAGGER parsing - case-insensitive "true"/"1", on by default
-    // ========================================================================
-
     #[test]
-    fn enable_swagger_true_lowercase_is_on() {
-        assert!(parse_enable_swagger(Some("true")));
-    }
-
-    #[test]
-    fn enable_swagger_true_uppercase_is_on() {
-        assert!(parse_enable_swagger(Some("TRUE")));
-    }
-
-    #[test]
-    fn enable_swagger_true_titlecase_is_on() {
-        assert!(parse_enable_swagger(Some("True")));
-    }
-
-    #[test]
-    fn enable_swagger_one_is_on() {
-        assert!(parse_enable_swagger(Some("1")));
-    }
-
-    #[test]
-    fn enable_swagger_false_lowercase_is_off() {
-        assert!(!parse_enable_swagger(Some("false")));
-    }
-
-    #[test]
-    fn enable_swagger_false_uppercase_is_off() {
-        assert!(!parse_enable_swagger(Some("FALSE")));
-    }
-
-    #[test]
-    fn enable_swagger_garbage_is_off() {
-        assert!(!parse_enable_swagger(Some("not-a-boolean")));
-    }
-
-    #[test]
-    fn enable_swagger_unset_defaults_on() {
-        assert!(parse_enable_swagger(None));
+    fn enable_swagger_env_var_is_case_insensitive() {
+        fn parse(value: Option<&str>) -> bool {
+            value
+                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1"))
+                .unwrap_or(true)
+        }
+        assert!(parse(Some("TRUE")));
+        assert!(parse(Some("True")));
+        assert!(parse(Some("tRuE")));
+        assert!(parse(Some("1")));
+        assert!(!parse(Some("0")));
+        assert!(!parse(Some("false")));
+        assert!(!parse(Some("FALSE")));
+        assert!(parse(None));
     }
 }
