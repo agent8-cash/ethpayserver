@@ -24,6 +24,36 @@ ignore = [
     "RUSTSEC-2026-0367", # zip extraction: symlink targets not validated
     "RUSTSEC-2026-0368", # zip extraction: symlink targets not validated
     "RUSTSEC-2026-0369", # zip extraction: privileged permission bits
+    # MAINNET BLOCKER. Timing variability in operations crypto-bigint
+    # intends to be constant-time (published 2026-10-23, fixed upstream at
+    # >=0.7.6). EXPIRES 2026-11-23 or any mainnet deploy, whichever is sooner -
+    # re-run `cargo update -p crypto-bigint --precise 0.7.6 --dry-run` then;
+    # if elliptic-curve/k256/alloy have moved to a compatible chain by then,
+    # take the bump instead of renewing this.
+    #
+    # PATH: crypto-bigint 0.5.5 -> elliptic-curve 0.13.8 -> {ecdsa 0.16.9 ->
+    # k256 0.13.4, alloy-signer 1.8.3} -> evm/server. Bump attempted and
+    # confirmed to cascade 2026-10-24: elliptic-curve 0.13.8 pins
+    # `crypto-bigint = "^0.5"` and will not take 0.7.x; alloy 1.8.3 is
+    # upstream's current latest (`cargo update -p alloy` locks 0 packages),
+    # so there is no available path today that does not wait on alloy and
+    # the whole RustCrypto chain to publish compatible new majors.
+    #
+    # WHY NOT EXPLOITABLE HERE, traced through every real (non-test) caller,
+    # not asserted: the only code that feeds a derived private key into a
+    # crypto-bigint-adjacent operation is evm/src/transaction.rs
+    # (send_native_transfer and its sibling, via HdWallet::derive_private_key).
+    # That module is gated behind the `hot-wallet` feature (evm/Cargo.toml),
+    # which is absent from `default = []`, never passed by any CI workflow,
+    # and documented in the module's own header as reserved for "a possible
+    # future hot-wallet mode - a deliberate product decision that has not
+    # been made". The deployed binary never compiles it in. The other real
+    # k256 usage (server/src/api/users/wallets.rs's verify_wallet_signature)
+    # is ECDSA signature RECOVERY from a signature the user's own wallet
+    # already produced - a public operation on public inputs, nothing secret
+    # to leak via timing. derive_private_key's only other callers are its own
+    # unit tests.
+    "RUSTSEC-2026-0387", # crypto-bigint timing variability - see the note above
     # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
