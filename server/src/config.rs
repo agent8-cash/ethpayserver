@@ -96,6 +96,16 @@ pub struct Config {
     /// touch their data, and clearing the flag restores them.
     pub safe_mode: bool,
 
+    /// Lets the admin API write a mainnet chain id into `enabled_chain_ids`.
+    ///
+    /// Set via `MAINNET_ENABLED=1` or `=true` at process start ONLY - this is
+    /// never re-read per request, and the admin API that writes
+    /// `enabled_chain_ids` has no way to set this itself. The switch a
+    /// handler is gated by must not be settable through that same handler,
+    /// or it guards nothing. Off (fail closed) when unset, unreadable or any
+    /// other value - enabling mainnet is a deploy-time act, not a request.
+    pub mainnet_enabled: bool,
+
     /// Where installed plugins' wasm artifacts live.
     ///
     /// Set via `ETHPAY_PLUGIN_DIR`. Defaults to `./plugins` rather than a
@@ -164,6 +174,8 @@ impl Config {
 
         let cli_args: Vec<String> = env::args().collect();
         let safe_mode = safe_mode_requested(|key| env::var(key).ok(), &cli_args);
+        let mainnet_enabled =
+            mainnet_enabled_requested(env::var("MAINNET_ENABLED").ok().as_deref());
 
         let plugin_dir = plugin_dir_from(|key| env::var(key).ok());
 
@@ -176,6 +188,7 @@ impl Config {
             log_format,
             enable_swagger,
             safe_mode,
+            mainnet_enabled,
             plugin_dir,
             operator_store_id: operator_store_id_from(|key| env::var(key).ok()),
             operator_account_id: operator_account_id_from(|key| env::var(key).ok()),
@@ -388,6 +401,15 @@ fn parse_enable_swagger(raw: Option<&str>) -> bool {
         .unwrap_or(true)
 }
 
+/// `MAINNET_ENABLED` is OFF by default - the opposite default from
+/// `ENABLE_SWAGGER` on purpose. Unset, empty, unreadable, or any value other
+/// than exactly `true` or `1` all mean disabled: the admin API handler this
+/// gates refuses a mainnet chain id unless this is exactly enabled, so an
+/// ambiguous reading here must resolve to the refusing side.
+fn mainnet_enabled_requested(raw: Option<&str>) -> bool {
+    matches!(raw, Some("true") | Some("1"))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -408,6 +430,7 @@ mod tests {
             log_format: "pretty".to_string(),
             enable_swagger: false,
             safe_mode: false,
+            mainnet_enabled: false,
             plugin_dir: PathBuf::from(DEFAULT_PLUGIN_DIR),
             operator_store_id: None,
             operator_account_id: None,
@@ -588,6 +611,29 @@ mod tests {
     #[test]
     fn safe_mode_off_by_default() {
         assert!(!safe_mode_requested(lookup(&[]), &[]));
+    }
+
+    #[test]
+    fn mainnet_enabled_off_by_default() {
+        assert!(!mainnet_enabled_requested(None));
+    }
+
+    #[test]
+    fn mainnet_enabled_on_only_for_true_or_1() {
+        assert!(mainnet_enabled_requested(Some("true")));
+        assert!(mainnet_enabled_requested(Some("1")));
+    }
+
+    #[test]
+    fn mainnet_enabled_off_for_anything_else() {
+        // DELIBERATELY NOT case-insensitive like ENABLE_SWAGGER: unlike a
+        // UI toggle, an ambiguous reading of the one setting that re-arms a
+        // constant-time defect and real-money chains must resolve to OFF,
+        // not to a best guess at what the deployer meant.
+        assert!(!mainnet_enabled_requested(Some("TRUE")));
+        assert!(!mainnet_enabled_requested(Some("yes")));
+        assert!(!mainnet_enabled_requested(Some("")));
+        assert!(!mainnet_enabled_requested(Some("0")));
     }
 
     #[test]

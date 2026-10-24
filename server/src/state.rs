@@ -185,6 +185,14 @@ pub struct AppState<D, A, E> {
     /// request, since the environment is the thing being reported on.
     pub safe_mode: bool,
 
+    /// Lets the admin API write a mainnet chain id into `enabled_chain_ids`.
+    ///
+    /// Resolved once at startup from `Config::mainnet_enabled` and copied in
+    /// here, the same way `safe_mode` is - not re-read from the environment
+    /// on request, since the environment at process start is the thing
+    /// being gated on, not whatever it happens to be at request time.
+    pub mainnet_enabled: bool,
+
     /// The external signup service, if this instance is configured to offer
     /// signup. `None` makes the signup route answer 404.
     pub signup_service: Option<Arc<crate::services::signup_service::SignupServiceConfig>>,
@@ -212,6 +220,7 @@ impl<D, A, E> Clone for AppState<D, A, E> {
             plugin_dir: self.plugin_dir.clone(),
             plugin_pools: self.plugin_pools.clone(),
             safe_mode: self.safe_mode,
+            mainnet_enabled: self.mainnet_enabled,
             signup_service: self.signup_service.clone(),
         }
     }
@@ -245,6 +254,7 @@ impl<D, A, E> AppState<D, A, E> {
             plugin_dir: std::path::PathBuf::from("./plugins"),
             plugin_pools: None,
             safe_mode: false,
+            mainnet_enabled: false,
             signup_service: None,
         }
     }

@@ -431,6 +431,7 @@ async fn main() -> Result<()> {
     state.captcha_provider = captcha_provider;
     state.webauthn = Some(webauthn_health);
     state.safe_mode = config.safe_mode;
+    state.mainnet_enabled = config.mainnet_enabled;
     state.signup_service = match server::services::signup_service::SignupServiceConfig::from_env() {
         Ok(Some(c)) => {
             tracing::info!("Signup service configured");
