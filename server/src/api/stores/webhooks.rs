@@ -16,19 +16,25 @@ use super::require_store_settings_permission;
 use crate::state::PgAppState;
 pub use api_types::{ConfigureWebhookRequest, WebhookResponse};
 
+/// Comma-separated host list -> trimmed, non-empty entries. Split out from
+/// `trusted_internal_webhook_hosts` so the parsing is directly unit-testable
+/// without going through (and mutating, racily, under parallel tests) the
+/// process environment.
+fn parse_trusted_hosts(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 /// Extra docker-network aliases, beyond `https://` and `http://localhost`,
 /// this deploy trusts as a webhook target - read from deploy config, never
 /// hardcoded here. Nothing in this public repository should name which
 /// internal service, if any, that is; the value lives in the private deploy
 /// config that sets this variable, not in source any outside reader can see.
 fn trusted_internal_webhook_hosts() -> Vec<String> {
-    std::env::var("TRUSTED_INTERNAL_WEBHOOK_HOSTS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect()
+    parse_trusted_hosts(&std::env::var("TRUSTED_INTERNAL_WEBHOOK_HOSTS").unwrap_or_default())
 }
 
 /// A webhook URL must be HTTPS, loopback, or a deploy-configured internal host.
@@ -49,6 +55,40 @@ fn webhook_url_allowed(url: &str, trusted_hosts: &[String]) -> bool {
             parsed.host_str(),
             Some(h) if h == "localhost" || trusted_hosts.iter().any(|t| t == h)
         )
+}
+
+#[cfg(test)]
+mod parse_trusted_hosts_tests {
+    use super::parse_trusted_hosts;
+
+    #[test]
+    fn empty_string_is_no_hosts() {
+        assert_eq!(parse_trusted_hosts(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn single_host() {
+        assert_eq!(
+            parse_trusted_hosts("internal-svc"),
+            vec!["internal-svc".to_string()]
+        );
+    }
+
+    #[test]
+    fn multiple_hosts_trimmed() {
+        assert_eq!(
+            parse_trusted_hosts(" internal-svc , other-svc "),
+            vec!["internal-svc".to_string(), "other-svc".to_string()]
+        );
+    }
+
+    #[test]
+    fn stray_commas_do_not_produce_empty_entries() {
+        assert_eq!(
+            parse_trusted_hosts(",internal-svc,,"),
+            vec!["internal-svc".to_string()]
+        );
+    }
 }
 
 #[cfg(test)]
