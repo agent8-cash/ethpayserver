@@ -16,6 +16,95 @@ use super::require_store_settings_permission;
 use crate::state::PgAppState;
 pub use api_types::{ConfigureWebhookRequest, WebhookResponse};
 
+/// Extra docker-network aliases, beyond `https://` and `http://localhost`,
+/// this deploy trusts as a webhook target - read from deploy config, never
+/// hardcoded here. Nothing in this public repository should name which
+/// internal service, if any, that is; the value lives in the private deploy
+/// config that sets this variable, not in source any outside reader can see.
+fn trusted_internal_webhook_hosts() -> Vec<String> {
+    std::env::var("TRUSTED_INTERNAL_WEBHOOK_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// A webhook URL must be HTTPS, loopback, or a deploy-configured internal host.
+///
+/// Parses the URL rather than matching a string prefix: a trusted host must
+/// be checked against the parsed *host*, not a `starts_with`, or
+/// `http://<host>.attacker.example` would pass a prefix check while
+/// resolving nowhere near this deploy.
+fn webhook_url_allowed(url: &str, trusted_hosts: &[String]) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "http"
+        && matches!(
+            parsed.host_str(),
+            Some(h) if h == "localhost" || trusted_hosts.iter().any(|t| t == h)
+        )
+}
+
+#[cfg(test)]
+mod webhook_url_allowed_tests {
+    use super::webhook_url_allowed;
+
+    #[test]
+    fn https_is_allowed() {
+        assert!(webhook_url_allowed("https://example.com/hook", &[]));
+    }
+
+    #[test]
+    fn localhost_is_allowed_for_dev() {
+        assert!(webhook_url_allowed("http://localhost:4000/hook", &[]));
+    }
+
+    #[test]
+    fn a_configured_trusted_host_is_allowed() {
+        let trusted = vec!["internal-svc".to_string()];
+        assert!(webhook_url_allowed(
+            "http://internal-svc:3000/hook",
+            &trusted
+        ));
+    }
+
+    #[test]
+    fn an_unconfigured_host_is_refused() {
+        assert!(!webhook_url_allowed("http://internal-svc:3000/hook", &[]));
+    }
+
+    #[test]
+    fn a_lookalike_host_is_not_the_trusted_one() {
+        // The whole point of parsing: a naive `starts_with` would pass this.
+        // It must not.
+        let trusted = vec!["internal-svc".to_string()];
+        assert!(!webhook_url_allowed(
+            "http://internal-svc.attacker.example/hook",
+            &trusted
+        ));
+        assert!(!webhook_url_allowed(
+            "http://internal-svcx:3000/hook",
+            &trusted
+        ));
+    }
+
+    #[test]
+    fn an_arbitrary_plain_http_host_is_refused() {
+        assert!(!webhook_url_allowed("http://example.com/hook", &[]));
+    }
+
+    #[test]
+    fn garbage_is_refused_not_panicking() {
+        assert!(!webhook_url_allowed("not a url at all", &[]));
+    }
+}
+
 /// Get webhook configuration for a store.
 #[utoipa::path(
     get,
@@ -90,9 +179,7 @@ where
 {
     require_store_settings_permission(&state, &user, key_scope.as_deref(), store_id).await?;
 
-    // Validate webhook URL - must be HTTPS (or localhost for dev)
-    if !req.webhook_url.starts_with("https://") && !req.webhook_url.starts_with("http://localhost")
-    {
+    if !webhook_url_allowed(&req.webhook_url, &trusted_internal_webhook_hosts()) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
