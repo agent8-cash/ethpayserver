@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use auth::{AuthConfig, AuthService};
 use server::services::RedisEVMMonitor;
-use server::services::signup_service::SignupServiceConfig;
+use server::services::signup_service::{SignupPlan, SignupServiceConfig};
 use server::state::PgAppState;
 
 type Seen = Arc<Mutex<Vec<Value>>>;
@@ -55,6 +55,14 @@ async fn fake_service(status: u16, reply: Value) -> (String, Seen) {
 }
 
 fn app(pg: &Arc<PgDataService>, service: Option<&str>) -> Router {
+    app_with_plans(pg, service, Vec::new())
+}
+
+fn app_with_plans(
+    pg: &Arc<PgDataService>,
+    service: Option<&str>,
+    plans: Vec<SignupPlan>,
+) -> Router {
     let auth_service = Arc::new(AuthService::with_config(
         Arc::clone(pg),
         AuthConfig::default(),
@@ -71,6 +79,7 @@ fn app(pg: &Arc<PgDataService>, service: Option<&str>) -> Router {
             url: url.to_string(),
             secret: SecretString::from("k".repeat(40)),
             audience: "signup.test".into(),
+            plans,
         })
     });
     server::api::router(state, false, None, None, None)
@@ -131,6 +140,26 @@ async fn post_signup_raw(app: &Router, key: Option<&str>, body: Value) -> (Statu
         .await
         .unwrap();
     (status, bytes.to_vec())
+}
+
+async fn get_plans(app: &Router, key: Option<&str>) -> (StatusCode, Value) {
+    let mut req = Request::builder().method("GET").uri("/users/me/plans");
+    if let Some(key) = key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
@@ -236,4 +265,50 @@ async fn a_retry_after_a_lost_reply_gets_the_pending_link_from_the_refusal() {
     // What a merchant on another plan actually receives is the first plan's
     // payment link beside the requested plan's id. The wrong field is the
     // service's; this repository cannot tell the two plans apart.
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_unauthenticated_plan_listing_is_refused() {
+    let pg = Arc::new(pg_service().await);
+    let (status, _) = get_plans(&app(&pg, Some("https://signup.example")), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_instance_without_the_service_lists_no_plans_and_answers_404() {
+    let pg = Arc::new(pg_service().await);
+    let (_, key) = seed_user(&pg).await;
+    let (status, _) = get_plans(&app(&pg, None), Some(&key)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_configured_plans_are_listed_in_order() {
+    let pg = Arc::new(pg_service().await);
+    let (_, key) = seed_user(&pg).await;
+    let plans = vec![
+        SignupPlan {
+            id: 1,
+            name: "Basic".into(),
+            description: Some("One store".into()),
+        },
+        SignupPlan {
+            id: 2,
+            name: "Pro".into(),
+            description: None,
+        },
+    ];
+    let app = app_with_plans(&pg, Some("https://signup.example"), plans);
+
+    let (status, body) = get_plans(&app, Some(&key)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["plans"][0]["id"], 1);
+    assert_eq!(body["plans"][0]["description"], "One store");
+    assert_eq!(body["plans"][1]["name"], "Pro");
+    assert!(body.get("secret").is_none());
+    assert!(body.get("url").is_none());
 }

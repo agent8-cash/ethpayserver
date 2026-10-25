@@ -296,6 +296,8 @@ where
         .route("/me/standing", get(users::get_standing::<A>))
         // Enrols the caller and creates an invoice: a POST, never a link.
         .route("/me/signup", post(users::signup::<A>))
+        // Read-only: the plans a merchant may pass to `/me/signup`.
+        .route("/me/plans", get(users::list_plans::<A>))
         .route(
             "/me/email/confirm",
             post(users::confirm_email_change::<A>),

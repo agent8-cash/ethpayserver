@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::extractors::AuthenticatedUser;
+use crate::services::signup_service::SignupPlan;
 use crate::state::PgAppState;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -24,6 +25,11 @@ pub struct SignupRequest {
 pub struct SignupResponse {
     /// Where to send the merchant to pay. Absent when there is nothing to pay.
     pub checkout_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlanListResponse {
+    pub plans: Vec<SignupPlan>,
 }
 
 /// The 201 case. `None` means the answer cannot be trusted and is logged.
@@ -144,6 +150,33 @@ where
             ))
         }
     }
+}
+
+/// List the plans the caller may choose from.
+#[utoipa::path(
+    get,
+    path = "/users/me/plans",
+    tag = "users",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "The plans on offer", body = PlanListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Signup is not available"),
+    )
+)]
+pub async fn list_plans<A>(
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(state): State<PgAppState<A>>,
+) -> Result<Json<PlanListResponse>, (StatusCode, &'static str)>
+where
+    A: SessionService + 'static,
+{
+    let Some(service) = &state.signup_service else {
+        return Err((StatusCode::NOT_FOUND, "signup is not available"));
+    };
+    Ok(Json(PlanListResponse {
+        plans: service.plans.clone(),
+    }))
 }
 
 #[cfg(test)]
