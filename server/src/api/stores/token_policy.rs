@@ -19,11 +19,6 @@ use crate::api::api_key_hash::is_hex_bytes;
 use crate::state::PgAppState;
 pub use api_types::{SetTokenPolicyRequest, TokenPolicyEntryPayload, TokenPolicyResponse};
 
-/// A token address must be `0x` followed by 40 hex characters (20 bytes).
-fn is_valid_token_address(addr: &str) -> bool {
-    is_hex_bytes(addr, 20)
-}
-
 /// Get store token policy.
 pub async fn get_token_policy<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
@@ -94,7 +89,7 @@ where
             return Err(StatusCode::BAD_REQUEST);
         }
         if let Some(ref addr) = entry.token_address
-            && !is_valid_token_address(addr)
+            && !is_hex_bytes(addr, 20)
         {
             return Err(StatusCode::BAD_REQUEST);
         }
@@ -165,23 +160,24 @@ where
 mod tests {
     use super::*;
 
+    // Pins the 20-byte token-address rule used by set_token_policy.
     #[test]
     fn token_address_with_non_hex_body_is_rejected() {
         let addr = format!("0x{}", "Z".repeat(40));
         assert_eq!(addr.len(), 42);
-        assert!(!is_valid_token_address(&addr));
+        assert!(!is_hex_bytes(&addr, 20));
     }
 
     #[test]
     fn token_address_valid_20_byte_hex_is_accepted() {
         let addr = format!("0x{}", "aB".repeat(20));
-        assert!(is_valid_token_address(&addr));
+        assert!(is_hex_bytes(&addr, 20));
     }
 
     #[test]
     fn token_address_wrong_length_or_prefix_is_rejected() {
-        assert!(!is_valid_token_address("0x1234"));
-        assert!(!is_valid_token_address(&"a".repeat(42)));
-        assert!(!is_valid_token_address(""));
+        assert!(!is_hex_bytes("0x1234", 20));
+        assert!(!is_hex_bytes(&"a".repeat(42), 20));
+        assert!(!is_hex_bytes("", 20));
     }
 }
