@@ -21,8 +21,7 @@ build/
 docker/*.Dockerfile
 .dockerignore
 
-# Documentation and memos
-memos/
+# Documentation
 *.md
 LICENSE
 

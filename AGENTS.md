@@ -1,8 +1,8 @@
 # Rules for a coding session
 
-You are one session working on one feature. Read this, then
-`memos/spec.md`, `git log --oneline -20`, and the ticket you were given. There is
-no session log: the tickets and the commit history carry that context.
+You are one session working on one feature. Read this, then `CLAUDE.md`,
+`git log --oneline -20`, and the ticket you were given. There is no session
+log: the tickets and the commit history carry that context.
 
 ## The loop
 

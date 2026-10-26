@@ -1079,8 +1079,7 @@ jobs:
 
   # The dispatch above is fire-and-forget: a 202 from GitHub's API means the
   # event was accepted, not that anything deployed. `scripts/health-gate.sh`
-  # was written for exactly this and documented in
-  # docs/deployment/mainnet-gate.md as a `post-deploy:health-gate` job - but
+  # was written for exactly this as a `post-deploy:health-gate` job - but
   # that job description was GitLab CI and never came across, so the script has
   # been in the tree unreferenced. This is the reference.
   deploy-verify-testnet:

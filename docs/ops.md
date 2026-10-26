@@ -59,7 +59,7 @@ Always returns **200** with a JSON body containing per-dependency status and lat
 
 The response also carries an `x-sentry-release` header with the compiled
 `SENTRY_RELEASE`, so a deploy check can compare it against `build_sha` from
-the same running process — see `docs/deployment/mainnet-gate.md`.
+the same running process.
 
 | Field | Description |
 |-------|-------------|
@@ -89,9 +89,8 @@ through that. Two things exist so far that touch `/health/deep`, and both are
 deploy-triggered, not continuous:
 
 - `scripts/health-gate.sh`, run by `deploy-verify-testnet` in `ci.yml` on every
-  push to `testnet`, and manually against mainnet per
-  `docs/deployment/mainnet-gate.md`. Gates a rollout; does nothing once the
-  rollout has succeeded.
+  push to `testnet`, and manually against mainnet after a release tag. Gates
+  a rollout; does nothing once the rollout has succeeded.
 - `scripts/smoke-prod.sh`, run manually per the same checklist.
 
 Between deploys, coverage is `.github/workflows/health-monitor.yml`: it runs
