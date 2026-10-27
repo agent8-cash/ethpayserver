@@ -1,8 +1,14 @@
-# Rules for a coding session
+# agent8.cash — ethpayserver
 
-You are one session working on one feature. Read this, then
-`memos/spec.md`, `git log --oneline -20`, and the ticket you were given. There is
-no session log: the tickets and the commit history carry that context.
+agent8.cash is a self-hosted, multi-chain crypto **payment processor** (Bitcoin + EVM). This repo,
+`ethpayserver`, is the EVM server. Its siblings: `payserver-commons` (shared code, **pinned by
+revision**), `payserver-client` (the testnet WASM client), `payserver-billing`, and
+`central-infrastructure` (deploy/ops + the authoritative automation contract, `AUTOMATION.md`). Stack:
+Rust + Leptos. **Real money runs through this — no change here is "just a demo."** The integration
+branch is `testnet`; `main` (and a future payserver's `main`) are the only mainnet deploy paths.
+
+You are one agent working one ticket. Read this, then `memos/spec.md`, `git log --oneline -20`, and the
+ticket you were given. There is no session log: the tickets and the commit history carry that context.
 
 ## The loop
 
@@ -21,9 +27,37 @@ no session log: the tickets and the commit history carry that context.
    tempting — an unrelated change in the same commit is indistinguishable from the
    feature when someone bisects.
 3. **Write the test first**, then the code, until `scripts/check.sh` passes.
-4. Commit with `git commit -S`. Message: `<ticket id>: <what changed>`.
-5. Report back: ticket id, pass or fail, files changed, and anything the next
-   session must know.
+4. Commit with `git commit -S` — your agent signing key is configured; **never
+   commit unsigned.** Message: `AG8-NNN: <what changed>` (the current Linear
+   prefix is **`AG8-`**; the old `RCS-` prefix is retired).
+5. **Open a pull request against `testnet`.** A PR is a proposal, not a merge —
+   opening one never needs permission. Its branch name, title and body are public
+   the instant they are pushed (see "This repository is public").
+6. **Clear your context, then review your own diff cold** — a fresh adversarial
+   pass, or the review skill. Reviewing in the same breath you wrote it defends
+   your own bugs; a clean-context reviewer is the whole point.
+7. **Fix every finding**, then re-run `scripts/check.sh`.
+8. **Merge** only when CI is green **and** the review is clean: squash into
+   `testnet`, set the ticket **Done**, delete the branch. **EXCEPTION — a
+   sensitive path (below) or billing: PR and review as normal, but DO NOT merge.
+   Leave it for Gus.**
+9. Report back: ticket id, pass or fail, files changed, the PR link, and anything
+   the next session must know.
+
+## What you can do, and what needs Gus
+
+- **Freely, no asking:** pick a ready `AG8-` ticket → branch → implement → run CI
+  → open a PR → review it cold → fix findings → **self-merge to `testnet`** once
+  CI is green and the review is clean.
+- **Never self-merge — Gus merges:** anything touching a **sensitive path** (auth,
+  crypto, `evm/`, wallet/key derivation, migrations, the invoice/payment/payout/
+  refund handlers, `central-infrastructure`, or secrets/`.credentials`/env/RPC
+  keys). Implement it, PR it, review it — a human merges it.
+- **Never, under any circumstance:** merge to `main` or any mainnet deploy path;
+  move real funds; force-push or rewrite shared history; delete, skip (`#[ignore]`)
+  or weaken a test to make a check pass.
+- **Ask first:** work you are not sure belongs in this *public* repo — a placement
+  question (public repo vs the private tracker), not a per-PR gate.
 
 ## Rules that are not negotiable
 
@@ -89,7 +123,9 @@ Do not name any tool or vendor in a file, comment, or commit message.
 
 Auth, crypto, `evm/`, wallet and key derivation, migrations, and the invoice,
 payment, payout and refund handlers. Work in them normally, but **say so
-prominently in the commit message**. These are human-reviewed without exception.
+prominently in the commit message**, and **do not self-merge them** — these are
+human-reviewed and human-merged without exception (the loop, step 8). Open the
+PR, review it cold, fix findings, and leave the merge for Gus.
 
 ## What "done" means
 
