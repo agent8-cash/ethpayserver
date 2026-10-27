@@ -197,21 +197,48 @@ impl SignupServiceConfig {
         account_id: Uuid,
         plan_id: i64,
     ) -> Result<(u16, serde_json::Value), reqwest::Error> {
+        self.call(
+            "/signup",
+            account_id,
+            serde_json::json!({ "account_id": account_id.to_string(), "plan_id": plan_id }),
+        )
+        .await
+    }
+
+    /// Ask the service for the invoice that renews `account_id`'s
+    /// subscription. It issues one only when the period is close to ending,
+    /// and hands back the same invoice on a retry. Same contract as
+    /// [`Self::subscribe`].
+    pub async fn renew(
+        &self,
+        account_id: Uuid,
+    ) -> Result<(u16, serde_json::Value), reqwest::Error> {
+        self.call(
+            "/renew",
+            account_id,
+            serde_json::json!({ "account_id": account_id.to_string() }),
+        )
+        .await
+    }
+
+    async fn call(
+        &self,
+        path: &str,
+        account_id: Uuid,
+        body: serde_json::Value,
+    ) -> Result<(u16, serde_json::Value), reqwest::Error> {
         let response = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()?
-            .post(format!("{}/signup", self.url))
+            .post(format!("{}{path}", self.url))
             .bearer_auth(self.assertion(account_id, Utc::now()))
-            .json(&serde_json::json!({
-                "account_id": account_id.to_string(),
-                "plan_id": plan_id,
-            }))
+            .json(&body)
             .send()
             .await?;
         let status = response.status().as_u16();
         let body = response.json().await.unwrap_or_else(|e| {
             // A mangled 409 would silently lose the pending checkout link.
-            tracing::warn!(status, error = %e, "the signup service sent an unreadable body");
+            tracing::warn!(status, path, error = %e, "the signup service sent an unreadable body");
             serde_json::Value::Null
         });
         Ok((status, body))
@@ -396,17 +423,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_presents_the_assertion_and_names_the_account_in_the_body() {
-        let app = Router::new().route(
-            "/signup",
-            post(|req: Request| async move {
+    async fn subscribe_and_renew_present_the_assertion_and_name_the_account_in_the_body() {
+        let echo = |status: StatusCode| {
+            post(move |req: Request| async move {
                 let auth = req.headers()["authorization"].to_str().unwrap().to_string();
                 let body = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
                 let mut seen: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 seen["authorization"] = auth.into();
-                (StatusCode::CREATED, axum::Json(seen))
-            }),
-        );
+                (status, axum::Json(seen))
+            })
+        };
+        let app = Router::new()
+            .route("/signup", echo(StatusCode::CREATED))
+            .route("/renew", echo(StatusCode::OK));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -432,6 +461,17 @@ mod tests {
             claims["sub"],
             account.to_string(),
             "the assertion is about the same account"
+        );
+
+        let (status, body) = config(&url).renew(account).await.unwrap();
+        assert_eq!(status, 200, "renew calls its own route");
+        assert_eq!(body["account_id"], account.to_string());
+        assert!(body.get("plan_id").is_none(), "renew names no plan");
+        assert!(
+            body["authorization"]
+                .as_str()
+                .unwrap()
+                .starts_with("Bearer ")
         );
     }
 }

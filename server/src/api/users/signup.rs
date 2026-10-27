@@ -1,4 +1,5 @@
-//! Choosing a plan: the merchant asks, this server asks the signup service.
+//! Choosing a plan, and renewing it: the merchant asks, this server asks the
+//! signup service.
 //!
 //! A POST, deliberately: it enrols the caller and creates an invoice, so it
 //! must never be reachable by a link a browser might prefetch. The merchant
@@ -152,6 +153,94 @@ where
     }
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenewResponse {
+    /// Where to pay for the next period.
+    pub checkout_url: String,
+}
+
+/// What the merchant is told for each answer to a renewal. As with signup,
+/// only the checkout link is passed on.
+fn relay_renew(
+    status: u16,
+    body: &serde_json::Value,
+) -> Result<RenewResponse, (StatusCode, &'static str)> {
+    let unavailable = (
+        StatusCode::BAD_GATEWAY,
+        "renewal is unavailable; try again later",
+    );
+    match status {
+        // A 200 always names an invoice, so a missing or non-https link is
+        // drift, never "nothing to pay".
+        200 => match body.get("checkout_url") {
+            Some(serde_json::Value::String(u)) if u.starts_with("https://") => Ok(RenewResponse {
+                checkout_url: u.clone(),
+            }),
+            _ => {
+                tracing::error!("the signup service sent no usable renewal checkout_url; withheld");
+                Err(unavailable)
+            }
+        },
+        404 => {
+            tracing::warn!(
+                status,
+                "the signup service answered 404 to a renewal: no subscription, or a route it does not serve"
+            );
+            Err((StatusCode::NOT_FOUND, "no subscription to renew"))
+        }
+        // Not yet close enough to the end of the period, or the last renewal
+        // invoice ended with funds on it and waits for a person.
+        409 => Err((StatusCode::CONFLICT, "nothing to renew yet")),
+        _ => {
+            tracing::error!(
+                status,
+                "the signup service answered a renewal with an unexpected status"
+            );
+            Err(unavailable)
+        }
+    }
+}
+
+/// Get the invoice that renews the caller's subscription.
+///
+/// A POST, like signup: it can create an invoice, and an invoice issued by a
+/// prefetch would hold the account's one open renewal. Repeating it returns
+/// the same invoice.
+#[utoipa::path(
+    post,
+    path = "/users/me/renew",
+    tag = "users",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Pay for the next period at the link", body = RenewResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "No subscription, or renewal is not configured"),
+        (status = 409, description = "Not yet due for renewal"),
+        (status = 502, description = "The signup service is unavailable"),
+    )
+)]
+pub async fn renew<A>(
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(state): State<PgAppState<A>>,
+) -> Result<Json<RenewResponse>, (StatusCode, &'static str)>
+where
+    A: SessionService + 'static,
+{
+    let Some(service) = &state.signup_service else {
+        return Err((StatusCode::NOT_FOUND, "renewal is not available"));
+    };
+    match service.renew(user.id.0).await {
+        Ok((status, body)) => relay_renew(status, &body).map(Json),
+        Err(error) => {
+            tracing::error!(%error, "the signup service could not be reached");
+            Err((
+                StatusCode::BAD_GATEWAY,
+                "renewal is unavailable; try again later",
+            ))
+        }
+    }
+}
+
 /// List the plans the caller may choose from.
 #[utoipa::path(
     get,
@@ -251,6 +340,40 @@ mod tests {
         for status in [200, 401, 403, 500, 503] {
             assert_eq!(
                 relay(status, &json!(null)).unwrap_err().0,
+                StatusCode::BAD_GATEWAY
+            );
+        }
+    }
+
+    #[test]
+    fn a_renewal_passes_on_only_a_https_link_and_maps_refusals() {
+        let ok = relay_renew(
+            200,
+            &json!({"checkout_url": "https://pay.example/checkout/1", "invoice_id": "i"}),
+        )
+        .unwrap();
+        assert_eq!(ok.checkout_url, "https://pay.example/checkout/1");
+        for body in [
+            json!({"checkout_url": null}),
+            json!({"checkout_url": "http://pay.example/1"}),
+            json!(null),
+        ] {
+            assert_eq!(
+                relay_renew(200, &body).unwrap_err().0,
+                StatusCode::BAD_GATEWAY
+            );
+        }
+        assert_eq!(
+            relay_renew(404, &json!(null)).unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            relay_renew(409, &json!(null)).unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        for status in [201, 401, 403, 500, 502] {
+            assert_eq!(
+                relay_renew(status, &json!(null)).unwrap_err().0,
                 StatusCode::BAD_GATEWAY
             );
         }

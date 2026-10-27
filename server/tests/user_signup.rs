@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! `POST /users/me/signup`, driven through the production router with a real
+//! `POST /users/me/signup` and `/users/me/renew`, driven through the production router with a real
 //! `Authorization: Bearer` key against a real Postgres, and a stand-in for the
 //! signup service that records what it was sent.
 //!
@@ -37,17 +37,17 @@ type Seen = Arc<Mutex<Vec<Value>>>;
 async fn fake_service(status: u16, reply: Value) -> (String, Seen) {
     let seen: Seen = Arc::default();
     let record = Arc::clone(&seen);
-    let app = Router::new().route(
-        "/signup",
-        post(move |Json(body): Json<Value>| {
-            let record = Arc::clone(&record);
-            let reply = reply.clone();
-            async move {
-                record.lock().unwrap().push(body);
-                (StatusCode::from_u16(status).unwrap(), Json(reply))
-            }
-        }),
-    );
+    let answer = post(move |Json(body): Json<Value>| {
+        let record = Arc::clone(&record);
+        let reply = reply.clone();
+        async move {
+            record.lock().unwrap().push(body);
+            (StatusCode::from_u16(status).unwrap(), Json(reply))
+        }
+    });
+    let app = Router::new()
+        .route("/signup", answer.clone())
+        .route("/renew", answer);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -123,9 +123,18 @@ async fn post_signup(app: &Router, key: Option<&str>, body: Value) -> (StatusCod
 }
 
 async fn post_signup_raw(app: &Router, key: Option<&str>, body: Value) -> (StatusCode, Vec<u8>) {
+    post_raw(app, "/users/me/signup", key, body).await
+}
+
+async fn post_raw(
+    app: &Router,
+    uri: &str,
+    key: Option<&str>,
+    body: Value,
+) -> (StatusCode, Vec<u8>) {
     let mut req = Request::builder()
         .method("POST")
-        .uri("/users/me/signup")
+        .uri(uri)
         .header("content-type", "application/json");
     if let Some(key) = key {
         req = req.header("authorization", format!("Bearer {key}"));
@@ -311,4 +320,29 @@ async fn the_configured_plans_are_listed_in_order() {
     assert_eq!(body["plans"][1]["name"], "Pro");
     assert!(body.get("secret").is_none());
     assert!(body.get("url").is_none());
+}
+
+#[tokio::test]
+#[ignore]
+async fn renew_asks_for_the_sessions_account_and_hands_back_the_link() {
+    let pg = Arc::new(pg_service().await);
+    let (url, seen) = fake_service(
+        200,
+        json!({"checkout_url": "https://pay.example/c/2", "invoice_id": "inv-2"}),
+    )
+    .await;
+    let app = app(&pg, Some(&url));
+    let (user, key) = seed_user(&pg).await;
+
+    let (status, _) = post_raw(&app, "/users/me/renew", None, json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(seen.lock().unwrap().is_empty());
+
+    let (status, body) = post_raw(&app, "/users/me/renew", Some(&key), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body, json!({"checkout_url": "https://pay.example/c/2"}));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0], json!({"account_id": user.to_string()}));
 }

@@ -123,32 +123,15 @@ pub fn warning_for(held: &HeldStanding, now: DateTime<Utc>) -> Option<Warning> {
     //
     // The rule: a warning must carry either an open invoice's `checkout_url` or the
     // renewal endpoint/action itself, and it does NOT count as delivered if it carries
-    // neither. There is no renewal endpoint anywhere yet - the billing service serves
-    // only /health/* and /webhooks/payserver - so the only means to act we can offer is
-    // a checkout URL, and without one there is nothing to say that a merchant could act
-    // on.
+    // neither. Only the checkout URL is offered here today; naming the renewal
+    // action (`POST /users/me/renew`) in the routeless case is not done yet.
     //
-    // So the routeless case is SILENT rather than unactionable. Under on-demand issuance
-    // that is the COMMON case, not a rare degraded one, which is why this is recorded on
-    // the ticket as blocked on the renewal action rather than quietly accepted: we warn
-    // whom we can actionably warn, and say out loud that most merchants cannot be served
-    // yet. An unactionable warning would be worse than silence here precisely because
+    // The billing service issues a renewal invoice only when the merchant asks for
+    // one, because a payserver invoice expires too soon to be issued ahead of time.
+    // So `checkout_url` is `None` until the merchant has pressed renew, and the
+    // routeless case - the common one - is SILENT rather than unactionable. An
+    // unactionable warning would be worse than silence here precisely because
     // something will later treat delivery as evidence.
-    // DORMANT IN PRODUCTION TODAY, AND THIS RETURN IS WHY. Beyond the missing
-    // renewal route above, the billing service's production renewal entry point
-    // refuses unconditionally - the only call that creates a renewal invoice sits
-    // behind a non-production build flag - so no outstanding invoice id is ever
-    // recorded, and `checkout_url` is derived from one. It is therefore `None` for
-    // every real merchant, and this line returns on every real request.
-    //
-    // So the warning below is correct, tested, and currently reaches nobody. That
-    // is deliberate rather than broken: the alternative is an unactionable notice,
-    // which this rule already forbids. It is said out loud here because
-    // unreachable code that does not say why is indistinguishable from a control
-    // and from an accident - and the next reader will otherwise find a tested
-    // warning and conclude merchants see it.
-    //
-    // The withhold is a deploy-side decision, not this crate's to lift.
     let url = standing.checkout_url.as_deref()?;
     let date = ends.format("%Y-%m-%d");
     Some(Warning {
@@ -323,8 +306,8 @@ mod tests {
         );
         assert!(routed.text.contains("renew at https://pay.example/c"));
 
-        // The rule: "It does NOT count if it carries neither." There is no renewal
-        // endpoint to name, so no route means no warning - not a vague one.
+        // The rule: "It does NOT count if it carries neither." The warning names no
+        // renewal action, so no route means no warning - not a vague one.
         assert!(
             // THIS `None` IS THE SUBJECT, not an oversight: the test asserts
             // that a standing with no means to act produces no warning. A sweep

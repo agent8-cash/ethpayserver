@@ -20,7 +20,7 @@ pub use email::{
     ConfirmEmailChangePayload, EmailStatusResponse, RequestEmailChangePayload,
     confirm_email_change, get_email_status, remove_email, request_email_change,
 };
-pub use signup::{list_plans, signup};
+pub use signup::{list_plans, renew, signup};
 pub use standing::{StandingResponse, get_standing};
 pub use wallets::{
     PromoteWalletCredentialRequest, WalletCredentialResponse, WalletReauthChallengeResponse,
