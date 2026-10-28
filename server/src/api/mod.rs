@@ -316,6 +316,10 @@ where
             axum::routing::post(users::rotate_api_key::<A>),
         )
         .route("/wallets", get(users::list_wallet_credentials::<A>))
+        // Device enrollment (sensitive - see server/src/api/users/devices.rs).
+        // Requires a fresh passkey or wallet login (`FreshlyAuthenticatedUser`),
+        // same bar as the email-change endpoints above.
+        .route("/me/devices", post(users::add_device::<A>))
         .route(
             "/wallets/{id}/reauth-challenge",
             axum::routing::post(users::create_wallet_reauth_challenge::<A>),
