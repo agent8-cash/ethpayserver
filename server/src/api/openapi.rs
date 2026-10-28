@@ -84,6 +84,7 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         users::wallets::list_wallet_credentials,
         users::wallets::create_wallet_reauth_challenge,
         users::wallets::set_primary_wallet_credential,
+        users::devices::add_device,
         // Admin
         admin::list_users,
         admin::list_stores,
@@ -163,6 +164,8 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         users::WalletCredentialResponse,
         users::WalletReauthChallengeResponse,
         users::PromoteWalletCredentialRequest,
+        users::AddDeviceRequest,
+        auth::DeviceInfo,
         admin::UserListResponse,
         admin::MerchantStoreEntry,
         entitlements::PushEntitlementRequest,
