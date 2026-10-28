@@ -198,7 +198,8 @@ async fn an_account_with_an_email_is_delivered_and_the_sender_sees_the_resolved_
     let recorder = Arc::new(RecordingSender::default());
     let app = app(&pg, recorder.clone());
     let (_, key) = seed_key(&pg, "server_admin", None, Some(&[NOTICE_SCOPE])).await;
-    let (account, _) = seed_key(&pg, "user", Some("merchant@example.com"), None).await;
+    let email = format!("merchant-{}@example.com", Uuid::new_v4());
+    let (account, _) = seed_key(&pg, "user", Some(&email), None).await;
 
     let (status, body) = notify(
         &app,
@@ -211,7 +212,7 @@ async fn an_account_with_an_email_is_delivered_and_the_sender_sees_the_resolved_
 
     let calls = recorder.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "merchant@example.com");
+    assert_eq!(calls[0].0, email);
     assert_eq!(calls[0].1.subject, "subject");
     assert_eq!(calls[0].1.body, "body text");
 }
@@ -244,7 +245,7 @@ async fn a_transport_failure_is_a_retryable_error_not_a_silent_delivered_false()
     let pg = service().await;
     let app = app(&pg, Arc::new(FailingSender));
     let (_, key) = seed_key(&pg, "server_admin", None, Some(&[NOTICE_SCOPE])).await;
-    let (account, _) = seed_key(&pg, "user", Some("merchant@example.com"), None).await;
+    let (account, _) = seed_key(&pg, "user", Some("transport-failure@example.com"), None).await;
 
     let (status, _) = notify(&app, Some(&key), notice_body(account, "subject", "body")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -288,7 +289,7 @@ async fn an_unauthenticated_notice_is_refused() {
 async fn a_key_without_the_notice_scope_is_refused_whatever_else_it_may_do() {
     let pg = service().await;
     let app = app(&pg, Arc::new(RecordingSender::default()));
-    let (account, _) = seed_key(&pg, "user", Some("merchant@example.com"), None).await;
+    let (account, _) = seed_key(&pg, "user", Some("scope-check@example.com"), None).await;
 
     let keys = [
         (
