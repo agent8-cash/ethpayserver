@@ -494,6 +494,14 @@ jobs:
         run: ./scripts/audit-build-graph.test.sh
       - name: cargo audit (build graph blocks, lockfile-only reports)
         run: ./scripts/audit-build-graph.sh
+      # .cargo/audit.toml's ignore list can only grow stale: fails once an
+      # ignored advisory is fixed upstream, or its crate is no longer
+      # reachable from any workspace member. Runs after the build-graph audit
+      # above so the advisory db it fetched is already warm (--no-fetch here).
+      - name: advisory ignores self-test
+        run: ./scripts/check-advisory-ignores.test.sh
+      - name: advisory ignores still needed
+        run: ./scripts/check-advisory-ignores.sh
       - name: cargo deny
         run: cargo deny check licenses sources
 
