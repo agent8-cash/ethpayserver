@@ -2797,6 +2797,7 @@ dependencies = [
  "coins-bip39",
  "data-service",
  "dotenvy",
+ "evm",
  "hex",
  "k256",
  "metrics",
