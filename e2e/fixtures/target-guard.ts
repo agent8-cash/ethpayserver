@@ -55,9 +55,16 @@ export function assertSafeTarget(env: Env): void {
 
   // Union, not replacement: the variable can only widen the refusal.
   const reserved = new Set<number>(RESERVED_PORTS);
-  for (const part of (env[RESERVED_PORTS_VARIABLE] ?? '').split(',')) {
-    const p = Number(part.trim());
-    if (Number.isInteger(p) && p > 0) reserved.add(p);
+  for (const raw of (env[RESERVED_PORTS_VARIABLE] ?? '').split(',')) {
+    const part = raw.trim();
+    if (part === '') continue;
+    const p = Number(part);
+    if (!Number.isInteger(p) || p <= 0) {
+      throw new Error(
+        `${RESERVED_PORTS_VARIABLE} contains an unparseable entry (${JSON.stringify(part)}): refusing to run in local mode.`,
+      );
+    }
+    reserved.add(p);
   }
 
   for (const [name, [low, high]] of Object.entries(LOCAL_PORT_RANGES)) {
