@@ -1,16 +1,16 @@
-# `device_id` consumer audit (AG8-807)
+# `device_id` consumer audit
 
 ## Why
 
-RCS-737 (payserver-commons `665e343`) changed what happens at the per-user
+`payserver-commons` commit `665e343` changed what happens at the per-user
 device cap: a login that used to be refused now reclaims the least-recently-used
 active device instead. Two physical machines can now carry the same
 `device_id` over time (one machine's login reclaims the record another
-machine most recently held). The fix assumes `device_id` carries no identity
+machine most recently held). The change assumes `device_id` carries no identity
 guarantee worth relying on — this audit checks whether anything in
 `payserver-commons` or `ethpayserver` actually relies on it anyway. The
 `ethpayserver` Cargo pin on `payserver-commons` is **not** moved by this
-ticket; that is a separate decision this doc exists to inform.
+audit; that is a separate decision this doc exists to inform.
 
 ## Method
 
@@ -43,8 +43,8 @@ explicitly below.
   explicitly documented as "only a hint about which device record to attach
   the session to" — never consulted as a reason to grant or skip
   authentication. Opaque label.
-- **L117-162 `device_for_new_login`** — this is the RCS-737 change itself.
-  Below `max_devices_per_user` it creates a new device row; at the cap it
+- **L117-162 `device_for_new_login`** — this is the device-cap change
+  described above. Below `max_devices_per_user` it creates a new device row; at the cap it
   reclaims the least-recently-used active device (new name/type/key
   material, `last_used_at` refreshed) rather than refusing. No trust
   decision reads `device_id` here; it mutates device *records*, called after
@@ -189,10 +189,10 @@ an ownership check (`device.user_id == user_info.id`) and an activity check
 2FA/MFA skip (the mechanism does not exist in this codebase), no refresh-token
 or session binding keyed by device identity (sessions are looked up by
 `SessionId`, not by `device_id`), and no re-auth skip tied to device identity
-(`wallet_reauth_challenges` is keyed by `user_id`). RCS-737's premise — that a
-`device_id` is a storage hint, not a machine identity, and that two machines
-sharing one is therefore safe to allow at the cap — holds on both sides of
-the pin.
+(`wallet_reauth_challenges` is keyed by `user_id`). The device-cap change's
+premise — that a `device_id` is a storage hint, not a machine identity, and
+that two machines sharing one is therefore safe to allow at the cap — holds
+on both sides of the pin.
 
 This clears the premise the rev-move decision depends on. The rev move
 itself is a separate decision and is **not** made by this document or this
