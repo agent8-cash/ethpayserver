@@ -186,7 +186,8 @@ jobs:
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
-      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # with CI green. Every .rs file the change touches is checked (a Cites-Tests
+      # trailer adds files the diff does not show);
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
         env:
@@ -463,7 +464,16 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Pinned to match `e2e`'s runner (see the comment on that job). `e2e`
+    # runs this job's binary directly on its own runner's glibc/OpenSSL,
+    # not inside a container - so letting this float on ubuntu-latest while
+    # e2e is pinned reintroduced the outage one step later: a binary built
+    # on 26.04 refused to start on 24.04 ("libcrypto.so.3: version
+    # 'OPENSSL_3.2.0' not found"), which read as a server crash rather than
+    # a runner mismatch. `docker` also consumes this binary but is unaffected:
+    # it only copies it into an archlinux:base image, whose OpenSSL is newer
+    # than anything a 24.04-built binary asks for.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Deliberately no `needs`. Build and E2E used to queue behind Lint, Audit
     # and Test, so E2E - not the longest job, just the last - landed its whole
@@ -583,7 +593,15 @@ jobs:
   # server-side change that breaks e2e without touching `e2e/` itself.
   e2e:
     name: E2E
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest, and only this job: it is the only one that
+    # installs a Playwright browser (see "Install Playwright browsers"
+    # below). GitHub moved ubuntu-latest to 24.04 -> 26.04 and the pinned
+    # Playwright version below does not support installing chromium on
+    # 26.04-x64 ("Playwright does not support chromium on ubuntu26.04-x64"),
+    # which took every job on this runner image red, everywhere, at once.
+    # Re-floating this to ubuntu-latest reintroduces that outage the next
+    # time GitHub moves the image again.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [build]
     # The frontend image comes from another repository, so this job pulls it
@@ -780,6 +798,10 @@ jobs:
           curl -sf http://localhost:8080/api/health/live \
             || { echo "::error::frontend proxy is not reaching the API"; docker logs e2e-frontend; exit 1; }
 
+      # e2e/package.json pins @playwright/test to an exact version (no
+      # caret) that supports installing chromium on this job's pinned
+      # ubuntu-24.04 runner (see the `runs-on` comment above) - keep the two
+      # pins moving together.
       - name: Install Playwright browsers
         working-directory: e2e
         run: npx playwright install --with-deps chromium

@@ -8,6 +8,7 @@
 
 pub(crate) mod api_keys;
 mod deletion;
+pub(crate) mod devices;
 pub(crate) mod email;
 mod key_material;
 pub(crate) mod signup;
@@ -16,6 +17,7 @@ pub(crate) mod wallets;
 
 pub use api_keys::{create_api_key, list_api_keys, revoke_api_key, rotate_api_key, update_api_key};
 pub use deletion::{DeleteAccountQuery, delete_account};
+pub use devices::{AddDeviceRequest, add_device};
 pub use email::{
     ConfirmEmailChangePayload, EmailStatusResponse, RequestEmailChangePayload,
     confirm_email_change, get_email_status, remove_email, request_email_change,

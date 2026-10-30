@@ -41,6 +41,7 @@ fn test_monitor_config() -> ChainMonitorConfig {
         loop_hang_timeout_secs: 300,
         monitor_native: true,
         monitor_erc20: true,
+        rescan_max_blocks: 10_000,
     }
 }
 
