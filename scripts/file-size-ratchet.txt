@@ -14,4 +14,3 @@
 # needs the same argument as any other change to the limit.
 #
 # Format: <path> <ceiling>
-server/tests/cross_tenant_isolation.rs 2326
