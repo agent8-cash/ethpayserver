@@ -12,9 +12,12 @@
 //! at `POST /users/me/invites/accept`. Until then nothing exists.
 //!
 //! Limitation: the code is a bearer token. Any signed-in account that holds it
-//! can redeem it, and `store_invites` records who sent an invite and when it
-//! was accepted but not who accepted it. A membership therefore proves
-//! possession of a token, not the identity of the addressee.
+//! can redeem it, so a membership proves possession of a token, not the
+//! identity of the addressee. `store_invites` records who sent an invite,
+//! when it was accepted, and - since the redeeming account need not be the
+//! invited address's owner - which account `accepted_by` redeemed it. Whether
+//! a mismatch between that account's verified email and the invite's address
+//! should be allowed, flagged or refused is not decided here.
 //!
 //! Gated on `caninviteusers`, held by Owner only. It is not
 //! `canmodifystoreusers`, which also gates changing roles and removing
