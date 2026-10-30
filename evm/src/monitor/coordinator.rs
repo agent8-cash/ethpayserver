@@ -1,7 +1,7 @@
 //! Monitor coordinator - manages multiple chain monitors.
 
 use super::chain::{ChainMonitor, WatchedAddress};
-use super::events::MonitorEvent;
+use super::events::{MonitorEvent, RescanWatch};
 use super::handlers::EventHandler;
 use super::source::{BlockSource, ChainHealth};
 use crate::error::{EvmError, EvmResult};
@@ -327,6 +327,21 @@ impl<S: BlockSource + 'static> MonitorCoordinator<S> {
     ) -> EvmResult<Option<WatchedAddress>> {
         if let Some(monitor) = self.get_chain(chain_id).await {
             Ok(monitor.unwatch(address, token_contract).await)
+        } else {
+            Err(EvmError::Monitor(format!("chain {} not found", chain_id)))
+        }
+    }
+
+    /// Re-scan `[from_block, tip]` on a chain for transfers to `watches`.
+    /// See [`ChainMonitor::rescan_from`].
+    pub async fn rescan_from(
+        &self,
+        chain_id: u64,
+        from_block: u64,
+        watches: Vec<RescanWatch>,
+    ) -> EvmResult<()> {
+        if let Some(monitor) = self.get_chain(chain_id).await {
+            monitor.rescan_from(from_block, watches).await
         } else {
             Err(EvmError::Monitor(format!("chain {} not found", chain_id)))
         }
