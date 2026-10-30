@@ -4,9 +4,9 @@
  * Split out from `fixtures/synthetic-payment.ts` rather than imported from
  * it: that file backs the long-lived nightly spec (`synthetic-payment.spec.ts`)
  * and this one backs a separate, merge-triggered spec with its own spender
- * account index (see `POSTMERGE_SPENDER_ACCOUNT_INDEX` below) — keeping them
- * apart means a change aimed at one run can never silently touch the other's
- * nonce sequence or budget constants.
+ * account index (`SPENDER_ACCOUNT_INDEX` in `tests/payment-flow-postmerge.spec.ts`)
+ * — keeping them apart means a change aimed at one run can never silently
+ * touch the other's nonce sequence or budget constants.
  */
 import { api } from './api';
 

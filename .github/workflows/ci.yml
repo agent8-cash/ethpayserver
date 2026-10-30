@@ -1266,6 +1266,18 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Queued, not cancelled: two merges landing close together must not run
+    # this job twice at once - both would sign from the same spender account
+    # index and read the same pending nonce, so the second broadcast replaces
+    # the first instead of paying its own invoice (the exact failure
+    # SPENDER_ACCOUNT_INDEX's own comment exists to avoid, just between two
+    # runs of this job rather than against the nightly one).
+    # `cancel-in-progress: false` because a cancelled run mid-broadcast still
+    # leaves a real Sepolia transaction in flight; letting each run finish
+    # and queueing the next is cheaper than untangling that.
+    concurrency:
+      group: e2e-postmerge-testnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
