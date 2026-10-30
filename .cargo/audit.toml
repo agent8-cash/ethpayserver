@@ -1,20 +1,19 @@
-# Ignored advisories — all in upstream transitive deps we can't control.
-# Review periodically and remove once upstream fixes land.
+# Every entry below is checked by scripts/check-advisory-ignores.sh (plus the
+# two narrower guards it defers to for wasmtime and zip): it fails once the
+# advisory is fixed upstream or the crate it names is no longer reachable from
+# any workspace member. Twelve entries this covered were already dead —
+# fixed upstream, or never reachable in the first place — and were removed in
+# the same change that added the check. Each surviving entry names the crate,
+# the path that pulls it in, and the condition under which it stops applying,
+# so the next review does not start from "upstream transitive dep".
 [advisories]
 ignore = [
-    "RUSTSEC-2026-0007", # upstream transitive dep
-    "RUSTSEC-2022-0083", # unmaintained crate in dep tree
-    "RUSTSEC-2026-0037", # upstream transitive dep
-    "RUSTSEC-2026-0001", # upstream transitive dep
-    "RUSTSEC-2023-0071", # upstream transitive dep
-    "RUSTSEC-2025-0137", # upstream transitive dep
-    "RUSTSEC-2026-0049", # upstream transitive dep
-    "RUSTSEC-2026-0009", # upstream transitive dep
-    "RUSTSEC-2024-0388", # upstream transitive dep (warning)
-    "RUSTSEC-2024-0436", # upstream transitive dep (warning)
-    "RUSTSEC-2026-0012", # upstream transitive dep (warning)
-    "RUSTSEC-2026-0002", # lru unsoundness (via alloy-provider)
-    "RUSTSEC-2026-0235", # rkyv 0.7 via rust_decimal's optional `rkyv` feature — not enabled, never compiled
+    # paste is unmaintained (no patched version will ever land - the
+    # advisory's own [versions] is empty). Pulled in by
+    # paste <- alloy-primitives <- auth (payserver-commons) <- data-service,
+    # server. Stops applying only if that path drops paste - alloy forking
+    # away from it, or commons dropping alloy-primitives.
+    "RUSTSEC-2024-0436", # paste unmaintained - see the note above
     # zip < 9.0.0, reached only by utoipa-swagger-ui's build script, which
     # unpacks the Swagger UI dist vendored inside that crate. All three are
     # extraction advisories - symlink targets and permission bits - so they
