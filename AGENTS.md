@@ -85,11 +85,11 @@ Do not name any tool or vendor in a file, comment, or commit message.
   until the pin moves. Run `scripts/commons.sh unlink` before verifying, or a
   green build proves nothing about the pin.
 
-## Sensitive paths
+## Security- and funds-critical code
 
-Auth, crypto, `evm/`, wallet and key derivation, migrations, and the invoice,
-payment, payout and refund handlers. Work in them normally, but **say so
-prominently in the commit message**. These are human-reviewed without exception.
+Auth, crypto, on-chain interaction, wallet/key handling, and anything that
+moves or records funds deserve extra care. Work in it normally, but **say so
+prominently in the commit message**.
 
 ## What "done" means
 
