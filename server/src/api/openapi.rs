@@ -6,7 +6,10 @@
 
 use utoipa::OpenApi;
 
-use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, stores, users};
+use super::{
+    account_notices, admin, dashboard, entitlements, health, invoices, plugins, rates, stores,
+    users,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -89,6 +92,7 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         admin::list_users,
         admin::list_stores,
         entitlements::push_entitlement,
+        account_notices::push_account_notice,
         admin::deletion::account::list_user_stores,
         admin::deletion::account::delete_user_account,
         admin::deletion::store::hard_delete_store,
@@ -170,6 +174,8 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         admin::MerchantStoreEntry,
         entitlements::PushEntitlementRequest,
         entitlements::PushEntitlementResponse,
+        account_notices::PushAccountNoticeRequest,
+        account_notices::PushAccountNoticeResponse,
         users::StandingResponse,
         users::signup::SignupRequest,
         users::signup::SignupResponse,
