@@ -87,6 +87,7 @@ use super::{
         users::wallets::list_wallet_credentials,
         users::wallets::create_wallet_reauth_challenge,
         users::wallets::set_primary_wallet_credential,
+        users::devices::add_device,
         // Admin
         admin::list_users,
         admin::list_stores,
@@ -167,6 +168,8 @@ use super::{
         users::WalletCredentialResponse,
         users::WalletReauthChallengeResponse,
         users::PromoteWalletCredentialRequest,
+        users::AddDeviceRequest,
+        auth::DeviceInfo,
         admin::UserListResponse,
         admin::MerchantStoreEntry,
         entitlements::PushEntitlementRequest,
