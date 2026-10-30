@@ -485,10 +485,11 @@ jobs:
           VERSION=8.30.1
           cd "$RUNNER_TEMP"
           base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
-          curl -sSfL -o scanner.tgz "$base/gitleaks_${VERSION}_linux_x64.tar.gz"
+          archive="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" "$base/$archive"
           curl -sSfL -o sums.txt "$base/gitleaks_${VERSION}_checksums.txt"
-          grep " gitleaks_${VERSION}_linux_x64.tar.gz\$" sums.txt | sha256sum -c -
-          tar xzf scanner.tgz gitleaks
+          grep " ${archive}\$" sums.txt | sha256sum -c -
+          tar xzf "$archive" gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
