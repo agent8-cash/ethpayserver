@@ -96,36 +96,6 @@ impl WatchedAddressReader for PgDataService {
         }))
     }
 
-    async fn get_active(
-        &self,
-    ) -> RepositoryResult<Vec<(String, PaymentOptionId, types::ChainId, Option<String>)>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT wa.address, wa.payment_option_id, wa.chain_id, wa.token_address
-            FROM watched_addresses wa
-            WHERE wa.is_active = TRUE AND wa.expires_at > NOW()
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sqlx_to_repo_error)?;
-
-        let mut result = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let address: String = r.get("address");
-            let payment_option_id: Uuid = r.get("payment_option_id");
-            let chain_id = chain_id_from_row(r, "chain_id");
-            let token_address: Option<String> = r.get("token_address");
-            result.push((
-                address,
-                PaymentOptionId(payment_option_id),
-                chain_id,
-                token_address,
-            ));
-        }
-        Ok(result)
-    }
-
     async fn get_pending(&self) -> RepositoryResult<Vec<PendingWatchInfo>> {
         let rows = sqlx::query(
             r#"
