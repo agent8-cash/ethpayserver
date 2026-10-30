@@ -446,6 +446,52 @@ fn unconfigured_chain_ids() -> Vec<ChainId> {
         .collect()
 }
 
+/// Whether `id` names one of the real mainnet chains, per the one registry
+/// that defines "mainnet" (`evm::network::ALL_CHAINS`) rather than a second,
+/// separately-maintained list that can drift from it. Non-EVM and testnet
+/// ids both answer `false` here - a Tron or Sepolia id is not what
+/// `mainnet_enabled` gates.
+fn is_mainnet_chain_id(id: &ChainId) -> bool {
+    id.evm_chain_id()
+        .is_some_and(|cid| evm::network::get_chain_config_by_id(cid).is_some())
+}
+
+/// A mainnet chain id reaching `enabled_chain_ids` is a decision to accept
+/// real value on this server - deploy config, not an admin API call. The
+/// switch this checks (`Config::mainnet_enabled`) is read once at process
+/// start and has no setter anywhere in this API, including here: an admin
+/// with nothing but a session token can never flip it themselves. Both
+/// outcomes are logged - the refusal and the accepted write - with the chain
+/// ids and the caller, since this is exactly the kind of change that must
+/// leave a record whichever way it goes.
+fn guard_mainnet_chain_ids(
+    admin_id: &UserId,
+    enabled_chain_ids: &[ChainId],
+    mainnet_enabled: bool,
+) -> Result<(), StatusCode> {
+    let requested_mainnet_ids: Vec<&ChainId> = enabled_chain_ids
+        .iter()
+        .filter(|id| is_mainnet_chain_id(id))
+        .collect();
+    if requested_mainnet_ids.is_empty() {
+        return Ok(());
+    }
+    if !mainnet_enabled {
+        tracing::error!(
+            actor = %admin_id,
+            chain_ids = ?requested_mainnet_ids,
+            "refused: mainnet chain id in enabled_chain_ids with MAINNET_ENABLED unset"
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+    tracing::error!(
+        actor = %admin_id,
+        chain_ids = ?requested_mainnet_ids,
+        "mainnet chain id written to enabled_chain_ids"
+    );
+    Ok(())
+}
+
 /// Update server settings (upsert).
 #[utoipa::path(
     put,
@@ -467,12 +513,29 @@ pub async fn update_settings<A>(
 where
     A: SessionService + 'static,
 {
-    let current = state
+    let row = state
         .data_service
         .get_server_settings()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .unwrap_or_default();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Same substitution `get_settings` already makes on its read path, for
+    // the same reason: `ServerSettings::default()` reports the hardcoded
+    // mainnet list, which is not the set a row-less instance actually gates
+    // on (`chain_has_no_adapter` falls back to `unconfigured_chain_ids()`
+    // there too). Without this, an unrelated first save on a fresh instance
+    // - one that never mentions chains at all - would persist that mainnet
+    // list into `enabled_chain_ids` verbatim, which the mainnet guard below
+    // would then correctly refuse: the right failure, but for a save that
+    // had nothing to do with chains.
+    let current_chain_ids = match &row {
+        Some(settings) => settings.enabled_chain_ids.clone(),
+        None => unconfigured_chain_ids(),
+    };
+    let current = ServerSettings {
+        enabled_chain_ids: current_chain_ids,
+        ..row.unwrap_or_default()
+    };
 
     // Absent leaves it alone; `Some(None)` clears it. A plain `Option` could
     // not tell those apart, and every client that saves the other four
@@ -506,6 +569,8 @@ where
     // client round-tripping what it was handed would write a list nobody
     // chose. On a testnet deployment that list has no Sepolia in it.
     let enabled_chain_ids = body.enabled_chain_ids.unwrap_or(current.enabled_chain_ids);
+
+    guard_mainnet_chain_ids(&admin.id, &enabled_chain_ids, state.mainnet_enabled)?;
 
     let settings = ServerSettings {
         default_confirmations: body.default_confirmations,
@@ -724,6 +789,28 @@ mod tests {
             !unconfigured_chain_ids().contains(&mainnet),
             "so the settings page must not offer it"
         );
+    }
+
+    /// `is_mainnet_chain_id` is correct only as long as `ALL_CHAINS` holds
+    /// nothing but mainnets - it does not special-case testnet ids, it just
+    /// trusts that list. If a testnet const were ever added there, this
+    /// predicate would silently invert: it would call Sepolia "mainnet" and
+    /// the guard would start refusing testnet operation unless
+    /// `MAINNET_ENABLED` were set, pressuring whoever runs testnet into
+    /// flipping the one switch this feature exists to gate. This pins the
+    /// assumption directly, so that inversion fails here first.
+    #[test]
+    fn testnet_chain_ids_are_not_mainnet() {
+        for (chain_id, name) in [
+            (11_155_111, "Sepolia"),
+            (17_000, "Holesky"),
+            (80_002, "Polygon Amoy"),
+        ] {
+            assert!(
+                !is_mainnet_chain_id(&ChainId::evm(chain_id)),
+                "{name} ({chain_id}) must not be classified as mainnet"
+            );
+        }
     }
 
     #[test]
@@ -1198,6 +1285,201 @@ mod tests {
         .await
         .expect_err("an owned store with no usable payment method must still be refused");
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("clean up settings");
+    }
+
+    fn chain_ids_body(enabled_chain_ids: Vec<ChainId>) -> UpdateServerSettingsRequest {
+        UpdateServerSettingsRequest {
+            default_confirmations: 3,
+            invoice_expiry_minutes: 60,
+            rate_limit_rpm: 100,
+            enabled_chain_ids: Some(enabled_chain_ids),
+            operator_store_id: None,
+        }
+    }
+
+    /// Matches on message substring, same pattern as `CapturesError` above -
+    /// generalized to the caller's text instead of one hardcoded message,
+    /// since this file now has two different `error!` calls worth asserting on.
+    struct CapturesMessage(std::sync::Arc<std::sync::atomic::AtomicBool>, &'static str);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturesMessage {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() != tracing::Level::ERROR {
+                return;
+            }
+            struct FindsText(bool, &'static str);
+            impl tracing::field::Visit for FindsText {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" && format!("{value:?}").contains(self.1) {
+                        self.0 = true;
+                    }
+                }
+            }
+            let mut visitor = FindsText(false, self.1);
+            event.record(&mut visitor);
+            if visitor.0 {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// The property the `MAINNET_ENABLED` switch exists for: an admin with
+    /// nothing but a session token cannot write a mainnet chain id into
+    /// `enabled_chain_ids` by calling the API, and the refusal is logged with
+    /// the chain id and the caller - not a silent 403.
+    #[tokio::test]
+    #[ignore]
+    async fn the_endpoint_refuses_a_mainnet_chain_id_when_mainnet_is_not_enabled() {
+        let service = pg_service().await;
+        let pool = service.pool().clone();
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("reset settings");
+
+        let operator = settings_test_user(&pool).await;
+        let state = settings_test_state(service, Some(UserId(operator)));
+        assert!(
+            !state.mainnet_enabled,
+            "off by default, same as Config's own default"
+        );
+
+        let saw_refusal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        use tracing_subscriber::prelude::*;
+        let _dispatcher = tracing_subscriber::registry()
+            .with(CapturesMessage(
+                std::sync::Arc::clone(&saw_refusal),
+                "mainnet chain id in enabled_chain_ids with MAINNET_ENABLED unset",
+            ))
+            .set_default();
+
+        let status = update_settings(
+            settings_admin(operator),
+            State(state),
+            Json(chain_ids_body(vec![ChainId::evm(1)])),
+        )
+        .await
+        .expect_err("a mainnet chain id must be refused when the process-level switch is off");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            saw_refusal.load(std::sync::atomic::Ordering::SeqCst),
+            "the refusal must be logged"
+        );
+
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("clean up settings");
+    }
+
+    /// The other half: with the deploy-time switch on, the same write
+    /// succeeds and is still logged - an accepted mainnet enablement must
+    /// leave a record exactly as much as a refused one does.
+    #[tokio::test]
+    #[ignore]
+    async fn the_endpoint_accepts_a_mainnet_chain_id_when_mainnet_is_enabled() {
+        let service = pg_service().await;
+        let pool = service.pool().clone();
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("reset settings");
+
+        let operator = settings_test_user(&pool).await;
+        let mut state = settings_test_state(service, Some(UserId(operator)));
+        state.mainnet_enabled = true;
+
+        let saw_acceptance = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        use tracing_subscriber::prelude::*;
+        let _dispatcher = tracing_subscriber::registry()
+            .with(CapturesMessage(
+                std::sync::Arc::clone(&saw_acceptance),
+                "mainnet chain id written to enabled_chain_ids",
+            ))
+            .set_default();
+
+        let status = update_settings(
+            settings_admin(operator),
+            State(state),
+            Json(chain_ids_body(vec![ChainId::evm(1)])),
+        )
+        .await
+        .expect("a mainnet chain id must be accepted when the process-level switch is on");
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            saw_acceptance.load(std::sync::atomic::Ordering::SeqCst),
+            "the acceptance must be logged too"
+        );
+
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("clean up settings");
+    }
+
+    /// The bug the write path had and the read path (`get_settings`) already
+    /// fixed: a fresh instance with no `server_settings` row must not have an
+    /// UNRELATED save (one that never mentions chains) persist
+    /// `ServerSettings::default()`'s hardcoded mainnet list into
+    /// `enabled_chain_ids`. That list would then also trip the mainnet guard
+    /// above on every later save, for a value nobody chose.
+    #[tokio::test]
+    #[ignore]
+    async fn an_unrelated_save_on_a_fresh_instance_does_not_persist_mainnet_defaults() {
+        let service = pg_service().await;
+        let pool = service.pool().clone();
+        sqlx::query("DELETE FROM server_settings WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("reset settings");
+
+        let operator = settings_test_user(&pool).await;
+        let state = settings_test_state(service, Some(UserId(operator)));
+
+        let status = update_settings(
+            settings_admin(operator),
+            State(state.clone()),
+            Json(settings_body(None)),
+        )
+        .await
+        .expect("an unrelated save must succeed on a fresh instance");
+        assert_eq!(status, StatusCode::OK);
+
+        // Through the repository, not a raw query: `enabled_chain_ids` is a
+        // `caip2[]` domain column, and sqlx decodes arrays by element type
+        // OID - asking for it as `serde_json::Value` or `Vec<String>` fails
+        // the decode regardless of the values, the exact defect
+        // data-service's own server_settings integration tests exist to
+        // catch. The repository already knows how to read its own column.
+        let saved = state
+            .data_service
+            .get_server_settings()
+            .await
+            .expect("read back settings")
+            .expect("settings row must exist after the save")
+            .enabled_chain_ids;
+        let expected = unconfigured_chain_ids();
+        assert_eq!(
+            saved, expected,
+            "must persist the unconfigured (testnet) set, not ServerSettings::default()'s mainnet list"
+        );
+        assert!(
+            !expected.contains(&ChainId::evm(1)),
+            "sanity: the set we just asserted equals must not itself be the mainnet default"
+        );
 
         sqlx::query("DELETE FROM server_settings WHERE id = 1")
             .execute(&pool)

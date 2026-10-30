@@ -1,0 +1,14 @@
+-- DELIBERATELY EMPTY, and the reason belongs here rather than in a commit.
+--
+-- The up migration changes at most one row and records nothing about which:
+-- after it runs, a sole `server_admin` is indistinguishable from one promoted
+-- through the admin UI a week earlier. A down that demoted "the only admin"
+-- would therefore be as likely to strip a deliberate grant as to undo this,
+-- and its success state is a server nobody can administer - the exact condition
+-- this migration exists to end.
+--
+-- So the reversal is a human decision made in the admin UI, with the roles
+-- visible, and not a statement run by a rollback. Demoting the last admin is
+-- refused there by design (`update_user_role` guards it), which is the same
+-- judgement one level up.
+SELECT 1;

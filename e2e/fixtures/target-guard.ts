@@ -8,13 +8,32 @@
  * (`E2E_REMOTE=true`) is exempt: it targets a deployed environment on purpose.
  *
  * Rules, for each of `E2E_API_URL` and `E2E_BASE_URL`:
- * - the live service's port is refused on any host, with no override;
+ * - the live service's port is refused on any host, with no override. The set
+ *   is `RESERVED_PORTS` below, which `E2E_RESERVED_PORTS` (comma separated) may
+ *   ADD to and can never empty, so the refusal needs no configuration to work;
  * - a loopback host on the harness's own port range is allowed;
  * - anything else needs `E2E_ALLOW_NON_LOCAL_TARGET=true`.
  */
 
-/** The port the live service listens on. Never a valid local test target. */
-export const LIVE_SERVICE_PORT = 3100;
+/**
+ * Ports that are never a valid local test target, whatever the opt-in.
+ *
+ * HARD-CODED, AND THE VARIABLE ONLY ADDS TO IT. This was a lone
+ * `LIVE_SERVICE_PORT = 3100` constant and briefly became "whatever
+ * `E2E_RESERVED_PORTS` says", which is a different and weaker control: with the
+ * variable unset the set was EMPTY, so the no-override refusal below could not
+ * fire at all and the live port fell through to the loopback/range check -
+ * where `E2E_ALLOW_NON_LOCAL_TARGET=true` lets it through. An unconditional
+ * refusal had become an overridable one, and nothing in a run says so.
+ *
+ * A guard that is inert unless somebody sets a variable is not a guard. So the
+ * known port stays in code (it is already published in
+ * `docker/nginx/example.conf`, so this discloses nothing new) and the variable
+ * is a UNION with it: an environment may reserve MORE ports, never fewer.
+ */
+const RESERVED_PORTS: readonly number[] = [3100];
+
+export const RESERVED_PORTS_VARIABLE = 'E2E_RESERVED_PORTS';
 
 /** Ports a local test server or frontend dev server may use. */
 const LOCAL_PORT_RANGES: Record<string, [number, number]> = {
@@ -22,7 +41,8 @@ const LOCAL_PORT_RANGES: Record<string, [number, number]> = {
   E2E_BASE_URL: [8000, 8099],
 };
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+// `URL.hostname` drops the brackets from an IPv6 literal; keep both spellings.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 export const OPT_IN_VARIABLE = 'E2E_ALLOW_NON_LOCAL_TARGET';
 
@@ -32,6 +52,20 @@ type Env = Record<string, string | undefined>;
 export function assertSafeTarget(env: Env): void {
   // Strict compare, as everywhere else: `E2E_REMOTE=false` must not mean remote.
   if (env.E2E_REMOTE === 'true') return;
+
+  // Union, not replacement: the variable can only widen the refusal.
+  const reserved = new Set<number>(RESERVED_PORTS);
+  for (const raw of (env[RESERVED_PORTS_VARIABLE] ?? '').split(',')) {
+    const part = raw.trim();
+    if (part === '') continue;
+    const p = Number(part);
+    if (!Number.isInteger(p) || p <= 0) {
+      throw new Error(
+        `${RESERVED_PORTS_VARIABLE} contains an unparseable entry (${JSON.stringify(part)}): refusing to run in local mode.`,
+      );
+    }
+    reserved.add(p);
+  }
 
   for (const [name, [low, high]] of Object.entries(LOCAL_PORT_RANGES)) {
     const raw = env[name];
@@ -43,7 +77,7 @@ export function assertSafeTarget(env: Env): void {
       throw new Error(`${name} is not a valid URL: refusing to run in local mode`);
     }
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    if (port === LIVE_SERVICE_PORT) {
+    if (reserved.has(port)) {
       throw new Error(
         `${name} names the live service's port (${port}): refusing to run in local mode. ` +
           'There is no override for this.',

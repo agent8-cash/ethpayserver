@@ -7,6 +7,7 @@ pub mod evm_monitor;
 pub mod invoice_cleanup;
 pub mod plugins;
 pub mod settlement;
+pub mod signup_service;
 pub mod watch_reconciler;
 pub mod watch_retry;
 pub mod webhook;

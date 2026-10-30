@@ -98,7 +98,9 @@ E2E_SKIP_AUTH=false \
 
 In local mode (`E2E_REMOTE` not `true`) the harness refuses to start unless
 `E2E_API_URL` is loopback on ports 3000-3099 and `E2E_BASE_URL` is loopback on
-8000-8099. The live service's port is refused on any host with no override.
+8000-8099. The live service's port is built into the guard and always refused,
+on any host, with nothing configured. `E2E_RESERVED_PORTS` (comma separated)
+only adds further ports to that refusal; it can never remove the built-in one.
 Any other target needs `E2E_ALLOW_NON_LOCAL_TARGET=true`. Remote mode is unaffected.
 
 ### Running against testnet from a local machine
@@ -290,7 +292,7 @@ skipped money path is the gap this test exists to close.
 
 ```bash
 E2E_REMOTE=true E2E_SYNTHETIC_PAYMENT=true \
-E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
+E2E_TEST_MNEMONIC="..." E2E_SEPOLIA_RPC_URL=https://... \
   npx playwright test tests/synthetic-payment.spec.ts
 ```
 
@@ -298,7 +300,6 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
 |----------------------------|----------|--------------------------------------------------------------------|
 | `E2E_SYNTHETIC_PAYMENT`    | yes      | `true` to run the spec at all                                      |
 | `E2E_TEST_MNEMONIC`        | yes      | BIP39 phrase — merchant xpub **and** the spending wallet           |
-| `E2E_API_TOKEN`            | yes      | `server_admin` API key (`ak_...`) — creates the store and archives it afterward |
 | `E2E_SEPOLIA_RPC_URL`      | yes      | Sepolia RPC endpoint used to broadcast                             |
 | `E2E_WEBHOOK_PUBLIC_URL`   | no       | Skip the cloudflared quick tunnel and use this base URL instead    |
 | `E2E_WEBHOOK_PORT`         | no       | Bind the sink to a fixed port (pairs with the above)               |
@@ -312,7 +313,9 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
 2. Fund the spending wallet at `m/44'/60'/9'/0/0` from a Sepolia faucet. The test
    prints the address and its balance on every run, and fails with that address
    when the balance hits zero.
-3. Create a user on testnet, mint an API key, store it as `E2E_API_TOKEN`.
+3. Nothing to create on testnet: each run registers its own merchant account
+   (wallet flow, no CAPTCHA) so the per-account volume limit never accumulates.
+   If the server turns CAPTCHA on, registration fails with that message.
 4. Store a Sepolia RPC endpoint as `E2E_SEPOLIA_RPC_URL`.
 5. Set `SENTRY_CRON_E2E_URL` to a Sentry Cron Monitor check-in URL. This is
    required, not optional, and the workflow enforces it — the check-in step
@@ -321,22 +324,39 @@ E2E_TEST_MNEMONIC="..." E2E_API_TOKEN=ak_... E2E_SEPOLIA_RPC_URL=https://... \
    failing one, nor a run that never happens at all ever reached a person,
    which is the whole thing the monitor exists to prevent.
 
-Nothing else needs provisioning: the test creates its own store, payment method
+Nothing else needs provisioning: the test creates its own account, store, payment method
 and webhook config on each run.
 
 ### Why the funds are not burned
 
-The store's xpub is `m/44'/60'/0'` of the same mnemonic, and the server derives
-payment addresses at `0/{index}` beneath it (`evm/src/wallet.rs`). Every address
-it pays into is therefore spendable from `E2E_TEST_MNEMONIC` at
-`m/44'/60'/0'/0/{index}` — the faucet ETH can be swept back to the spender rather
-than being stranded. The spender sits at account index 9 so it can never collide
-with a receive address.
+Each run's store xpub is `m/44'/60'/<run>'` of the same mnemonic, where `<run>`
+is the run's start in Unix seconds, and the server derives payment addresses at
+`0/{index}` beneath it (`evm/src/wallet.rs`). Every address it pays into is
+therefore spendable from `E2E_TEST_MNEMONIC` — the faucet ETH can be swept back
+to the spender with `node scripts/sweep-test-wallet.mjs --account <run>` rather
+than being stranded. Runs before the fresh-account change used account 0. The
+spender sits at account index 9 so it can never collide with a receive address.
+
+**Recovering faucet funds takes one sweep per run.** Each run prints
+`recover its funds with sweep-test-wallet.mjs --account <N>` in its log, and
+`<N>` is also the store name's timestamp as Unix seconds
+(`date -d 2026-10-18T09:38:00Z +%s`). Dry-run each (`--account <N>`), then add
+`--execute`. Run `--account 0` once for everything paid before the change.
 
 ### Deliberate non-cleanup
 
-Each run creates a fresh store (`e2e-synthetic-<timestamp>`) and leaves it
-behind. The derivation index advances per payment method, so reusing one store
+Each run creates a fresh merchant account and store (`e2e-synthetic-<timestamp>`).
+The store is archived by the run (in `afterEach`, pass or fail), but the
+account stays: `DELETE /admin/users/{id}` and `DELETE /users/me` both answer
+**409** ("This account's stores hold ... Deleting it would destroy that
+history, so it is refused", `server/src/api/admin/deletion/account.rs`) once a
+store has taken a payment, which every run does. The daily residue is therefore
+one wallet-only account named `e2e-synthetic-<timestamp>`, permanently, with no
+automated sweeper: `sweep-e2e-accounts.mjs` skips accounts that have a wallet
+address and the server would refuse them anyway. Accounts are tiny rows; an
+operator who minds can ask for a purge path that tolerates settled test
+history, but that is a server change, not a test one.
+The derivation index advances per payment method, so reusing one store
 would couple each run to the last; and on a failure the invoice and its payment
 rows are the evidence. Prune them by hand if testnet gets noisy.
 
@@ -347,13 +367,20 @@ after one passkey registration — screenshotted at a mobile (375x812) and a
 desktop (1280x720) viewport. `scripts/visual-review.mjs` then sends each
 route's pair of screenshots to Claude against a fixed rubric (clipped content,
 an unlabelled control, a raw decimal where a formatted amount belongs, and so
-on) and writes `test-results/visual/report.md`.
+on) and writes `test-results/visual/report.md`. The looking is done by the
+Claude Code CLI (`claude -p`), which reads the PNGs off disk itself.
 
 This is advisory, not a gate — a model judging layout will produce false
-positives, and a check that can go red on one gets disabled. `.github/workflows/
-visual-review-scheduled.yml` runs it nightly against testnet and files (or
-comments on) a `visual-review`-labelled issue only when there is something to
-report; it never fails the build.
+positives, and a check that can go red on one gets disabled. It never fails
+the build.
+
+**The nightly job lives in `central-infrastructure`**
+(`.github/workflows/visual-review-testnet.yml`), not here: it points at a
+deployed service and needs a model credential, which is that repo's business
+and not a public repo's. It checks this repo out at `testnet`, runs the two
+commands below, and files (or comments on) a `visual-review`-labelled issue
+*in this repo* only when there is something to report — the findings are
+public bug reports (see below), the credential is not.
 
 This repo is public, so the issue carries the per-finding "what is wrong"
 text in full, not just counts and routes — the rubric only ever asks about
@@ -366,10 +393,33 @@ and report.md / findings.json stay in the job's own ephemeral workspace,
 since a picture of the live UI adds nothing the text doesn't already say.
 
 A route that could not be captured (a broken passkey registration, a
-navigation timeout) or reviewed (an Anthropic API error) is not silently
-dropped — it lands in `findings.json`'s `errors` array and in `report.md`
-as "could not be reviewed," so a broken run reads as incomplete rather than
-as a clean pass with nothing to say.
+navigation timeout) or reviewed (a CLI failure, output that is not
+the asked-for JSON) is not silently dropped — it lands in `findings.json`'s
+`errors` array and in `report.md` as "could not be reviewed," so a broken run
+reads as incomplete rather than as a clean pass with nothing to say.
+
+**The exit contract:** under `E2E_VISUAL_REVIEW=true` the review script exits
+0 if and only if at least one route was judged. A per-route model error,
+refusal or unparseable answer stays advisory and exits 0 — a model judging
+layout produces false positives, and a check that goes red on one gets
+disabled. But a run that judged *no* route is a broken pipeline, not a verdict
+on the page: an absent credential, a revoked one (every route's call fails), a
+capture that produced nothing. Those exit 1, and nothing is published for them
+— `renderPublicSummary` returns null, so there is no issue body to post and
+not even the errors reach the public issue. The reason is in the job log,
+which is private. An advisory green reading "no route was reviewed" would be
+the nineteen-night failure rebuilt one layer up.
+
+`findings.json` also carries `reviewed`: how many routes were actually
+judged, and `total`: how many the capture step set out to produce (read from
+`expected-routes.json`, null if absent). Every rendering says "N of M routes
+reviewed" and a run with `reviewed < total` is marked INCOMPLETE, so one route
+of eight cannot read as a full clean night. "No findings" is a claim about routes that were looked at, so the
+report may not print it without the count it is out of. That is not a
+hypothetical — between 2026-09-27 and 2026-10-15 nineteen consecutive nightly
+runs filed "No findings among the routes that were reviewed" having reviewed
+none, because the credential they needed existed in no repository and a
+missing one exited 0.
 
 Coverage is checked against the client router, not the sidebar:
 `fixtures/client-routes.txt` is a copy of the list payserver-client tests
@@ -385,8 +435,18 @@ nobody reviews has no business slowing down every push. Run it explicitly:
 
 ```bash
 E2E_REMOTE=true E2E_VISUAL_REVIEW=true npx playwright test tests/visual-review.spec.ts
-ANTHROPIC_API_KEY=... node scripts/visual-review.mjs
+CLAUDE_CODE_OAUTH_TOKEN=... node scripts/visual-review.mjs
 ```
 
-`ANTHROPIC_API_KEY` is the only new secret this needs; without it the review
-script logs and exits cleanly rather than failing.
+`CLAUDE_CODE_OAUTH_TOKEN` is the credential — the same one the agent jobs
+already use, which is the point: this script spent its first nineteen nightly
+runs asking for an `ANTHROPIC_API_KEY` that existed in no repository and that
+nobody had to create for the step to go green. Without it the review script
+logs and exits cleanly locally, but under `E2E_VISUAL_REVIEW=true` (as the
+scheduled job sets it) it exits 1 — a missing credential there is a broken
+pipeline, not an empty run.
+
+`VISUAL_REVIEW_MODEL`, `VISUAL_REVIEW_TIMEOUT_MS` (per route, default 300000)
+and `VISUAL_REVIEW_CLAUDE_BIN` (a stand-in CLI, which is how
+`tests/visual-review-main.spec.ts` runs the real script without a credential)
+are the knobs.

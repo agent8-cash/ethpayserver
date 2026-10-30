@@ -11,13 +11,91 @@ use auth::{
 
 use super::{PgDataService, sqlx_to_auth_error};
 
+/// Serialises the "is this the first account on this server" decision.
+///
+/// An arbitrary constant, and it only has to be unique among advisory locks this
+/// codebase takes - it is the only one today. It is a named constant rather than
+/// a literal in the query so that a second user of advisory locks collides at
+/// compile time with something greppable instead of at runtime with a deadlock.
+const FIRST_ACCOUNT_LOCK: i64 = 0x7263_735f_6669_7273;
+
 #[async_trait]
 impl UserRepository for PgDataService {
+    /// Create an account.
+    ///
+    /// THE FIRST ACCOUNT ON A SERVER BECOMES ITS ADMINISTRATOR, which is the
+    /// rule BTCPay Server uses and the reason it needs no bootstrap step. Before
+    /// this, nothing in the codebase ever wrote `server_admin`: the role could
+    /// only be granted through the admin UI, which requires an existing admin to
+    /// reach, so a fresh database had no path to one and plugin install, user
+    /// management and server settings were unreachable. Testnet hit that twice in
+    /// two days and both times the way out was UPDATE typed against production.
+    ///
+    /// THE DECISION IS SERIALISED BY AN ADVISORY LOCK, and the lock is the whole
+    /// of the guarantee. Putting the emptiness test inside the INSERT removes the
+    /// read-then-write gap but gives NO mutual exclusion: under READ COMMITTED
+    /// two concurrent inserts each evaluate `NOT EXISTS (SELECT 1 FROM users)`
+    /// before either commits, both see an empty table, and both write
+    /// `server_admin`. The first version of this function claimed the single
+    /// statement was enough and was wrong - caught in review.
+    ///
+    /// So the insert runs in a transaction that first takes
+    /// `pg_advisory_xact_lock(FIRST_ACCOUNT_LOCK)`. The second registration
+    /// blocks until the first commits, then sees the row and takes `user`.
+    /// Exactly one account can win. The lock is released by the commit, costs one
+    /// round trip, and only ever contends with another registration - which is a
+    /// rare operation and the one place serialising is the point.
+    ///
+    /// `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` would also work and blocks
+    /// more than it needs to; a unique partial index cannot express "only the
+    /// first".
+    ///
+    /// IT ONLY EVER UPGRADES THE DEFAULT ROLE. An explicit `server_admin` passes
+    /// through untouched, so test fixtures and any future "create this user as
+    /// X" path keep saying what they mean, and a plain `user` is never silently
+    /// demoted.
+    ///
+    /// TWO THINGS IT DOES NOT DO, both deliberate:
+    ///
+    /// - It does not keep `user.role` in step. The caller's struct still says
+    ///   whatever it said, so a registration response can report `user` for the
+    ///   account that just became an admin. Every authorisation decision reads
+    ///   the ROW (`validate_api_key`, the session lookup), so the grant is in
+    ///   force on the next request and the staleness is cosmetic. Fixing it
+    ///   properly means `create_user` returning the effective role, which is a
+    ///   signature in `payserver-commons` and a pinned-revision change.
+    /// - It does not close the window on a PUBLIC server. Between a fresh deploy
+    ///   and the operator registering, whoever registers first becomes the
+    ///   administrator. That is first-come-wins working as specified, not a race:
+    ///   the lock above makes "first" well defined, so exactly one account is
+    ///   promoted and never two. Closing the window itself needs a bootstrap that
+    ///   is not first-come - a token minted at first start, or a deploy-time flag
+    ///   - and that is a decision about mainnet rather than a detail of this
+    ///   function. WHAT SHIPS BESIDE IT, in this same change, is the scheduled
+    ///   end-to-end suite refusing a server it cannot prove has accounts
+    ///   (`e2e-scheduled.yml`). That suite fires on a cron and registers accounts
+    ///   of its own, so on a server wiped before it fired, a synthetic account
+    ///   could have been promoted - and the account sweeper refuses to delete a
+    ///   `server_admin`, so it would have been undeletable. An earlier version of
+    ///   this comment claimed testnet's bring-up registers the operator first;
+    ///   nothing did, and the guard is there instead of the claim. The window on a
+    ///   PUBLIC server is still open by design, and closing it needs the bootstrap
+    ///   that is not first-come.
     async fn create_user(&self, user: &User) -> Result<()> {
         let kdf_params = serde_json::to_value(&user.kdf_params)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
         let encrypted_key = serde_json::to_value(&user.encrypted_symmetric_key)
             .map_err(|e| AuthError::Repository(e.to_string()))?;
+
+        // One transaction: the lock must be held while the emptiness test runs and
+        // released only once the row is committed, which is exactly an
+        // xact-scoped advisory lock's lifetime.
+        let mut tx = self.pool.begin().await.map_err(sqlx_to_auth_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(FIRST_ACCOUNT_LOCK)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_to_auth_error)?;
 
         sqlx::query(
             r#"
@@ -25,7 +103,12 @@ impl UserRepository for PgDataService {
                 id, email, primary_wallet_address, kdf_salt_identifier, kdf_params,
                 encrypted_symmetric_key, recovery_verification_hash, created_at,
                 last_login_at, failed_login_attempts, locked_until, role
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                CASE
+                    WHEN $12 = 'user' AND NOT EXISTS (SELECT 1 FROM users)
+                        THEN 'server_admin'
+                    ELSE $12
+                END)
             "#,
         )
         .bind(user.id.0)
@@ -40,9 +123,11 @@ impl UserRepository for PgDataService {
         .bind(user.failed_login_attempts as i32)
         .bind(user.locked_until)
         .bind(user.role.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(sqlx_to_auth_error)?;
+
+        tx.commit().await.map_err(sqlx_to_auth_error)?;
 
         Ok(())
     }

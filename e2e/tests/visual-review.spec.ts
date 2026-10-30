@@ -23,6 +23,7 @@ import {
   STORE_DETAIL,
   tabCaptureName,
   captureGaps,
+  expectedCaptures,
   unstyledReason,
 } from '../fixtures/visual-review-routes';
 
@@ -76,6 +77,9 @@ test.beforeAll(async ({ browser }) => {
 test.afterAll(async () => {
   if (!RUN) return;
   fs.writeFileSync(path.join(VISUAL_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  // The denominator for the judge: how many routes this run set out to
+  // capture, so a partial review cannot read as a complete one.
+  fs.writeFileSync(path.join(VISUAL_DIR, 'expected-routes.json'), JSON.stringify({ routes: expectedCaptures() }, null, 2));
   console.log(`\n=== VISUAL REVIEW: ${manifest.length} capture(s), ${manifest.filter(m => m.error).length} error(s) ===`);
   for (const m of manifest) {
     console.log(m.error ? `  [ERROR] ${m.route} (${m.viewport}): ${m.error}` : `  ${m.route} (${m.viewport}) -> ${m.file}`);

@@ -34,9 +34,58 @@ env:
   E2E_API_URL: https://testnet.random.cash
 
 jobs:
+  server-not-empty:
+    name: Refuse a wiped server
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # THE FIRST ACCOUNT ON A SERVER BECOMES ITS ADMINISTRATOR, so this suite
+      # must never be the thing that registers it. On a server wiped before
+      # 05:37 the specs below would register synthetic accounts, the first of
+      # them would be promoted, and sweep-e2e-accounts.mjs refuses to delete a
+      # server_admin - leaving an undeletable synthetic administrator and the
+      # operator back to typing SQL, which is the outcome the rule exists to
+      # remove.
+      #
+      # THE CREDENTIAL IS THE PROBE. E2E_API_TOKEN belongs to an account on the
+      # server, so `GET /admin/users` answering 200 means that account still
+      # exists, which means the server is not empty. No separate "how many
+      # accounts" endpoint is needed and none exists unauthenticated.
+      #
+      # IT FAILS CLOSED. 401 is the wiped case (the account is gone) and is also
+      # how a revoked or rotated token reads; both mean do not register. Any
+      # other status, a timeout, or an unreadable body is CANNOT TELL, which is
+      # also a refusal - a guard that proceeds when it cannot see is not a
+      # guard. The only path that continues is a 200.
+      - name: The admin credential must still resolve
+        env:
+          E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
+        run: |
+          if [ -z "$E2E_API_TOKEN" ]; then
+            echo "::error title=E2E_API_TOKEN unset::Cannot tell whether the server has accounts, so the suite will not register into it."
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -m 20 --retry 2 -w '%{http_code}' \
+            -H "Authorization: Bearer $E2E_API_TOKEN" \
+            "$E2E_API_URL/api/admin/users?limit=1&offset=0" || echo 000)
+          case "$code" in
+            200)
+              echo "the admin credential resolves - the server has accounts, proceeding"
+              ;;
+            401)
+              echo "::error title=Server looks wiped::GET /admin/users answered 401, so the account behind E2E_API_TOKEN no longer exists. Register the operator first; this suite must not become the server administrator."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Cannot tell::GET /admin/users answered $code. Refusing to register into a server whose account state cannot be read."
+              exit 1
+              ;;
+          esac
+
   browser:
     name: Playwright vs testnet
     runs-on: ubuntu-latest
+    needs: server-not-empty
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +152,7 @@ jobs:
   synthetic-payment:
     name: Synthetic payment (Sepolia)
     runs-on: ubuntu-latest
+    needs: server-not-empty
     timeout-minutes: 30
     # Independent of `browser`: a broken checkout page must not hide a broken
     # money path, and vice versa.
@@ -130,13 +180,40 @@ jobs:
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
+      # Option to remove the quick-tunnel dependency: a named tunnel, run from a
+      # connector token, whose public hostname is routed (in the Cloudflare
+      # dashboard) to http://localhost:8788. Skipped when the token is unset,
+      # in which case the sink falls back to a best-effort quick tunnel.
+      - name: Start named tunnel
+        env:
+          TUNNEL_TOKEN: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+        # The secret is tested here, not in an `if:`: a step's own `env` is not
+        # visible to its `if`, so such a guard would always skip the step.
+        run: |
+          if [ -z "$TUNNEL_TOKEN" ]; then
+            echo "no named tunnel token; the sink will use a quick tunnel"
+            exit 0
+          fi
+          nohup cloudflared tunnel --no-autoupdate run > "$RUNNER_TEMP/named-tunnel.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            grep -q 'Registered tunnel connection' "$RUNNER_TEMP/named-tunnel.log" && exit 0
+            sleep 2
+          done
+          echo "::error::named tunnel did not register a connection within 60s"
+          cat "$RUNNER_TEMP/named-tunnel.log"
+          exit 1
+
       - name: Invoice → on-chain tx → paid → webhook
         working-directory: e2e
         env:
           E2E_SYNTHETIC_PAYMENT: "true"
           E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
-          E2E_API_TOKEN: ${{ secrets.E2E_API_TOKEN }}
           E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}
+          # Base URL of the named tunnel started above, which forwards to
+          # E2E_WEBHOOK_PORT. Unset falls back to a best-effort quick tunnel,
+          # whose provisioning can be refused by Cloudflare.
+          E2E_WEBHOOK_PUBLIC_URL: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN != '' && secrets.E2E_WEBHOOK_PUBLIC_URL || '' }}
+          E2E_WEBHOOK_PORT: ${{ secrets.E2E_CLOUDFLARED_TUNNEL_TOKEN != '' && secrets.E2E_WEBHOOK_PUBLIC_URL != '' && '8788' || '' }}
         run: npx playwright test tests/synthetic-payment.spec.ts
 
       - name: Upload report
@@ -188,11 +265,14 @@ jobs:
         env:
           BROWSER: ${{ needs.browser.result }}
           SYNTHETIC: ${{ needs.synthetic-payment.result }}
+          TRIGGER: ${{ github.event_name }}
         with:
           script: |
             const title = 'Scheduled E2E: testnet is failing';
             const body = [
-              'The daily E2E run against https://testnet.random.cash failed.',
+              process.env.TRIGGER === 'schedule'
+                ? 'The daily E2E run against https://testnet.random.cash failed.'
+                : `A manually dispatched (${process.env.TRIGGER}) E2E run against https://testnet.random.cash failed. This is not the daily scheduled run.`,
               '',
               `- Playwright suite: **${process.env.BROWSER}**`,
               `- Synthetic payment: **${process.env.SYNTHETIC}**`,

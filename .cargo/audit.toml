@@ -1,20 +1,58 @@
-# Ignored advisories — all in upstream transitive deps we can't control.
-# Review periodically and remove once upstream fixes land.
+# Every entry below is checked by scripts/check-advisory-ignores.sh (plus the
+# two narrower guards it defers to for wasmtime and zip): it fails once the
+# advisory is fixed upstream or the crate it names is no longer reachable from
+# any workspace member. Twelve entries this covered were already dead —
+# fixed upstream, or never reachable in the first place — and were removed in
+# the same change that added the check. Each surviving entry names the crate,
+# the path that pulls it in, and the condition under which it stops applying,
+# so the next review does not start from "upstream transitive dep".
 [advisories]
 ignore = [
-    "RUSTSEC-2026-0007", # upstream transitive dep
-    "RUSTSEC-2022-0083", # unmaintained crate in dep tree
-    "RUSTSEC-2026-0037", # upstream transitive dep
-    "RUSTSEC-2026-0001", # upstream transitive dep
-    "RUSTSEC-2023-0071", # upstream transitive dep
-    "RUSTSEC-2025-0137", # upstream transitive dep
-    "RUSTSEC-2026-0049", # upstream transitive dep
-    "RUSTSEC-2026-0009", # upstream transitive dep
-    "RUSTSEC-2024-0388", # upstream transitive dep (warning)
-    "RUSTSEC-2024-0436", # upstream transitive dep (warning)
-    "RUSTSEC-2026-0012", # upstream transitive dep (warning)
-    "RUSTSEC-2026-0002", # lru unsoundness (via alloy-provider)
-    "RUSTSEC-2026-0235", # rkyv 0.7 via rust_decimal's optional `rkyv` feature — not enabled, never compiled
+    # paste is unmaintained (no patched version will ever land - the
+    # advisory's own [versions] is empty). Pulled in by
+    # paste <- alloy-primitives <- auth (payserver-commons) <- data-service,
+    # server. Stops applying only if that path drops paste - alloy forking
+    # away from it, or commons dropping alloy-primitives.
+    "RUSTSEC-2024-0436", # paste unmaintained - see the note above
+    # zip < 9.0.0, reached only by utoipa-swagger-ui's build script, which
+    # unpacks the Swagger UI dist vendored inside that crate. All three are
+    # extraction advisories - symlink targets and permission bits - so they
+    # describe a risk to whoever extracts an archive they did not author.
+    # scripts/check-zip-ignores.sh fails if any non-build edge reaches zip, if
+    # a dependent it does not name appears, or once the lock reaches 9.0.0.
+    "RUSTSEC-2026-0367", # zip extraction: symlink targets not validated
+    "RUSTSEC-2026-0368", # zip extraction: symlink targets not validated
+    "RUSTSEC-2026-0369", # zip extraction: privileged permission bits
+    # MAINNET BLOCKER. Timing variability in operations crypto-bigint
+    # intends to be constant-time (published 2026-10-23, fixed upstream at
+    # >=0.7.6). EXPIRES 2026-11-23 or any mainnet deploy, whichever is sooner -
+    # re-run `cargo update -p crypto-bigint --precise 0.7.6 --dry-run` then;
+    # if elliptic-curve/k256/alloy have moved to a compatible chain by then,
+    # take the bump instead of renewing this.
+    #
+    # PATH: crypto-bigint 0.5.5 -> elliptic-curve 0.13.8 -> {ecdsa 0.16.9 ->
+    # k256 0.13.4, alloy-signer 1.8.3} -> evm/server. Bump attempted and
+    # confirmed to cascade 2026-10-24: elliptic-curve 0.13.8 pins
+    # `crypto-bigint = "^0.5"` and will not take 0.7.x; alloy 1.8.3 is
+    # upstream's current latest (`cargo update -p alloy` locks 0 packages),
+    # so there is no available path today that does not wait on alloy and
+    # the whole RustCrypto chain to publish compatible new majors.
+    #
+    # WHY NOT EXPLOITABLE HERE, traced through every real (non-test) caller,
+    # not asserted: the only code that feeds a derived private key into a
+    # crypto-bigint-adjacent operation is evm/src/transaction.rs
+    # (send_native_transfer and its sibling, via HdWallet::derive_private_key).
+    # That module is gated behind the `hot-wallet` feature (evm/Cargo.toml),
+    # which is absent from `default = []`, never passed by any CI workflow,
+    # and documented in the module's own header as reserved for "a possible
+    # future hot-wallet mode - a deliberate product decision that has not
+    # been made". The deployed binary never compiles it in. The other real
+    # k256 usage (server/src/api/users/wallets.rs's verify_wallet_signature)
+    # is ECDSA signature RECOVERY from a signature the user's own wallet
+    # already produced - a public operation on public inputs, nothing secret
+    # to leak via timing. derive_private_key's only other callers are its own
+    # unit tests.
+    "RUSTSEC-2026-0387", # crypto-bigint timing variability - see the note above
     # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any

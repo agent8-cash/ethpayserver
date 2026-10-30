@@ -91,6 +91,18 @@ pub(super) async fn pre_migration_db_for(
     (pool, name, server_url)
 }
 
+/// A throwaway database with EVERY migration applied.
+///
+/// The stem sorts after every real migration, so the `take_while` above runs
+/// out of files rather than stopping early - which is how a caller asks for
+/// "today's schema, in a database nobody else is writing to". Needed by any test
+/// whose subject reads the WHOLE of a table (`SELECT ... FROM users` with no
+/// user id), because on the shared test database another test's rows decide the
+/// answer.
+pub(super) async fn fully_migrated_db(suffix: &str) -> (PgPool, String, String) {
+    pre_migration_db_for("zzzzzzzz_after_every_migration", suffix).await
+}
+
 pub(super) async fn drop_db(pool: PgPool, name: &str, server_url: &str) {
     pool.close().await;
     let admin = PgPool::connect(server_url).await.expect("connect admin");

@@ -1,0 +1,497 @@
+# Forgejo copy of .github/workflows/ci.yml - the GATE only, on the rcs-docker
+# runner.
+#
+# Six of the twelve jobs are here: Lint, Client pin drift, E2E static checks,
+# Test, Audit and Build. The three that branch protection requires - Lint, Test
+# and Audit - are among them, so what a merge is gated on can be measured here.
+#
+# What is NOT ported, and why. Each is a measured platform gap, not a choice:
+#   - `Test`: it needs Postgres and Redis as service containers, and this runner
+#     cannot create them - measured 2026-10-17, and the numbers are beside the
+#     place the job used to be. Two of branch protection's three required checks
+#     run here; this is the third, so a green run on this forge is not yet
+#     evidence that a merge is safe.
+#   - `E2E`: it consumes the binaries `Build` uploads, and actions/upload-artifact
+#     fails on rcs-docker (measured 2026-10-16 with a probe workflow). With no
+#     artifact handoff there is nothing for it to download. `Build`'s upload step
+#     is dropped here for the same reason - it still proves the workspace
+#     compiles in release.
+#   - `Docker`: it needs a reachable docker daemon to build, and keyless cosign
+#     proves identity with a GitHub OIDC token. rcs-docker has the docker CLI and
+#     no daemon socket (unprivileged, by design), and Forgejo issues no such
+#     token, so keyless signing cannot work here at all.
+#   - the deploy chain (`Notify Deploy`, `Verify testnet deploy`, the status
+#     jobs): each fires a repository_dispatch at the private deploy repository,
+#     and this Forgejo release has no repository_dispatch.
+# The scheduled workflows (audit, e2e, health monitor, loadtest) are not ported
+# either: they need secrets that are not provisioned here yet, and a nightly red
+# run on a forge nobody watches is worse than no run.
+#
+# All of that still runs on GitHub, which reads only .github/workflows while
+# Forgejo reads only .forgejo/workflows, so the two coexist and neither platform
+# runs the same job twice.
+#
+# `uses:` lines carry full URLs where the action is not published on
+# code.forgejo.org - a form GitHub rejects, which is why this is a copy and not
+# a move.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, testnet]
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: rcs-docker
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the session-URL guard scans a commit range.
+          fetch-depth: 0
+
+      # This repository is public. A ticket id in a source file leaks the
+      # title and shape of unreleased work, and an outside reader cannot open
+      # the tracker anyway. Ticket ids belong in the commit message and PR
+      # title, not the tree - see CLAUDE.md.
+      - name: No ticket ids or tracker links in source
+        run: ./scripts/check-no-ticket-refs.sh
+
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+
+      - name: Install mold linker
+        run: |
+          # apt on hosted runners hangs often enough to matter: a stuck
+          # `apt-get update` held the pipeline for 30+ minutes against a
+          # 3-hour job timeout. Bound each attempt and retry.
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              && timeout 180 sudo apt-get install -y mold \
+              && break
+            echo "::warning::apt attempt $attempt failed or timed out; retrying"
+            sleep 15
+            if [ "$attempt" = 3 ]; then echo "::error::apt failed 3 times"; exit 1; fi
+          done
+
+      # A committed Cargo.lock that does not carry the pinned revision means
+      # someone ran `scripts/commons.sh link` and committed the result. That
+      # silently un-pins commons for everyone and restores exactly the
+      # non-reproducible builds the pin removed - and it looks like nothing.
+      - name: Commons pin matches the lock file
+        run: |
+          REV="$(grep -m1 -oP 'rev = "\K[0-9a-f]{40}' Cargo.toml)"
+          if [ -z "$REV" ]; then
+            echo "::error::no payserver-commons rev pinned in Cargo.toml"
+            exit 1
+          fi
+          # Per crate, and the crate name has to be in the match. Grepping only
+          # for the revision proves that SOME entry is pinned, which a partial
+          # un-pin passes: `types` pinned, `auth` left as a path entry, green.
+          for CRATE in api-types types auth crypto rates scrub; do
+            if ! awk -v c="$CRATE" -v r="$REV" '
+                 /^\[\[package\]\]/ { name=""; src="" }
+                 /^name = / { gsub(/[",]/,""); name=$3 }
+                 /^source = / { src=$0 }
+                 name == c && src ~ r { found=1 }
+                 END { exit !found }' Cargo.lock; then
+              echo "::error::Cargo.lock does not pin $CRATE at $REV."
+              echo "Run 'scripts/commons.sh unlink' and commit the regenerated Cargo.lock."
+              exit 1
+            fi
+          done
+          echo "commons pinned at $REV in both Cargo.toml and Cargo.lock"
+
+      # Proves the guard below actually goes red and green on the cases it
+      # claims to, against a real throwaway commons history built on the fly -
+      # not a comment asserting someone ran it once by hand.
+      - name: Commons pin guard self-test
+        run: scripts/check-commons-pin.test.sh
+
+      # A cross-repo ticket pins commons by the commons PR's branch sha before
+      # that PR merges. Merge ethpayserver first (or just forget to re-pin)
+      # and the workspace ends up pinned to a commit that only exists on the
+      # commons branch - which a squash merge then deletes, taking the commit
+      # with it. Nothing fails at merge time; the build stays green until the
+      # next clean checkout tries to resolve the pin and finds nothing there.
+      # Commons is public, so this needs no token.
+      - name: Commons pin is on commons main
+        run: scripts/check-commons-pin.sh
+
+      # A collision here is not a naming nit: sqlx keys applied migrations by
+      # the version in the filename, so the second file to claim a version is
+      # refused on every startup from then on, not just the first. Two branches
+      # opened the same afternoon can each be green alone and only collide once
+      # both have merged - which is exactly what two branches did on 2026-09-15.
+      # Commit messages, not just files. CLAUDE.md has forbidden session URLs
+      # in commits since long before this check existed, and 58 commits carry
+      # one anyway - the rule was written down and nothing read it. Needs the
+      # full history, hence fetch-depth 0 on the checkout above.
+      - name: No session URLs in commits or source
+        env:
+          BASE_REF: origin/${{ github.base_ref || 'testnet' }}
+        run: |
+          git fetch -q origin "${{ github.base_ref || 'testnet' }}" || true
+          ./scripts/check-no-session-urls.sh
+
+      - name: Session URL guard self-test
+        run: ./scripts/check-no-session-urls.test.sh
+
+      # A 2026-09-14 audit found 26 files over 400 lines; nine days later, with
+      # no check in between, that was 47 - despite split tickets landing in the
+      # same window. The existing backlog doesn't fail the build (that would
+      # fail on all 47 the day this lands and get switched off in a week); what
+      # fails is a file getting worse in this change, which is exactly the
+      # pattern that let the backlog double.
+      #
+      # On push, github.base_ref is unset, so the naive fallback resolves to
+      # origin/testnet - and a push straight to testnet fetches the ref this
+      # job's own checkout just became, so that diff is empty by construction
+      # and the ratchet never fires on the trigger that matters most: a push
+      # landing right before it deploys. github.event.before is the sha the
+      # branch pointed at immediately before this push, which can never equal
+      # HEAD (there would be no push event to fire), and fetch-depth: 0 above
+      # already pulled it down as an ancestor - no extra fetch needed.
+      #
+      # merge_group has the same shape of problem as push: github.base_ref is
+      # only populated for pull_request(_target) events, so without a case of
+      # its own this falls through to the literal 'testnet' regardless of what
+      # the merge queue is actually testing against - a diff against the wrong
+      # baseline that still resolves and still looks green, not an empty one
+      # that would at least be visibly suspicious. github.event.merge_group's
+      # base_sha is the exact commit the queue is merging into; it needs no
+      # origin/ prefix and no extra fetch, since fetch-depth: 0 above already
+      # has it as an ancestor of the queue's merge commit.
+      #
+      # The remaining case - pull_request - resolves origin/<base_ref>
+      # (e.g. origin/testnet) with no fetch of its own either. That isn't
+      # reliant on the "No session URLs" step's manual `git fetch` above
+      # despite running right after it: `fetch-depth: 0` on the checkout at
+      # the top of this job makes actions/checkout use the refspec
+      # `+refs/heads/*:refs/remotes/origin/*`, which pulls every branch - not
+      # just the ref that triggered the run - so origin/<base_ref> already
+      # resolves before any step in this job runs, this one included, run in
+      # any order.
+      - name: No file grows past the line limit
+        env:
+          BASE_REF: ${{ github.event_name == 'push' && github.event.before || github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'testnet') }}
+        run: ./scripts/check-file-size.sh
+
+      - name: File size guard self-test
+        run: ./scripts/check-file-size.test.sh
+
+      - name: Migration versions are distinct
+        run: ./scripts/check-migrations.sh
+
+      - name: Migration guard self-test
+        run: ./scripts/check-migrations.test.sh
+
+      # Deleting a test cannot fail a test run, so a merge that resolves a test
+      # file to an older copy can drop the very tests a change is justified by
+      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # this fails if a named test in them vanishes undeclared. See the script.
+      - name: Cited tests still exist
+        env:
+          BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
+        run: |
+          export BASE_REF="origin/$BASE_BRANCH"
+          git fetch -q origin "$BASE_BRANCH"
+          ./scripts/check-test-inventory.sh
+
+      - name: Test inventory guard self-test
+        run: ./scripts/check-test-inventory.test.sh
+
+      # A database test helper that returns on a missing or unreachable
+      # database makes "ran" and "skipped" the same output. See the script.
+      - name: Database tests fail loudly, never skip
+        run: ./scripts/check-test-db-skips.sh
+
+      - name: Database-skip guard self-test
+        run: ./scripts/check-test-db-skips.test.sh
+
+      # A scope check with no test driving it in both directions is how a key
+      # came to exceed its owner without any test noticing. See the script for
+      # what it does and does not prove.
+      - name: Scope-gated call sites are tested both ways
+        run: ./scripts/check-scope-call-sites.sh
+
+      - name: Scope call-site guard self-test
+        run: ./scripts/check-scope-call-sites.test.sh
+
+      # Proves check-health-deep.sh - the between-deploys watchdog for
+      # /health/deep - actually goes red on the failure modes it claims to
+      # catch (a stalled RPC, a monitor gone stale, its own state-tracking
+      # erroring), against a real local HTTP server rather than a comment
+      # asserting someone ran it once.
+      - name: Health check guard self-test
+        run: ./scripts/check-health-deep.test.sh
+
+      # The deploy gate decides whether a cutover is allowed to stand, and CI
+      # runs it post-deploy - so every refusal branch in it was code nobody had
+      # ever seen refuse anything. Same reasoning as the guard self-test above.
+      - name: Deploy health gate self-test
+        run: ./scripts/health-gate.test.sh
+
+      # The build steps below refuse to compile with an empty SENTRY_RELEASE,
+      # but github.sha is never empty in normal operation - so nothing
+      # organically exercises the failing branch. Proves the guard itself
+      # goes red and green on the cases it claims to, rather than shipping a
+      # check nobody ever saw refuse anything.
+      - name: Sentry release guard self-test
+        run: ./scripts/check-sentry-release.test.sh
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Non-blocking on purpose. ops/client-image.pin only has to be non-empty to
+  # pass the rest of CI, so it can fall arbitrarily far behind
+  # payserver-client's main without anything noticing - e2e keeps passing
+  # because the old client still matches the old selectors, and whoever
+  # eventually bumps the pin inherits every failure that drift was hiding. A
+  # hard failure here would block unrelated PRs the moment the client moved,
+  # which is how a check like that gets disabled; a warning keeps the drift
+  # visible without holding anything up.
+  client-pin-drift:
+    name: Client pin drift
+    runs-on: rcs-docker
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check pin distance from payserver-client main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # This job's whole point is "warn, not fail" - every lookup below is
+          # guarded by an emptiness check that falls back to a warning. Actions
+          # runs steps under `bash -eo pipefail`, which would abort the script
+          # on the first failed curl/jq/grep *before* that guard ever runs, so
+          # turn both off and let the guards do the job they were written for.
+          set +e +o pipefail
+
+          CLIENT_REPO="randomcash/payserver-client"
+          # Arbitrary but documented: past this many commits behind, e2e is
+          # exercising a client build old enough that a shipped feature has no
+          # coverage. Raise or lower it here if it fires too often or too
+          # rarely.
+          MAX_COMMITS_BEHIND=20
+
+          CLIENT_IMAGE="$(grep -v '^[[:space:]]*#' ops/client-image.pin | tr -d '[:space:]')"
+          if [ -z "$CLIENT_IMAGE" ]; then
+            echo "::warning::ops/client-image.pin is empty, skipping drift check"
+            exit 0
+          fi
+
+          PIN_SHA="${CLIENT_IMAGE##*:sha-}"
+          if [ "$PIN_SHA" = "$CLIENT_IMAGE" ] || [ -z "$PIN_SHA" ]; then
+            echo "::warning::ops/client-image.pin ($CLIENT_IMAGE) is not a sha-<commit> tag, cannot measure drift against $CLIENT_REPO main"
+            exit 0
+          fi
+
+          # --max-time bounds a stalled/slow API call: without it, curl can hang
+          # past this job's timeout-minutes and get killed as a failed step -
+          # exactly the hard failure this check exists to avoid.
+          api() { curl -sf --max-time 10 -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${CLIENT_REPO}/$1"; }
+
+          CURRENT_SHA="$(api branches/main | jq -r '.commit.sha // empty')"
+          if [ -z "$CURRENT_SHA" ]; then
+            echo "::warning::could not resolve $CLIENT_REPO main, skipping drift check"
+            exit 0
+          fi
+          CURRENT_TAG="sha-${CURRENT_SHA:0:7}"
+
+          AHEAD_BY="$(api "compare/${PIN_SHA}...${CURRENT_SHA}" | jq -r '.ahead_by // empty')"
+          if [ -z "$AHEAD_BY" ]; then
+            echo "::warning::could not compare ops/client-image.pin (sha-$PIN_SHA) against $CLIENT_REPO main, skipping drift check"
+            exit 0
+          fi
+
+          echo "pinned:   sha-$PIN_SHA"
+          echo "current:  $CURRENT_TAG"
+          echo "distance: $AHEAD_BY commit(s) behind main"
+
+          if [ "$AHEAD_BY" -gt "$MAX_COMMITS_BEHIND" ]; then
+            echo "::warning::ops/client-image.pin is $AHEAD_BY commits behind payserver-client main (pinned sha-$PIN_SHA, current $CURRENT_TAG) - past $MAX_COMMITS_BEHIND, e2e may no longer exercise what the client actually ships. Bump it: sed -i '\$ s|.*|ghcr.io/randomcash/payserver-client:$CURRENT_TAG|' ops/client-image.pin"
+          fi
+
+  # The full `e2e` job below needs a built server, a live Postgres/Redis and a
+  # trunk-served frontend, so it only runs once a branch actually lands (see
+  # its own `if:`) - a regression in e2e/tests/*.spec.ts's pure logic is
+  # otherwise invisible until then, not at PR time. Some of that logic needs
+  # none of that: route-coverage.spec.ts only reads scout.spec.ts as text,
+  # visual-review-report.spec.ts only exercises plain functions, and
+  # visual-review-main.spec.ts spawns visual-review.mjs as a subprocess
+  # against a stand-in script in place of the Claude Code CLI - none of the
+  # three touches a browser or the server/DB stack. Running them here, with
+  # E2E_REMOTE=true so playwright.config.ts skips its `webServer` entries
+  # entirely, catches a regression before merge without paying for what none
+  # of them touches.
+  e2e-static-checks:
+    name: E2E static checks
+    runs-on: rcs-docker
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Run static e2e tests
+        working-directory: e2e
+        env:
+          E2E_REMOTE: "true"
+        run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts
+
+  # `test` IS NOT PORTED, and this is the one gap that keeps the gate from being
+  # the gate here. It needs Postgres and Redis as service containers, and this
+  # runner cannot create them. Measured on 2026-10-17, per job, on the run that
+  # produced the rest of this file's green:
+  #
+  #   Lint 20m pass | Client pin drift 11s pass | E2E static 2m pass
+  #   Build 31m pass | Audit pass
+  #   Test 2s FAIL   <- declares services
+  #   a throwaway probe declaring the same two services: 10s FAIL
+  #
+  # Two for two against five for five, with the difference stated in the
+  # workflow rather than inferred. So Test stays on GitHub until the runner can
+  # reach a docker daemon, or until a Postgres and a Redis exist on the host for
+  # a job to connect to - at which point this job comes back, reading
+  # DATABASE_URL and TEST_REDIS_URL instead of declaring containers.
+  #
+  # Branch protection's required checks are Lint, Test and Audit. Two of the
+  # three run here; the third does not, so a green run on this forge is NOT yet
+  # evidence that a merge is safe.
+
+
+  # Runs on pull requests too, deliberately. This used to be branch-only, so a
+  # dependency a PR introduced was invisible until after it merged - and then
+  # it did not fail anything, it made the deploy jobs skip. That is exactly how
+  # the plugin runtime's cranelift crates (Apache-2.0 WITH LLVM-exception,
+  # which deny.toml did not allow) reached testnet on 2026-09-15 and stopped
+  # deploys: every check on that PR was green, because the job that would have
+  # objected could not run on a PR.
+  audit:
+    name: Audit
+    runs-on: rcs-docker
+    timeout-minutes: 30
+    needs: [lint]
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+      - name: Install audit tools
+        run: cargo install cargo-audit cargo-deny --locked
+      # The wasmtime ignores in .cargo/audit.toml hold only while wasmtime is
+      # built without its GC heap and component model, and only until a fixed
+      # release is locked. See the script.
+      - name: wasmtime ignore guard self-test
+        run: ./scripts/check-wasmtime-ignores.test.sh
+      - name: wasmtime ignores still valid
+        run: ./scripts/check-wasmtime-ignores.sh
+      # cargo audit reads the lockfile, which lists crates no target builds.
+      # This blocks on an advisory in a crate in the build graph and only
+      # reports one that is lockfile-only; the job output labels each.
+      - name: audit build-graph self-test
+        run: ./scripts/audit-build-graph.test.sh
+      - name: cargo audit (build graph blocks, lockfile-only reports)
+        run: ./scripts/audit-build-graph.sh
+      - name: cargo deny
+        run: cargo deny check licenses sources
+
+  build:
+    name: Build
+    runs-on: rcs-docker
+    timeout-minutes: 60
+    # Deliberately no `needs`. Build and E2E used to queue behind Lint, Audit
+    # and Test, so E2E - not the longest job, just the last - landed its whole
+    # runtime at the end of a serial chain, and a formatting slip cost a full
+    # cycle before E2E had even started. They now run alongside those jobs.
+    #
+    # What the old `needs` protected was publishing: a push whose tests fail
+    # must not build, push an image and deploy. That gate moved to `docker`,
+    # which still needs [lint, audit, test, build]. Building a binary that is
+    # then thrown away publishes nothing.
+    #
+    # Also runs on pull_request: e2e (below) needs these binaries.
+    #
+    # `merge_group` included, and it is a precondition for switching the queue
+    # on rather than a tidy-up. A queue run's ref is
+    # `refs/heads/gh-readonly-queue/...` and its event is `merge_group`, so
+    # without that arm `build` and `e2e` are SKIPPED on the merged result, and
+    # since a queue lands a pull request without re-running its own checks,
+    # nothing would ever build or end-to-end test what actually merges.
+    # `docker` keeps its branch/tag-only `if:` - a queue run must not push or
+    # sign an image.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testnet' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@v4
+
+
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          shared-key: build-release
+
+      - name: Install mold
+        run: |
+          # apt on hosted runners hangs often enough to matter: a stuck
+          # `apt-get update` held the pipeline for 30+ minutes against a
+          # 3-hour job timeout. Bound each attempt and retry.
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              && timeout 180 sudo apt-get install -y mold \
+              && break
+            echo "::warning::apt attempt $attempt failed or timed out; retrying"
+            sleep 15
+            if [ "$attempt" = 3 ]; then echo "::error::apt failed 3 times"; exit 1; fi
+          done
+
+      # SENTRY_RELEASE has to be a real env var at compile time: the binaries
+      # read it with `option_env!`, which resolves when rustc runs and never
+      # sees anything set later (a runtime env var, a Docker ENV on a base
+      # image, etc). Same 7 chars as `sha_tag` and `EXPECTED_SHA` below, so
+      # the release Sentry shows matches the build_sha the deploy check
+      # verifies against.
+      - name: Build server
+        env:
+          SENTRY_RELEASE: ${{ github.sha }}
+        run: |
+          export SENTRY_RELEASE="${SENTRY_RELEASE::7}"
+          ./scripts/check-sentry-release.sh "$SENTRY_RELEASE"
+          cargo build --release --bin ethpayserver
+          cargo build --release --bin migrate_postgres
+
+      - name: Build monitor
+        env:
+          SENTRY_RELEASE: ${{ github.sha }}
+        run: |
+          export SENTRY_RELEASE="${SENTRY_RELEASE::7}"
+          ./scripts/check-sentry-release.sh "$SENTRY_RELEASE"
+          cargo build --release --bin evmmonitor --features monitor-bin

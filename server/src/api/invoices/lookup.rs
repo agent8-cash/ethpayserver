@@ -10,12 +10,13 @@ use auth::{SessionService, repository::UserStoreRepository};
 use data_service::PaymentOptionReader;
 
 use super::{InvoiceResponse, TxHashLookupResponse, VIEW_INVOICES, customer_email_of};
+use crate::api::api_key_hash::is_hex_bytes;
 use crate::api::extractors::{StoreScopedUser, key_grants_store_permission};
 use crate::state::PgAppState;
 
 /// Validate a tx hash: must be 0x followed by 64 hex characters.
 pub(crate) fn is_valid_tx_hash(hash: &str) -> bool {
-    hash.len() == 66 && hash.starts_with("0x") && hash[2..].chars().all(|c| c.is_ascii_hexdigit())
+    is_hex_bytes(hash, 32)
 }
 
 /// Path parameters for tx hash lookup.
