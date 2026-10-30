@@ -168,4 +168,58 @@ git commit -q --allow-empty -m "cite
 Cites-Tests: src/cases.rs"
 check "cited file with no recognised tests is refused" 1 "no tests recognised"
 
+# A rename candidate must be new to the whole base, not merely absent from
+# the one file's own base names - otherwise a deleted test with a common
+# body is excused by an unrelated test that already existed elsewhere.
+git checkout -q base
+git checkout -q -b collide
+cat > src/collide_a.rs <<'RS'
+#[test]
+fn dropped_one() { assert!(true); }
+RS
+printf '#[test]\nfn pre_existing() { assert!(true); }\n' > src/collide_b.rs
+commit "base for collision case"
+git branch -f base
+: > src/collide_a.rs
+commit "merge drops dropped_one; collide_b's pre_existing has the same body"
+check "a same-bodied test that already existed elsewhere does not excuse a deletion" 1 "dropped_one"
+
+# A single new test must not excuse two deletions that share its body.
+git checkout -q base
+git checkout -q -b pair
+cat > src/pair.rs <<'RS'
+#[test]
+fn drop_x() { assert!(true); }
+
+#[test]
+fn drop_y() { assert!(true); }
+RS
+commit "base for pair case"
+git branch -f base
+printf '#[test]\nfn new_one() { assert!(true); }\n' > src/pair.rs
+commit "drop two identically-bodied tests, add only one"
+check "one new test cannot excuse two identically-bodied deletions" 1 "drop_y"
+
+# A brace inside a string or char literal must not desync the body scan and
+# swallow the test that follows it - in the base (silently unprotected) or
+# in the head (false "deleted").
+git checkout -q base
+git checkout -q -b literals
+cat > src/unbalanced.rs <<'RS'
+#[test]
+fn unmatched_brace_in_string() { assert!("{".len() == 1); }
+
+#[test]
+fn unmatched_brace_in_char() { let c = '{'; assert!(true); }
+
+#[test]
+fn trailing_after_literals() { assert!(true); }
+RS
+commit "base with braces inside literals"
+git branch -f base
+sed -i '/trailing_after_literals/,$d;' src/unbalanced.rs
+sed -i '$d' src/unbalanced.rs  # drop the dangling attribute
+commit "drop the trailing test"
+check "a test after an unbalanced brace in a string or char literal is still seen" 1 "trailing_after_literals"
+
 [ "$fail" -eq 0 ] && echo "all cases behaved" || exit 1

@@ -46,7 +46,12 @@
 # #[sqlx::test], #[rstest] or similar, with any other attributes (such as
 # #[ignore]) in between. Matching is by name across all tracked .rs files, so
 # a deleted test whose name is also used elsewhere counts as present: that is
-# the price of treating a move as not-a-deletion.
+# the price of treating a move as not-a-deletion. A rename candidate must
+# additionally be new to the merge base across every tracked file, not merely
+# absent from the one file's own base names, and each candidate excuses at
+# most one missing name - otherwise a deleted test with a common body (an
+# empty body, a one-line assert) is waved through against an unrelated test
+# that already existed, or against a single new test that two drops share.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -70,10 +75,24 @@ touched="$(git diff --name-only --no-renames --diff-filter=MD "$base" HEAD -- '*
 # brackets balance; a test whose attribute is not read to the end is invisible,
 # which is exactly the silent pass this exists to prevent.
 test_names() {
-  awk '
+  # ponytail: strip() does not handle a backslash-escaped quote inside a
+  # string/char literal (e.g. "a\"b" or the char literal for a quote mark
+  # itself) or a block comment - no reviewer finding named those, and the
+  # real incidents were a plain brace in a string/char literal or a line
+  # comment. Upgrade to escape-aware scanning if a test body needs one.
+  awk -v sq="'" '
+    function strip(s) {
+      gsub(/"[^"]*"/, "\"\"", s)
+      gsub(sq "[^" sq "]" sq, sq sq, s)
+      gsub(/\/\/.*/, "", s)
+      return s
+    }
     # Output is "name<TAB>body with whitespace removed", so a rename in place
-    # can be told from a deletion.
+    # can be told from a deletion. Braces inside a string literal, a char
+    # literal or a line comment are stripped first so they cannot desync the
+    # depth count and swallow every test that follows.
     function feed(text,   i, ch) {
+      text = strip(text)
       for (i = 1; i <= length(text); i++) {
         ch = substr(text, i, 1)
         if (ch == "{") { bd++; seen = 1 } else if (ch == "}") bd--
@@ -126,6 +145,17 @@ test_names() {
 head_tests="$(git ls-files -z -- '*.rs' | xargs -0 cat | test_names | sort -u)" || exit 1
 head_names="$(cut -f1 <<<"$head_tests")"
 
+# Every test name that already existed anywhere at the merge base. A rename
+# candidate must be absent from this, not merely absent from the one file's
+# own base names - otherwise a deleted test with a common body (an empty
+# body, a one-line assert) is "renamed" to an unrelated test that already
+# existed somewhere else in the tree, and the deletion passes silently.
+base_names_global="$(
+  { git ls-tree -r --name-only "$base" | grep '\.rs$' || true; } |
+    while IFS= read -r f; do git show "$base:$f" 2>/dev/null; done |
+    test_names | sort -u | cut -f1
+)" || exit 1
+
 # Files to check: "cited" files are strict, "touched" ones are skipped when
 # they hold no tests.
 files="$( { printf '%s\n' "$cited"; printf '%s\n' "$touched"; } | sed '/^$/d' | sort -u)"
@@ -134,13 +164,24 @@ if [ -z "$files" ]; then
   exit 0
 fi
 
-# Prints the name of a head test with this body whose name did not exist in
-# the file at the merge base: the new name of a test renamed in place.
-renamed_to() { # body base_names
-  B="$1" awk -F'\t' '$2 == ENVIRON["B"] { print $1 }' <<<"$head_tests" |
-    while IFS= read -r cand; do
-      grep -qxF -- "$cand" <<<"$2" || { echo "$cand"; break; }
-    done
+# Sets REN_TO to the name of a head test with this body that did not exist
+# anywhere at the merge base: the new name of a test renamed in place. Not a
+# command substitution - it has to mutate used_renames in this shell, not a
+# subshell, so that two deleted tests sharing one body cannot both be excused
+# by the same single candidate.
+declare -A used_renames=()
+renamed_to() { # body
+  local B="$1" cand
+  REN_TO=""
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    [ -n "${used_renames[$cand]:-}" ] && continue
+    grep -qxF -- "$cand" <<<"$base_names_global" && continue
+    used_renames["$cand"]=1
+    REN_TO="$cand"
+    return 0
+  done <<<"$(B="$B" awk -F'\t' '$2 == ENVIRON["B"] { print $1 }' <<<"$head_tests")"
+  return 1
 }
 
 fail=0
@@ -187,8 +228,8 @@ while IFS= read -r file; do
       continue
     }
     body="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' <<<"$base_tests")"
-    if [ -n "$body" ] && to="$(renamed_to "$body" "$base_names")" && [ -n "$to" ]; then
-      echo "ok: $name renamed to $to in $file"
+    if [ -n "$body" ] && renamed_to "$body"; then
+      echo "ok: $name renamed to $REN_TO in $file"
       continue
     fi
     missing+=("$name")
