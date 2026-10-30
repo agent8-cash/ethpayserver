@@ -424,7 +424,7 @@ This is advisory, not a gate — a model judging layout will produce false
 positives, and a check that can go red on one gets disabled. It never fails
 the build.
 
-**The nightly job lives in `central-infrastructure`**
+**The nightly job lives in the private deploy repository**
 (`.github/workflows/visual-review-testnet.yml`), not here: it points at a
 deployed service and needs a model credential, which is that repo's business
 and not a public repo's. It checks this repo out at `testnet`, runs the two
