@@ -27,9 +27,10 @@ use server::{
     metrics,
 };
 use server::{
-    DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginArtifacts,
-    PluginHost, PluginPools, account_closed_observers, host_version, invoice_creation_filters,
-    load_installed_plugins, own_store_payment_reporting, payment_observers, report_boot,
+    DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginAccountNotifier,
+    PluginArtifacts, PluginHost, PluginPools, account_closed_observers, host_version,
+    invoice_creation_filters, load_installed_plugins, own_store_payment_reporting,
+    payment_observers, report_boot,
 };
 
 use server::tracing_init::init_tracing;
@@ -526,15 +527,11 @@ async fn main() -> Result<()> {
         tracing::info!("plugins may read an account's stored standing");
     }
 
-    // Capability 7 (`account_notice`): tell an account something, through a
-    // channel and an address the plugin never names. Published
-    // unconditionally, like `standing` and unlike `issuer` - it needs the
-    // instance's own user directory and email sender, not an operator store,
-    // and every instance has both.
-    let notifier: Arc<dyn server::services::plugins::AccountNotifier> = Arc::new(
-        server::services::plugins::PluginAccountNotifier::new(state.clone()),
-    );
-    if plugin_capabilities.notifier.publish(notifier) {
+    // Capability 7 (`account_notice`), unconditional like `standing`.
+    if plugin_capabilities
+        .notifier
+        .publish(Arc::new(PluginAccountNotifier::new(state.clone())))
+    {
         tracing::info!("plugins may ask the host to notify an account");
     }
 
