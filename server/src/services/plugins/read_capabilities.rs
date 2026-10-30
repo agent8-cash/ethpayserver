@@ -17,23 +17,30 @@ pub fn publish_unconditional_capabilities<A: SessionService + 'static>(
 ) {
     // One reader answers the single and batched forms, each under its own cell.
     let volume_reader = Arc::new(PluginMerchantVolume::new(state.clone()));
-    if capabilities.volume.publish(volume_reader.clone()) {
-        tracing::info!("plugins may read what an account settled over a window");
-    }
-    if capabilities.bulk_volume.publish(volume_reader) {
-        tracing::info!("plugins may read what many accounts settled in one call");
-    }
-
+    announce(
+        capabilities.volume.publish(volume_reader.clone()),
+        "plugins may read what an account settled over a window",
+    );
+    announce(
+        capabilities.bulk_volume.publish(volume_reader),
+        "plugins may read what many accounts settled in one call",
+    );
     // Read-only: a plugin can read a standing and has no import to write one.
-    if capabilities.standing.publish(state.data_service.clone()) {
-        tracing::info!("plugins may read an account's stored standing");
-    }
-
+    announce(
+        capabilities.standing.publish(state.data_service.clone()),
+        "plugins may read an account's stored standing",
+    );
     // Tells an account something through a channel and address the plugin never names.
-    if capabilities
-        .notifier
-        .publish(Arc::new(PluginAccountNotifier::new(state.clone())))
-    {
-        tracing::info!("plugins may ask the host to notify an account");
+    announce(
+        capabilities
+            .notifier
+            .publish(Arc::new(PluginAccountNotifier::new(state.clone()))),
+        "plugins may ask the host to notify an account",
+    );
+}
+
+fn announce(published: bool, what: &str) {
+    if published {
+        tracing::info!("{what}");
     }
 }
