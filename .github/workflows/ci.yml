@@ -186,7 +186,8 @@ jobs:
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
-      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # with CI green. Every .rs file the change touches is checked (a Cites-Tests
+      # trailer adds files the diff does not show);
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
         env:
