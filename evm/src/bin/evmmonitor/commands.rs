@@ -189,6 +189,30 @@ pub(crate) async fn handle_commands(
                 }
             }
 
+            MonitorCommand::RescanFrom(cmd) => {
+                info!(
+                    chain_id = cmd.chain_id,
+                    from_block = cmd.from_block,
+                    watches = cmd.watches.len(),
+                    "rescan command"
+                );
+
+                if let Some(monitor) = coordinator.get_chain(cmd.chain_id).await {
+                    if let Err(e) = monitor.rescan_from(cmd.from_block, cmd.watches).await {
+                        error!(
+                            chain_id = cmd.chain_id,
+                            error = %e,
+                            "rescan refused or failed"
+                        );
+                    }
+                } else {
+                    warn!(
+                        chain_id = cmd.chain_id,
+                        "chain not monitored by this instance"
+                    );
+                }
+            }
+
             MonitorCommand::GetStatus(cmd) => {
                 info!(chain_id = ?cmd.chain_id, "get status command");
 
