@@ -526,6 +526,18 @@ async fn main() -> Result<()> {
         tracing::info!("plugins may read an account's stored standing");
     }
 
+    // Capability 7 (`account_notice`): tell an account something, through a
+    // channel and an address the plugin never names. Published
+    // unconditionally, like `standing` and unlike `issuer` - it needs the
+    // instance's own user directory and email sender, not an operator store,
+    // and every instance has both.
+    let notifier: Arc<dyn server::services::plugins::AccountNotifier> = Arc::new(
+        server::services::plugins::PluginAccountNotifier::new(state.clone()),
+    );
+    if plugin_capabilities.notifier.publish(notifier) {
+        tracing::info!("plugins may ask the host to notify an account");
+    }
+
     // Capability 5. `PageHost` is built empty by `AppState::new` and has
     // never had a production renderer registered in it, so every plugin page
     // request 404'd - correct for a host with nothing to draw, and
