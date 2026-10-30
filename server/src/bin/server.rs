@@ -555,10 +555,16 @@ async fn main() -> Result<()> {
     tracing::info!(?rate_limit_config, "Rate limiting configured");
     let rate_limiters = Arc::new(RateLimitState::from_config(&rate_limit_config));
 
-    // Create idempotency state (shares the existing Redis connection)
-    let idempotency = match api::idempotency::IdempotencyState::from_env(redis_url).await {
+    // Create idempotency state. Connecting to Redis happens in the
+    // background with retry (see `IdempotencyState::from_env`), so this only
+    // fails on a malformed `redis_url` - the middleware mounts below either
+    // way and passes requests through unchanged until Redis answers.
+    let idempotency = match api::idempotency::IdempotencyState::from_env(redis_url) {
         Ok(idem) => {
-            tracing::info!(ttl_secs = idem.ttl_secs, "Idempotency middleware enabled");
+            tracing::info!(
+                ttl_secs = idem.ttl_secs,
+                "Idempotency middleware mounted, connecting to Redis in the background"
+            );
             Some(Arc::new(idem))
         }
         Err(e) => {
