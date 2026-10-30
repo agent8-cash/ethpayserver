@@ -1,8 +1,8 @@
 # The payserver-client image this payserver TESTS AGAINST.
 #
-# Not the one it deploys: the frontend deploys on its own cadence,
-# from payserver-client via central-infrastructure. This pin exists so E2E runs
-# against a known frontend rather than a moving target.
+# Not the one it deploys: the frontend deploys on its own cadence, via the
+# private deploy repository. This pin exists so E2E runs against a known
+# frontend rather than a moving target.
 #
 # The frontend lives in its own repository (gcannelloni/payserver-client) and
 # publishes its own image, so it no longer shares this repo's commit sha. This
