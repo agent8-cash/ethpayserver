@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Signs an image digest with cosign, and on failure names the thing that
+# failed - signing - instead of the digest guard that already passed above
+# it. Before this, `cosign sign` ran directly in the workflow step with no
+# error of its own: a failure there (eg the public Sigstore transparency log
+# being unreachable) aborted the step under `set -e` with nothing but the
+# generic "exit code 1" to go on, and the only `::error::` line anywhere in
+# the step belonged to the digest guard two lines above - which had already
+# passed. That pointed debugging at the registry, which was healthy.
+#
+# TLOG_UPLOAD selects whether the signature is recorded in the public
+# Sigstore transparency log (Rekor), which has no SLA - see
+# compute-image-tags.sh for why mainnet keeps it and testnet/main do not.
+#
+# Usage: cosign-sign.sh <image-name> <digest> <tlog_upload: true|false>
+set -euo pipefail
+
+IMAGE_NAME="${1:-}"
+DIGEST="${2:-}"
+TLOG_UPLOAD="${3:-}"
+
+[ -n "$IMAGE_NAME" ] || { echo "::error::cosign-sign.sh called with no image name" >&2; exit 1; }
+[ -n "$DIGEST" ] || { echo "::error::no digest for the $IMAGE_NAME image" >&2; exit 1; }
+case "$TLOG_UPLOAD" in
+  true|false) ;;
+  *) echo "::error::cosign-sign.sh called with tlog_upload='$TLOG_UPLOAD' for the $IMAGE_NAME image, want true or false" >&2; exit 1 ;;
+esac
+
+if ! cosign sign --yes --tlog-upload="$TLOG_UPLOAD" "$DIGEST"; then
+  echo "::error::cosign sign failed for the $IMAGE_NAME image (digest $DIGEST, tlog_upload=$TLOG_UPLOAD)" >&2
+  exit 1
+fi

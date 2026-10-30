@@ -238,6 +238,19 @@ jobs:
       - name: Sentry release guard self-test
         run: ./scripts/check-sentry-release.test.sh
 
+      # Proves the testnet/mainnet split below - which ref keeps the
+      # Sigstore transparency-log upload and which drops it - actually
+      # follows the ref rather than a comment asserting someone checked it.
+      - name: Image tag guard self-test
+        run: ./scripts/compute-image-tags.test.sh
+
+      # Proves a signing failure (eg the transparency log being unreachable)
+      # produces an error naming signing, not the digest guard that already
+      # passed - nothing in normal CI operation exercises cosign failing, so
+      # nothing organically proves this.
+      - name: Cosign sign guard self-test
+        run: ./scripts/cosign-sign.test.sh
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -910,27 +923,22 @@ jobs:
 
       - name: Compute image tags
         id: tag
-        run: |
-          # Two tags per build. The moving one (testnet-latest) is
-          # what humans pull; the per-commit one is never reused, so the
-          # previous build keeps a name after the next push and rolling back
-          # is a `compose up` instead of revert -> rebuild -> redeploy.
-          # 7 chars matches `git rev-parse --short`, i.e. the build_sha the
-          # server reports on /health — so a running container can be matched
-          # to the image it came from.
-          echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}-latest" >> "$GITHUB_OUTPUT"
-          fi
+        # See scripts/compute-image-tags.sh for the tag scheme and for why
+        # tlog_upload - whether the signature below is recorded in the
+        # public Sigstore transparency log - differs between a release tag
+        # and everything else.
+        run: ./scripts/compute-image-tags.sh "${{ github.ref }}" "${{ github.ref_name }}" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       # Signed by DIGEST, never by tag. A tag is a moving pointer: signing
       # `:testnet-latest` says "something called that was signed once", which is
       # not a statement about the bytes anyone actually pulls. The digest is the
       # bytes. `cosign verify` on a tag resolves it to a digest and checks that,
       # so verifying by tag still works for humans.
+      #
+      # scripts/cosign-sign.sh does the signing and, on failure, names signing
+      # in the error rather than the digest guard above it - see that script
+      # for why: a Sigstore outage used to abort here with nothing to tell a
+      # reader it wasn't the registry.
       - name: Build & push server
         run: |
           docker build -f docker/ethpayserver.Dockerfile \
@@ -939,8 +947,7 @@ jobs:
           docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.tag }}
           docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }}
           DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the server image"; exit 1; }
-          cosign sign --yes "$DIGEST"
+          ./scripts/cosign-sign.sh server "$DIGEST" "${{ steps.tag.outputs.tlog_upload }}"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build & push monitor
@@ -951,8 +958,7 @@ jobs:
           docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.tag }}
           docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }}
           DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the monitor image"; exit 1; }
-          cosign sign --yes "$DIGEST"
+          ./scripts/cosign-sign.sh monitor "$DIGEST" "${{ steps.tag.outputs.tlog_upload }}"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
   # staging (main) + production (tags) deploy via SSH push — see central-infrastructure/deploy.yml
