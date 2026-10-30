@@ -261,61 +261,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Proves the guard itself goes red on a client repo that cannot resolve
+      # (a stale/wrong owner, a 404) instead of warning and skipping - nothing
+      # in normal operation exercises that branch, since CLIENT_REPO is
+      # normally correct. Same reasoning as the other guard self-tests above.
+      - name: Client pin drift guard self-test
+        run: ./scripts/check-client-pin-drift.test.sh
+
       - name: Check pin distance from payserver-client main
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          # This job's whole point is "warn, not fail" - every lookup below is
-          # guarded by an emptiness check that falls back to a warning. Actions
-          # runs steps under `bash -eo pipefail`, which would abort the script
-          # on the first failed curl/jq/grep *before* that guard ever runs, so
-          # turn both off and let the guards do the job they were written for.
-          set +e +o pipefail
-
-          CLIENT_REPO="randomcash/payserver-client"
-          # Arbitrary but documented: past this many commits behind, e2e is
-          # exercising a client build old enough that a shipped feature has no
-          # coverage. Raise or lower it here if it fires too often or too
-          # rarely.
-          MAX_COMMITS_BEHIND=20
-
-          CLIENT_IMAGE="$(grep -v '^[[:space:]]*#' ops/client-image.pin | tr -d '[:space:]')"
-          if [ -z "$CLIENT_IMAGE" ]; then
-            echo "::warning::ops/client-image.pin is empty, skipping drift check"
-            exit 0
-          fi
-
-          PIN_SHA="${CLIENT_IMAGE##*:sha-}"
-          if [ "$PIN_SHA" = "$CLIENT_IMAGE" ] || [ -z "$PIN_SHA" ]; then
-            echo "::warning::ops/client-image.pin ($CLIENT_IMAGE) is not a sha-<commit> tag, cannot measure drift against $CLIENT_REPO main"
-            exit 0
-          fi
-
-          # --max-time bounds a stalled/slow API call: without it, curl can hang
-          # past this job's timeout-minutes and get killed as a failed step -
-          # exactly the hard failure this check exists to avoid.
-          api() { curl -sf --max-time 10 -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${CLIENT_REPO}/$1"; }
-
-          CURRENT_SHA="$(api branches/main | jq -r '.commit.sha // empty')"
-          if [ -z "$CURRENT_SHA" ]; then
-            echo "::warning::could not resolve $CLIENT_REPO main, skipping drift check"
-            exit 0
-          fi
-          CURRENT_TAG="sha-${CURRENT_SHA:0:7}"
-
-          AHEAD_BY="$(api "compare/${PIN_SHA}...${CURRENT_SHA}" | jq -r '.ahead_by // empty')"
-          if [ -z "$AHEAD_BY" ]; then
-            echo "::warning::could not compare ops/client-image.pin (sha-$PIN_SHA) against $CLIENT_REPO main, skipping drift check"
-            exit 0
-          fi
-
-          echo "pinned:   sha-$PIN_SHA"
-          echo "current:  $CURRENT_TAG"
-          echo "distance: $AHEAD_BY commit(s) behind main"
-
-          if [ "$AHEAD_BY" -gt "$MAX_COMMITS_BEHIND" ]; then
-            echo "::warning::ops/client-image.pin is $AHEAD_BY commits behind payserver-client main (pinned sha-$PIN_SHA, current $CURRENT_TAG) - past $MAX_COMMITS_BEHIND, e2e may no longer exercise what the client actually ships. Bump it: sed -i '\$ s|.*|ghcr.io/gcannelloni/payserver-client:$CURRENT_TAG|' ops/client-image.pin"
-          fi
+        run: ./scripts/check-client-pin-drift.sh
 
   # The full `e2e` job below needs a built server, a live Postgres/Redis and a
   # trunk-served frontend, so it only runs once a branch actually lands (see
@@ -494,12 +450,29 @@ jobs:
         run: ./scripts/audit-build-graph.test.sh
       - name: cargo audit (build graph blocks, lockfile-only reports)
         run: ./scripts/audit-build-graph.sh
+      # .cargo/audit.toml's ignore list can only grow stale: fails once an
+      # ignored advisory is fixed upstream, or its crate is no longer
+      # reachable from any workspace member. Runs after the build-graph audit
+      # above so the advisory db it fetched is already warm (--no-fetch here).
+      - name: advisory ignores self-test
+        run: ./scripts/check-advisory-ignores.test.sh
+      - name: advisory ignores still needed
+        run: ./scripts/check-advisory-ignores.sh
       - name: cargo deny
         run: cargo deny check licenses sources
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Pinned to match `e2e`'s runner (see the comment on that job). `e2e`
+    # runs this job's binary directly on its own runner's glibc/OpenSSL,
+    # not inside a container - so letting this float on ubuntu-latest while
+    # e2e is pinned reintroduced the outage one step later: a binary built
+    # on 26.04 refused to start on 24.04 ("libcrypto.so.3: version
+    # 'OPENSSL_3.2.0' not found"), which read as a server crash rather than
+    # a runner mismatch. `docker` also consumes this binary but is unaffected:
+    # it only copies it into an archlinux:base image, whose OpenSSL is newer
+    # than anything a 24.04-built binary asks for.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Deliberately no `needs`. Build and E2E used to queue behind Lint, Audit
     # and Test, so E2E - not the longest job, just the last - landed its whole
@@ -619,7 +592,15 @@ jobs:
   # server-side change that breaks e2e without touching `e2e/` itself.
   e2e:
     name: E2E
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest, and only this job: it is the only one that
+    # installs a Playwright browser (see "Install Playwright browsers"
+    # below). GitHub moved ubuntu-latest to 24.04 -> 26.04 and the pinned
+    # Playwright version below does not support installing chromium on
+    # 26.04-x64 ("Playwright does not support chromium on ubuntu26.04-x64"),
+    # which took every job on this runner image red, everywhere, at once.
+    # Re-floating this to ubuntu-latest reintroduces that outage the next
+    # time GitHub moves the image again.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [build]
     # The frontend image comes from another repository, so this job pulls it
@@ -816,6 +797,10 @@ jobs:
           curl -sf http://localhost:8080/api/health/live \
             || { echo "::error::frontend proxy is not reaching the API"; docker logs e2e-frontend; exit 1; }
 
+      # e2e/package.json pins @playwright/test to an exact version (no
+      # caret) that supports installing chromium on this job's pinned
+      # ubuntu-24.04 runner (see the `runs-on` comment above) - keep the two
+      # pins moving together.
       - name: Install Playwright browsers
         working-directory: e2e
         run: npx playwright install --with-deps chromium
