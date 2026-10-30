@@ -583,7 +583,15 @@ jobs:
   # server-side change that breaks e2e without touching `e2e/` itself.
   e2e:
     name: E2E
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest, and only this job: it is the only one that
+    # installs a Playwright browser (see "Install Playwright browsers"
+    # below). GitHub moved ubuntu-latest to 24.04 -> 26.04 and the pinned
+    # Playwright version below does not support installing chromium on
+    # 26.04-x64 ("Playwright does not support chromium on ubuntu26.04-x64"),
+    # which took every job on this runner image red, everywhere, at once.
+    # Re-floating this to ubuntu-latest reintroduces that outage the next
+    # time GitHub moves the image again.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [build]
     # The frontend image comes from another repository, so this job pulls it
@@ -780,6 +788,10 @@ jobs:
           curl -sf http://localhost:8080/api/health/live \
             || { echo "::error::frontend proxy is not reaching the API"; docker logs e2e-frontend; exit 1; }
 
+      # e2e/package.json pins @playwright/test to an exact version (no
+      # caret) that supports installing chromium on this job's pinned
+      # ubuntu-24.04 runner (see the `runs-on` comment above) - keep the two
+      # pins moving together.
       - name: Install Playwright browsers
         working-directory: e2e
         run: npx playwright install --with-deps chromium
