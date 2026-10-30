@@ -360,6 +360,56 @@ The derivation index advances per payment method, so reusing one store
 would couple each run to the last; and on a failure the invoice and its payment
 rows are the evidence. Prune them by hand if testnet gets noisy.
 
+## Post-merge payment flow (`tests/payment-flow-postmerge.spec.ts`)
+
+Runs on every merge to `testnet` (`e2e-postmerge-testnet` in `ci.yml`, gated
+on `deploy-verify-testnet` succeeding first), not on a schedule. Two named
+tests, one per asset: native Sepolia ETH and Sepolia USDC (an ERC-20) — each
+does invoice -> pay -> settle -> webhook -> payout against the live
+deployment, so a broken flow on either the native or the token path fails the
+pipeline instead of reaching users.
+
+The payout step is two API calls, `POST /stores/{id}/payouts` and
+`POST /stores/{id}/payouts/{id}/settle` — this server never signs or
+broadcasts a transaction (`server/src/api/payouts.rs`), so "payout" here means
+the merchant's own record of having swept the funds, verified against the
+invoice by `assertPayoutCoversInvoice`/`assertPayoutSettled`
+(`fixtures/payment-flow-assertions.ts`). `tests/payment-flow-assertions.spec.ts`
+runs those two functions against deliberately broken inputs and checks they
+throw — that file runs in `e2e-static-checks` on every PR, so a change that
+quietly weakens the payout check fails long before a live run against real
+Sepolia would notice.
+
+It is **off unless `E2E_POSTMERGE_PAYMENT=true`**, same reasoning as
+`synthetic-payment.spec.ts`: it spends real testnet funds and needs secrets.
+
+```bash
+E2E_REMOTE=true E2E_POSTMERGE_PAYMENT=true \
+E2E_TEST_MNEMONIC="..." E2E_SEPOLIA_RPC_URL=https://... \
+  npx playwright test tests/payment-flow-postmerge.spec.ts
+```
+
+It reuses `E2E_TEST_MNEMONIC`/`E2E_SEPOLIA_RPC_URL` from the synthetic-payment
+setup above, but **its own spender account index (10), not 9**: this job and
+the nightly one can both be live around the same merge, and two processes
+broadcasting from the same address read the same pending nonce, so the second
+transaction replaces the first instead of paying its own invoice.
+
+### One-time setup beyond what synthetic-payment already needs
+
+1. Fund the spending wallet at `m/44'/60'/10'/0/0` (account index **10**, not
+   9) with Sepolia ETH, the same way as step 2 under Synthetic payment above —
+   the native-ETH leg spends it directly and the USDC leg spends it as gas.
+2. Fund the **same address** with a small amount of Sepolia USDC (one cent is
+   enough per run) from
+   [Circle's testnet faucet](https://faucet.circle.com) — select "Ethereum
+   Sepolia". The token contract is already seeded in this server's database
+   (`data-service/migrations/postgres/20260920000000_sepolia_tokens.sql`,
+   `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`), so nothing else needs
+   provisioning for the ERC-20 leg to resolve a symbol.
+3. Nothing else: like the nightly suite, each run registers its own merchant
+   account and store, one per asset leg.
+
 ## Nightly visual review (`tests/visual-review.spec.ts`, `scripts/visual-review.mjs`)
 
 The routes scout.spec.ts already reaches — unauthenticated, then authenticated
