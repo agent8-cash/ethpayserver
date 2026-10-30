@@ -17,6 +17,7 @@ use auth::AuthenticationService;
 
 use crate::state::PgAppState;
 
+pub mod account_notices;
 pub mod admin;
 pub mod api_key_deprecation;
 pub mod api_key_hash;
@@ -272,6 +273,10 @@ where
         // Core, not a plugin's: the standing gates invoice creation, so it is
         // stored by the host and lands whether or not any plugin is loaded.
         .route("/entitlements", entitlements::route::<A>())
+        // Core too, for the same reason capability 7 itself is host-side: a
+        // plugin cannot hold a recipient address, and this route is how a
+        // service with a clock reaches it without one.
+        .route("/account-notices", account_notices::route::<A>())
         .with_state(state.clone());
 
     // Dashboard endpoint
