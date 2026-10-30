@@ -127,12 +127,13 @@ that are not in CI's path. Several people have lost an hour to this.
   unification with `server` happens to fix it) - naming the one binary this
   step needs avoids tripping over that.
 
-## Security- and funds-critical code
+## Sensitive paths
 
-Auth, crypto, on-chain interaction, wallet/key handling, migrations, and
-anything touching movement of funds deserve extra care.
+Auth, crypto, wallet and key derivation, migrations, and anything touching
+movement of funds.
 
-Work in it normally, but say so prominently in the commit message.
+Work in them normally, but say so prominently in the commit message. These are
+human-reviewed without exception.
 
 ## Conventions that bite
 
