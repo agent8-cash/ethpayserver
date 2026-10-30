@@ -44,6 +44,16 @@ pub struct ChainMonitorConfig {
     pub monitor_native: bool,
     /// Whether to detect ERC20 transfers.
     pub monitor_erc20: bool,
+    /// Largest `[from_block, tip]` window a `RescanFrom` command may cover.
+    ///
+    /// Unlike [`crate::monitor::BACKFILL_MAX_BLOCKS`], which chunks a scan
+    /// the monitor has already accepted, this is a refusal threshold: a
+    /// cursor from a long-dead deployment can name a height millions of
+    /// blocks back, and scanning that is unbounded cost (one RPC call per
+    /// block for native transfers alone). A window wider than this is
+    /// refused outright rather than partially scanned, so a caller cannot
+    /// mistake a truncated scan for a complete one.
+    pub rescan_max_blocks: u64,
 }
 
 impl Default for ChainMonitorConfig {
@@ -56,6 +66,7 @@ impl Default for ChainMonitorConfig {
             loop_hang_timeout_secs: 300,
             monitor_native: true,
             monitor_erc20: true,
+            rescan_max_blocks: 10_000,
         }
     }
 }
