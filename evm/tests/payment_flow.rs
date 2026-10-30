@@ -408,8 +408,14 @@ async fn test_reorg_detected_across_a_block_gap() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Block 100 was reorged out from under us, but the next notification
-    // skips straight to block 103.
+    // skips straight to block 103. 101 and 102 are registered directly
+    // (not pushed as notifications, which would advance `last_block` past
+    // the gap this test means to exercise) so the reorg re-validation scan
+    // - which now reads every block in `[fork_block, new_block]` directly
+    // when nothing is watched - has something to find at each height.
     test_source.set_block_hash(100, B256::random());
+    test_source.set_block_hash(101, B256::random());
+    test_source.set_block_hash(102, B256::random());
     test_source.push_block(make_block(103));
 
     let reorg = wait_for_reorg(&mut event_rx).await;
@@ -509,8 +515,14 @@ async fn test_reorg_gap_check_rpc_failure_does_not_lose_the_reorg() {
 
     // Once the RPC recovers, the fork must still be found against the
     // original last_num (100) - proving it was never advanced past the
-    // failed check.
+    // failed check. 101-103 are registered directly (not pushed, which
+    // would advance `last_block` past the gap) so the reorg re-validation
+    // scan - which now reads every block in range directly when nothing is
+    // watched - has something to find at each height.
     test_source.set_get_block_hash_error(None);
+    test_source.set_block_hash(101, B256::random());
+    test_source.set_block_hash(102, B256::random());
+    test_source.set_block_hash(103, B256::random());
     test_source.push_block(make_block(104));
 
     let reorg = wait_for_reorg(&mut event_rx).await;
@@ -680,6 +692,58 @@ async fn test_reorg_reports_a_relocated_erc20_transfer_as_survived() {
     assert!(
         reorg.survived_tx_hashes.contains(&tx_hash),
         "a relocated ERC20 transfer must be reported as survived, not gone"
+    );
+
+    monitor.stop().await.unwrap();
+    let _ = monitor_handle.await;
+}
+
+/// A reorg must still be verifiable - and a transaction it genuinely dropped
+/// must still come back absent from `survived_tx_hashes` - when nothing is
+/// watched. Nothing watched is the ordinary state of a quiet server once
+/// every invoice has settled and passed its grace period, not a corner case:
+/// before this, an empty watch set made the whole reorg unverifiable, so the
+/// server's reorg handler retracted nothing and a payment the chain really
+/// dropped stayed marked valid forever.
+///
+/// Goes red without the empty-watch-set fallback in `find_survived_tx_hashes`:
+/// `survivors_verifiable` comes back `false` and the dropped transaction's
+/// absence is never reported at all.
+#[tokio::test]
+async fn test_reorg_with_nothing_watched_is_still_verifiable() {
+    let source = MockBlockSource::new(TEST_CHAIN_ID);
+    let test_source = source.clone();
+
+    let monitor = Arc::new(ChainMonitor::new(
+        test_chain_config(),
+        source,
+        test_monitor_config(3),
+    ));
+
+    // Deliberately nothing watched.
+    let (mut event_rx, monitor_handle) = start_and_wait(&monitor).await;
+
+    let dropped_tx = B256::random();
+    test_source.set_block_transactions(100, vec![dropped_tx]);
+    test_source.push_block(make_block(100));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // The reorg replaces block 100 with one that does not carry the
+    // transaction, and block 101 on the new chain has a different parent.
+    test_source.set_block_transactions(100, vec![]);
+    test_source.push_block(make_block(101));
+
+    let reorg = wait_for_reorg(&mut event_rx).await;
+    assert_eq!(reorg.fork_block, 100);
+    assert!(
+        reorg.survivors_verifiable,
+        "an empty watch set must not make the reorg unverifiable - the chain's own \
+         block contents can still be checked directly"
+    );
+    assert!(
+        !reorg.survived_tx_hashes.contains(&dropped_tx),
+        "a transaction genuinely dropped by the reorg must not be reported as survived, \
+         even with nothing watched"
     );
 
     monitor.stop().await.unwrap();

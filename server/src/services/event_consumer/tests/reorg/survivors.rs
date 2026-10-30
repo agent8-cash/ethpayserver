@@ -232,13 +232,13 @@ async fn a_reorg_does_not_reopen_a_refunded_invoice() {
     );
 }
 
-/// A reorg whose survivor scan found nothing to scan *for* (no addresses
-/// currently watched) must retract nothing and notify nobody. An empty
+/// A reorg whose survivor scan could not run at all (the monitor reports
+/// `survivors_verifiable: false`, e.g. because the chain was unreachable
+/// while re-validating) must retract nothing and notify nobody. An empty
 /// `survived_tx_hashes` from a scan that never ran is indistinguishable from
 /// one that ran and found every payment gone — so treating `survivors_verifiable:
 /// false` like a normal empty survivor list would retract every payment at or
-/// above the fork block on the ordinary quiet-server case, not just a real
-/// chain drop.
+/// above the fork block on a mere RPC hiccup, not just a real chain drop.
 ///
 /// Goes red without the `survivors_verifiable` check: the payment comes back
 /// reorged and a retraction webhook fires for a reorg nothing actually verified.

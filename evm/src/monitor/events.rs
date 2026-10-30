@@ -293,12 +293,16 @@ pub struct ReorgDetected {
     pub survived_tx_hashes: Vec<B256>,
     /// Whether the survivor scan could actually verify anything.
     ///
-    /// `false` when the monitor had no watched addresses to scan, which is the
-    /// ordinary state of a quiet server - every invoice settled and past its
-    /// grace period. An empty `survived_tx_hashes` then means "nothing was
-    /// checked", not "nothing survived", and the two must not be confused:
-    /// the consumer retracts what it cannot find, so treating the first as the
-    /// second un-pays every settled invoice above `fork_block`.
+    /// An empty watch set no longer makes this `false`: the scan falls back
+    /// to reading every transaction actually in `[fork_block, new head]`
+    /// directly from the chain, which does not depend on any address being
+    /// watched. `false` now means a genuine failure to reach the chain while
+    /// re-validating - see `ChainMonitor::scan_all_transactions` and
+    /// `handle_reorg`'s own `inspect_err`. An empty `survived_tx_hashes` then
+    /// means "nothing was checked", not "nothing survived", and the two must
+    /// not be confused: the consumer retracts what it cannot find, so
+    /// treating the first as the second un-pays every candidate payment
+    /// above `fork_block` on a mere RPC hiccup.
     pub survivors_verifiable: bool,
     /// When detected.
     pub detected_at: DateTime<Utc>,
