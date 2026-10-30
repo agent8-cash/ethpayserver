@@ -238,6 +238,14 @@ jobs:
       - name: Sentry release guard self-test
         run: ./scripts/check-sentry-release.test.sh
 
+      # Nothing in normal operation exercises the testnet dispatch's failure
+      # branches - RCS_DISPATCH_PAT is normally set and the target normally
+      # answers 2xx - so this is what proves a redirect or an error actually
+      # fails the step instead of looking like a successful deploy. Same
+      # reasoning as the other guard self-tests above.
+      - name: Testnet deploy dispatch guard self-test
+        run: ./scripts/dispatch-deploy-testnet.test.sh
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -988,27 +996,14 @@ jobs:
     # scope it has no use for.
     permissions: {}
     steps:
+      # Guard self-test lives in the lint job (it needs no secrets and no
+      # docker output, so it runs on every PR rather than only on testnet
+      # pushes) - see scripts/dispatch-deploy-testnet.test.sh.
       - name: Trigger central-infrastructure deploy
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
-        run: |
-          set -e
-          [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          SHA_TAG="${{ needs.docker.outputs.sha_tag }}"
-          [ -n "$SHA_TAG" ] || { echo "::error::docker job produced no sha tag"; exit 1; }
-          # The signing certificate records the full commit it was issued for. Sending
-          # the full sha lets the receiver require that the signature was made for THIS
-          # commit, not merely by this workflow on this branch. Refuse, rather than send
-          # a payload without it, so the receiver never has to guess what absence means.
-          FULL_SHA="$GITHUB_SHA"
-          [[ "$FULL_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GITHUB_SHA is not a 40-character sha: '$FULL_SHA'"; exit 1; }
-          [ "$SHA_TAG" = "sha-${FULL_SHA::7}" ] || { echo "::error::sha tag $SHA_TAG does not belong to commit $FULL_SHA"; exit 1; }
-          curl -sS --fail-with-body -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d "{\"event_type\":\"deploy-testnet\",\"client_payload\":{\"sha_tag\":\"$SHA_TAG\",\"sha\":\"$FULL_SHA\"}}"
-          echo "dispatched deploy-testnet $SHA_TAG ($FULL_SHA)" >> "$GITHUB_STEP_SUMMARY"
+          SHA_TAG: ${{ needs.docker.outputs.sha_tag }}
+        run: ./scripts/dispatch-deploy-testnet.sh
 
   # Mainnet handles real merchant funds, so it takes release tags and nothing
   # else. `staging` was dropped with the rename: no staging host exists, and the
