@@ -27,10 +27,9 @@ use server::{
     metrics,
 };
 use server::{
-    DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginAccountNotifier,
-    PluginArtifacts, PluginHost, PluginPools, account_closed_observers, host_version,
-    invoice_creation_filters, load_installed_plugins, own_store_payment_reporting,
-    payment_observers, report_boot,
+    DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginArtifacts,
+    PluginHost, PluginPools, account_closed_observers, host_version, invoice_creation_filters,
+    load_installed_plugins, own_store_payment_reporting, payment_observers, report_boot,
 };
 
 use server::tracing_init::init_tracing;
@@ -502,38 +501,8 @@ async fn main() -> Result<()> {
         ),
     }
 
-    // Capability 6, published unconditionally, batched form included. Unlike
-    // capability 3 it needs no own store: an instance that sells nothing
-    // still has merchants with volume, and a plugin asking what one settled
-    // deserves the real answer rather than silence that reads as zero. One
-    // reader answers both forms, published under each capability's own cell.
-    let volume_reader = Arc::new(server::services::plugins::PluginMerchantVolume::new(
-        state.clone(),
-    ));
-    if plugin_capabilities.volume.publish(volume_reader.clone()) {
-        tracing::info!("plugins may read what an account settled over a window");
-    }
-    if plugin_capabilities.bulk_volume.publish(volume_reader) {
-        tracing::info!("plugins may read what many accounts settled in one call");
-    }
-
-    // Capability 7: the standing the host stored for an account, read-only.
-    // Needs only the data layer, so it is published unconditionally; a plugin
-    // can read a standing and has no import by which to write one.
-    if plugin_capabilities
-        .standing
-        .publish(state.data_service.clone())
-    {
-        tracing::info!("plugins may read an account's stored standing");
-    }
-
-    // Capability 7 (`account_notice`), unconditional like `standing`.
-    if plugin_capabilities
-        .notifier
-        .publish(Arc::new(PluginAccountNotifier::new(state.clone())))
-    {
-        tracing::info!("plugins may ask the host to notify an account");
-    }
+    // Capabilities 6 and 7, published unconditionally: see `publish_unconditional_capabilities`.
+    server::services::plugins::publish_unconditional_capabilities(&state, &plugin_capabilities);
 
     // Capability 5. `PageHost` is built empty by `AppState::new` and has
     // never had a production renderer registered in it, so every plugin page

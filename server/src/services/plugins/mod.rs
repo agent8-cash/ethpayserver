@@ -71,6 +71,7 @@ mod merchant_volume;
 mod page_renderer;
 mod payment_observer;
 mod pools;
+mod read_capabilities;
 pub mod reconcile;
 mod storage;
 
@@ -107,6 +108,7 @@ pub use payment_observer::{
     is_own_store, notify_own_store_payment,
 };
 pub use pools::{DEFAULT_MAX_IN_FLIGHT, PluginPoolError, PluginPools};
+pub use read_capabilities::publish_unconditional_capabilities;
 pub use storage::{
     PluginSchema, PluginStorage, PluginStorageError, generate_role_password, role_name,
 };
