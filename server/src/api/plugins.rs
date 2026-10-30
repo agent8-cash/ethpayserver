@@ -772,6 +772,90 @@ mod tests {
         );
     }
 
+    /// `Figure` survives the round trip through the page endpoint as
+    /// `type: figure`, not the `#[serde(other)] Unknown` fallback.
+    ///
+    /// Same shape as `a_registered_renderer_is_reachable_over_http`, but for
+    /// the element this commons pin adds: on an older pin a plugin page
+    /// containing a `figure` deserialized into `Unknown` server-side and
+    /// re-serialized as `{"type":"unknown"}`, silently dropping the label,
+    /// value and tone a dashboard tile needs. Ablation: pin
+    /// `payserver-commons` back to a revision before `PageElement::Figure`
+    /// existed and this test fails because the type does not compile, let
+    /// alone round-trip.
+    #[tokio::test]
+    async fn a_figure_round_trips_through_the_page_endpoint_as_figure_not_unknown() {
+        use payserver_plugin_api::page::{Figure, Tone};
+        use payserver_plugin_host::{PageHost, PageRenderError, PageRenderer};
+
+        struct Billing;
+
+        #[async_trait]
+        impl PageRenderer for Billing {
+            async fn render_page(
+                &self,
+                request: &PageRequest,
+            ) -> Result<Option<PageElement>, PageRenderError> {
+                if request.path != "summary" {
+                    return Ok(None);
+                }
+                Ok(Some(PageElement::Figure(Figure {
+                    label: "Lapsed".to_string(),
+                    value: "7".to_string(),
+                    tone: Tone::Danger,
+                })))
+            }
+        }
+
+        let mut pages = PageHost::new();
+        pages.register(
+            PluginId::new("cash.random.billing").unwrap(),
+            Arc::new(Billing),
+        );
+
+        let mut state = test_state();
+        state.plugin_pages = Arc::new(pages);
+
+        let app = Router::new()
+            .route(
+                "/plugins/{id}/pages/{*path}",
+                axum::routing::get(get_page::<FakeSessions>),
+            )
+            .with_state(state);
+
+        let request = HttpRequest::builder()
+            .uri("/plugins/cash.random.billing/pages/summary")
+            .header("Authorization", bearer_for_valid_session())
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+
+        // Asserted on the raw JSON first: this is the exact failure mode the
+        // old pin produced — a 200 whose body is `{"type":"unknown"}`, which
+        // would still deserialize into `PageElement::Unknown` below and could
+        // be mistaken for a passing test if only the typed value were
+        // checked.
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            raw["type"], "figure",
+            "a figure element must serialize as type: figure, not fall back to unknown; got {raw}"
+        );
+
+        let element: PageElement = serde_json::from_slice(&body).unwrap();
+        let PageElement::Figure(figure) = element else {
+            panic!("expected the figure the renderer returned, got {element:?}");
+        };
+        assert_eq!(figure.label, "Lapsed");
+        assert_eq!(figure.value, "7");
+        assert_eq!(figure.tone, Tone::Danger);
+    }
+
     /// A plugin that could not answer is a 502, not a 404. Answering "no
     /// such page" for a billing page that merely trapped sends whoever is
     /// debugging it looking for a routing mistake that is not there.
