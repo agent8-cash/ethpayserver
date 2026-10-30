@@ -1236,7 +1236,7 @@ jobs:
   # already proved this commit is what is live before this job starts.
   #
   # `ubuntu-latest`, not self-hosted, on purpose. `notify-deploy-testnet`
-  # above used to run on `runs-on: [self-hosted, debianbase]` and was
+  # above used to run on a self-hosted runner and was
   # deliberately moved off it: on a PUBLIC repository a self-hosted runner is
   # reachable from a fork PR, and the only thing standing between that and
   # code execution on the box was a single `if:` nobody would notice going
