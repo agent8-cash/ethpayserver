@@ -22,7 +22,8 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use auth::{AuthConfig, AuthService, Store, UserId};
+use auth::repository::{StoreRoleRepository, UserStoreRepository};
+use auth::{AuthConfig, AuthService, Store, StoreRole, UserId, UserStore};
 use data_service::PgDataService;
 use data_service::store_creation::StoreCreationWriter;
 use data_service::test_support::pg_service;
@@ -708,6 +709,19 @@ async fn the_member_list_shows_which_account_redeemed_an_invite() {
         &app, &outbox, &owner, &store, &colleague, &email, "Employee",
     )
     .await;
+    // No seeded role grants canviewstoreusers, so the owner is moved onto a
+    // store-scoped role that does (as the inline-scope tests do).
+    let viewer = StoreRole::new(
+        store.id,
+        format!("viewer-{}", Uuid::new_v4()),
+        vec!["ethpay.store.canviewstoreusers".to_string()],
+    );
+    pg.create_store_role(&viewer)
+        .await
+        .expect("create viewer role");
+    pg.update_user_store(&UserStore::new(UserId(owner.id), store.id, viewer.id))
+        .await
+        .expect("move the owner onto the viewer role");
 
     let (status, body) = call(
         &app,
