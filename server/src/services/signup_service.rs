@@ -196,12 +196,14 @@ impl SignupServiceConfig {
         &self,
         account_id: Uuid,
         plan_id: i64,
+        client_ip: std::net::IpAddr,
     ) -> Result<(u16, serde_json::Value), reqwest::Error> {
         let response = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()?
             .post(format!("{}/signup", self.url))
             .bearer_auth(self.assertion(account_id, Utc::now()))
+            .header("x-forwarded-for", client_ip.to_string())
             .json(&serde_json::json!({
                 "account_id": account_id.to_string(),
                 "plan_id": plan_id,
@@ -396,6 +398,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscribe_forwards_the_client_address_as_a_bare_x_forwarded_for() {
+        let app = Router::new().route(
+            "/signup",
+            post(|req: Request| async move {
+                let xff = req.headers()["x-forwarded-for"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                (
+                    StatusCode::CREATED,
+                    axum::Json(serde_json::json!({ "xff": xff })),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let (status, body) = config(&url)
+            .subscribe(Uuid::new_v4(), 7, client)
+            .await
+            .unwrap();
+
+        assert_eq!(status, 201);
+        // Exact string: a socket address would carry a port and is refused here.
+        assert_eq!(body["xff"], "203.0.113.9");
+    }
+
+    #[tokio::test]
     async fn subscribe_presents_the_assertion_and_names_the_account_in_the_body() {
         let app = Router::new().route(
             "/signup",
@@ -412,7 +444,10 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let account = Uuid::new_v4();
-        let (status, body) = config(&url).subscribe(account, 7).await.unwrap();
+        let (status, body) = config(&url)
+            .subscribe(account, 7, std::net::IpAddr::from([127, 0, 0, 1]))
+            .await
+            .unwrap();
 
         assert_eq!(status, 201);
         assert_eq!(body["account_id"], account.to_string());
