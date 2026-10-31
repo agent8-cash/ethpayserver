@@ -64,7 +64,10 @@ async fn seed_user(pool: &PgPool) -> (Uuid, String) {
     sqlx::query(
         "INSERT INTO users (id, kdf_params, encrypted_symmetric_key, \
          recovery_verification_hash, kdf_salt_identifier) \
-         VALUES ($1, '{}'::jsonb, '{}'::jsonb, 'h', 'passkey:' || $1::text)",
+         VALUES ($1, \
+             '{\"algorithm\":\"argon2id\",\"memory_kb\":65536,\"iterations\":3,\"parallelism\":4,\"salt\":\"AAAA\"}'::jsonb, \
+             '{\"ciphertext\":\"AAAA\",\"iv\":\"AAAA\",\"mac\":\"AAAA\"}'::jsonb, \
+             'h', 'passkey:' || $1::text)",
     )
     .bind(user_id)
     .execute(pool)
