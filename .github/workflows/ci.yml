@@ -1341,6 +1341,10 @@ jobs:
     concurrency:
       group: e2e-postmerge-testnet
       cancel-in-progress: false
+    env:
+      # cloudflared pinned release and the SHA256 of its .deb asset. Bump both together.
+      CLOUDFLARED_VERSION: 2026.10.7
+      CLOUDFLARED_SHA256: 70b1a1e0f46033ffc8d90b406e554044ba6cbf2e4360295ef1163aed31e09393
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1358,10 +1362,14 @@ jobs:
         run: npm ci && npx playwright install --with-deps chromium
 
       # The sink's quick-tunnel fallback spawns this binary directly.
+      # Pinned release, checksum verified before it is installed.
       - name: Install cloudflared
         run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
           curl -fsSL -o cloudflared.deb \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          echo "${CLOUDFLARED_SHA256}  cloudflared.deb" | sha256sum -c -
           sudo dpkg -i cloudflared.deb
 
       - name: Invoice -> pay -> settle -> webhook -> payout (native + ERC-20)
