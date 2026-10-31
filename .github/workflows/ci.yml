@@ -186,7 +186,8 @@ jobs:
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
-      # with CI green. A change cites those files with a Cites-Tests trailer;
+      # with CI green. Every .rs file the change touches is checked (a Cites-Tests
+      # trailer adds files the diff does not show);
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
         env:
@@ -238,6 +239,14 @@ jobs:
       - name: Sentry release guard self-test
         run: ./scripts/check-sentry-release.test.sh
 
+      # Nothing in normal operation exercises the testnet dispatch's failure
+      # branches - RCS_DISPATCH_PAT is normally set and the target normally
+      # answers 2xx - so this is what proves a redirect or an error actually
+      # fails the step instead of looking like a successful deploy. Same
+      # reasoning as the other guard self-tests above.
+      - name: Testnet deploy dispatch guard self-test
+        run: ./scripts/dispatch-deploy-testnet.test.sh
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -285,6 +294,12 @@ jobs:
   # E2E_REMOTE=true so playwright.config.ts skips its `webServer` entries
   # entirely, catches a regression before merge without paying for what none
   # of them touches.
+  #
+  # payment-flow-assertions.spec.ts is the same shape: pure functions in
+  # fixtures/payment-flow-assertions.ts, no network. It is the proof that "a
+  # deliberately broken flow turns the job red" holds for the payout step of
+  # `e2e-postmerge-testnet` below, without needing a live run against real
+  # Sepolia to find out.
   e2e-static-checks:
     name: E2E static checks
     runs-on: ubuntu-latest
@@ -305,7 +320,7 @@ jobs:
         working-directory: e2e
         env:
           E2E_REMOTE: "true"
-        run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts tests/webhook-sink-tunnel.spec.ts
+        run: npx playwright test tests/route-coverage.spec.ts tests/visual-review-report.spec.ts tests/visual-review-main.spec.ts tests/ws-isolation-helpers.spec.ts tests/target-guard.spec.ts tests/webhook-sink-tunnel.spec.ts tests/payment-flow-assertions.spec.ts
 
   test:
     name: Test
@@ -1016,7 +1031,7 @@ jobs:
           cosign sign --yes "$DIGEST"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
-  # staging (main) + production (tags) deploy via SSH push — see central-infrastructure/deploy.yml
+  # staging (main) + production (tags) deploy via SSH push.
   # testnet deploys by dispatch like every other environment. It used
   # to run here, on a self-hosted runner attached to this PUBLIC repository -
   # which GitHub warns against, because a fork PR can execute on it. The only
@@ -1025,17 +1040,17 @@ jobs:
   # also described the deploy host in detail: compose layout, ports, health
   # probes, rollback.
   #
-  # NOTE: removing the job does NOT deregister the runner. `debianbase` (id 22)
+  # NOTE: removing the job does NOT deregister the runner. The self-hosted runner
   # is still registered and online on this repository, so any workflow file
-  # saying `runs-on: [self-hosted, debianbase]` still lands on the deploy box -
+  # targeting its label still lands on the deploy box -
   # and now there is no `if:` guarding it, because nothing references it. This
   # change removes the only current use, not the exposure. Deregistering it
   # (and removing the runner service on the box) is the step that finishes the
   # job; until then, treat this as half done.
   #
   # Separate from notify-deploy below because the payload differs: this targets
-  # central-infrastructure's deploy-testnet.yml, which takes `sha_tag` and runs
-  # docker compose locally on the box. The other targets deploy.yml, which takes
+  # the operator's testnet deploy workflow, which takes `sha_tag` and runs
+  # docker compose locally on the box. The other targets take a
   # {service, environment, tag} and goes over SSH.
   notify-deploy-testnet:
     name: Notify Deploy (testnet)
@@ -1049,27 +1064,14 @@ jobs:
     # scope it has no use for.
     permissions: {}
     steps:
-      - name: Trigger central-infrastructure deploy
+      # Guard self-test lives in the lint job (it needs no secrets and no
+      # docker output, so it runs on every PR rather than only on testnet
+      # pushes) - see scripts/dispatch-deploy-testnet.test.sh.
+      - name: Trigger deploy
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
-        run: |
-          set -e
-          [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          SHA_TAG="${{ needs.docker.outputs.sha_tag }}"
-          [ -n "$SHA_TAG" ] || { echo "::error::docker job produced no sha tag"; exit 1; }
-          # The signing certificate records the full commit it was issued for. Sending
-          # the full sha lets the receiver require that the signature was made for THIS
-          # commit, not merely by this workflow on this branch. Refuse, rather than send
-          # a payload without it, so the receiver never has to guess what absence means.
-          FULL_SHA="$GITHUB_SHA"
-          [[ "$FULL_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GITHUB_SHA is not a 40-character sha: '$FULL_SHA'"; exit 1; }
-          [ "$SHA_TAG" = "sha-${FULL_SHA::7}" ] || { echo "::error::sha tag $SHA_TAG does not belong to commit $FULL_SHA"; exit 1; }
-          curl -sS --fail-with-body -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d "{\"event_type\":\"deploy-testnet\",\"client_payload\":{\"sha_tag\":\"$SHA_TAG\",\"sha\":\"$FULL_SHA\"}}"
-          echo "dispatched deploy-testnet $SHA_TAG ($FULL_SHA)" >> "$GITHUB_STEP_SUMMARY"
+          SHA_TAG: ${{ needs.docker.outputs.sha_tag }}
+        run: ./scripts/dispatch-deploy-testnet.sh
 
   # Mainnet handles real merchant funds, so it takes release tags and nothing
   # else. `staging` was dropped with the rename: no staging host exists, and the
@@ -1107,7 +1109,7 @@ jobs:
             echo "\`${{ github.ref_name }}\` is a prerelease - image published, mainnet deploy skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Trigger central-infrastructure deploy
+      - name: Trigger deploy
         if: steps.resolve.outputs.deploy == 'true'
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
@@ -1261,6 +1263,152 @@ jobs:
             // per_page: 100, as e2e-scheduled.yml - the default 30 includes
             // pull requests, so an exact-title match silently misses once the
             // repo has 30+ open e2e-labelled items.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'e2e',
+              per_page: 100,
+            });
+            const match = existing.data.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['e2e'],
+              });
+            }
+
+  # Named E2E suite for the post-merge quality gate: invoice -> pay -> settle ->
+  # webhook -> payout against the live deployment, for two assets (native
+  # Sepolia ETH and an ERC-20, Sepolia USDC), on every merge to `testnet`.
+  # `needs: [deploy-verify-testnet]` rather than a bare push trigger -
+  # broadcasting against a box mid-restart would read as a payment failure
+  # that was actually a deploy in progress, and `deploy-verify-testnet`
+  # already proved this commit is what is live before this job starts.
+  #
+  # `ubuntu-latest`, not self-hosted, on purpose. `notify-deploy-testnet`
+  # above used to run on a self-hosted runner and was
+  # deliberately moved off it: on a PUBLIC repository a self-hosted runner is
+  # reachable from a fork PR, and the only thing standing between that and
+  # code execution on the box was a single `if:` nobody would notice going
+  # missing in a refactor (see that job's comment). This job's own `if:`
+  # below is the same shape of guard - `push` to a branch of this repo needs
+  # write access, so a fork PR cannot reach it either way - but
+  # `e2e-scheduled.yml`'s `synthetic-payment` job already proves a hosted
+  # runner can hold the same secrets and spend real Sepolia funds without
+  # ever landing on the deploy box, so there is no reason to reopen that
+  # exposure for this job too.
+  #
+  # No named tunnel here, unlike `e2e-scheduled.yml` - that job and this one
+  # can both be live around the same merge, and two jobs forwarding the same
+  # named-tunnel hostname to two different runners' localhosts would cross-
+  # deliver each other's webhooks. The sink's quick-tunnel fallback hands out
+  # a fresh random hostname per run, which is what this job wants.
+  e2e-postmerge-testnet:
+    name: E2E payment flow (post-merge, testnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [deploy-verify-testnet]
+    if: github.ref == 'refs/heads/testnet'
+    permissions:
+      contents: read
+      issues: write
+    # Queued, not cancelled: two merges landing close together must not run
+    # this job twice at once - both would sign from the same spender account
+    # index and read the same pending nonce, so the second broadcast replaces
+    # the first instead of paying its own invoice (the exact failure
+    # SPENDER_ACCOUNT_INDEX's own comment exists to avoid, just between two
+    # runs of this job rather than against the nightly one).
+    # `cancel-in-progress: false` because a cancelled run mid-broadcast still
+    # leaves a real Sepolia transaction in flight; letting each run finish
+    # and queueing the next is cheaper than untangling that.
+    concurrency:
+      group: e2e-postmerge-testnet
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: testnet
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22: the sink's quick-tunnel wait and the checkout socket both use
+          # the global `WebSocket`, which Node only exposes unflagged from
+          # v22.4 - same reasoning as `e2e-scheduled.yml`.
+          node-version: 22
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: npm ci && npx playwright install --with-deps chromium
+
+      # The sink's quick-tunnel fallback spawns this binary directly.
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Invoice -> pay -> settle -> webhook -> payout (native + ERC-20)
+        working-directory: e2e
+        env:
+          E2E_REMOTE: "true"
+          E2E_BASE_URL: https://testnet.random.cash
+          E2E_API_URL: https://testnet.random.cash
+          E2E_POSTMERGE_PAYMENT: "true"
+          E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
+          E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}
+        run: npx playwright test tests/payment-flow-postmerge.spec.ts
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-postmerge
+          path: e2e/playwright-report/
+          retention-days: 14
+
+      # A failed run files a bug rather than only going red silently. This repo files
+      # GitHub issues for a red E2E run (see `e2e-status` above and
+      # `e2e-scheduled.yml`'s `report` job) rather than reaching into the
+      # private issue tracker from a public repo's CI, so this follows the
+      # same pattern. Each asset leg is its own named Playwright test, so the
+      # uploaded report and the job log both already say which leg and which
+      # step (pay / webhook / payout) failed - this issue points at them
+      # rather than re-parsing the report to repeat it.
+      - name: File or update an issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Post-merge E2E payment flow is failing on testnet';
+            const body = [
+              `The \`e2e-postmerge-testnet\` job in \`ci.yml\` failed for ` +
+                `\`${context.sha.slice(0, 7)}\` on \`testnet\`.`,
+              '',
+              'This runs invoice -> pay -> settle -> webhook -> payout against the',
+              'live deployment for two named tests, one per asset (native Sepolia ETH,',
+              'Sepolia USDC). Open the run below and read which named test failed, and',
+              'at which step, from the job log or the uploaded Playwright report -',
+              'both name the exact step (payment option lookup, on-chain broadcast,',
+              '`paid` detection, webhook delivery, or the payout create/settle calls).',
+              '',
+              `Run (report attached as an artifact): ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+
+            // Reuse the open issue if there is one, so a testnet that stays
+            // red does not file a fresh issue on every merge. Same per_page
+            // reasoning as `e2e-status` above: the default 30 includes pull
+            // requests, so an exact-title match can silently miss.
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
