@@ -7,11 +7,17 @@
 //! `services::signup_service`.
 
 use auth::SessionService;
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use utoipa::ToSchema;
 
 use crate::api::extractors::AuthenticatedUser;
+use crate::api::rate_limit;
 use crate::services::signup_service::SignupPlan;
 use crate::state::PgAppState;
 
@@ -130,6 +136,8 @@ fn relay(
 pub async fn signup<A>(
     AuthenticatedUser(user): AuthenticatedUser,
     State(state): State<PgAppState<A>>,
+    headers: axum::http::HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(request): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>), (StatusCode, &'static str)>
 where
@@ -140,7 +148,14 @@ where
     };
     // The account is the session's, never the request's: a merchant cannot
     // name another account because there is no field to name it in.
-    match service.subscribe(user.id.0, request.plan_id).await {
+    // The merchant's address, read the way the rate limiter reads it, so the
+    // signup service can attribute the signup to the merchant and not to this
+    // server's peer.
+    let client_ip = rate_limit::client_ip(&headers, peer.ip());
+    match service
+        .subscribe(user.id.0, request.plan_id, client_ip)
+        .await
+    {
         Ok((status, body)) => relay(status, &body).map(|r| (StatusCode::CREATED, Json(r))),
         Err(error) => {
             tracing::error!(%error, "the signup service could not be reached");

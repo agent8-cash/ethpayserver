@@ -172,15 +172,15 @@ fn classify(path: &str, method: &Method) -> Tier {
 }
 
 /// Extract client IP from proxy headers, falling back to peer address.
-fn client_ip(req: &Request, fallback: IpAddr) -> IpAddr {
-    if let Some(xff) = req.headers().get("x-forwarded-for")
+pub(crate) fn client_ip(headers: &axum::http::HeaderMap, fallback: IpAddr) -> IpAddr {
+    if let Some(xff) = headers.get("x-forwarded-for")
         && let Ok(s) = xff.to_str()
         && let Some(first) = s.split(',').next()
         && let Ok(ip) = first.trim().parse::<IpAddr>()
     {
         return ip;
     }
-    if let Some(xri) = req.headers().get("x-real-ip")
+    if let Some(xri) = headers.get("x-real-ip")
         && let Ok(s) = xri.to_str()
         && let Ok(ip) = s.trim().parse::<IpAddr>()
     {
@@ -213,7 +213,7 @@ pub async fn middleware(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())
         .unwrap_or(IpAddr::from([127, 0, 0, 1]));
-    let ip = client_ip(&req, fallback_addr);
+    let ip = client_ip(req.headers(), fallback_addr);
 
     match limiter.check_key(&ip) {
         Ok(_) => next.run(req).await,

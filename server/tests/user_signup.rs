@@ -12,10 +12,12 @@
 //! `--run-ignored` step.
 
 use data_service::test_support::pg_service;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::extract::ConnectInfo;
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use data_service::PgDataService;
@@ -39,10 +41,16 @@ async fn fake_service(status: u16, reply: Value) -> (String, Seen) {
     let record = Arc::clone(&seen);
     let app = Router::new().route(
         "/signup",
-        post(move |Json(body): Json<Value>| {
+        post(move |headers: HeaderMap, Json(mut body): Json<Value>| {
             let record = Arc::clone(&record);
             let reply = reply.clone();
             async move {
+                // Recorded beside the body so a test can see the header the
+                // service was sent.
+                body["x-forwarded-for"] = headers
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .map_or(Value::Null, Value::from);
                 record.lock().unwrap().push(body);
                 (StatusCode::from_u16(status).unwrap(), Json(reply))
             }
@@ -123,6 +131,22 @@ async fn post_signup(app: &Router, key: Option<&str>, body: Value) -> (StatusCod
 }
 
 async fn post_signup_raw(app: &Router, key: Option<&str>, body: Value) -> (StatusCode, Vec<u8>) {
+    post_signup_from(app, key, &[], TEST_PEER, body).await
+}
+
+/// The TCP peer every test request arrives from unless it says otherwise.
+const TEST_PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345);
+
+/// Post a signup with extra `headers` from the TCP peer `peer`. `oneshot()`
+/// carries no real connection, so the peer is inserted as the extension the
+/// server's `ConnectInfo` would have supplied.
+async fn post_signup_from(
+    app: &Router,
+    key: Option<&str>,
+    headers: &[(&str, &str)],
+    peer: SocketAddr,
+    body: Value,
+) -> (StatusCode, Vec<u8>) {
     let mut req = Request::builder()
         .method("POST")
         .uri("/users/me/signup")
@@ -130,11 +154,12 @@ async fn post_signup_raw(app: &Router, key: Option<&str>, body: Value) -> (Statu
     if let Some(key) = key {
         req = req.header("authorization", format!("Bearer {key}"));
     }
-    let resp = app
-        .clone()
-        .oneshot(req.body(Body::from(body.to_string())).unwrap())
-        .await
-        .unwrap();
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let mut req = req.body(Body::from(body.to_string())).unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer));
+    let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -210,6 +235,49 @@ async fn the_account_told_to_the_service_is_the_sessions_and_cannot_be_named() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_clients_forwarded_address_reaches_the_service() {
+    let pg = Arc::new(pg_service().await);
+    let (url, seen) = fake_service(201, json!({"checkout_url": "https://pay.example/c/1"})).await;
+    let (_, key) = seed_user(&pg).await;
+
+    let (status, _) = post_signup_from(
+        &app(&pg, Some(&url)),
+        Some(&key),
+        &[("x-forwarded-for", "203.0.113.9")],
+        TEST_PEER,
+        json!({"plan_id": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["x-forwarded-for"], "203.0.113.9");
+}
+
+#[tokio::test]
+#[ignore]
+async fn with_no_forwarding_header_the_tcp_peer_is_forwarded() {
+    let pg = Arc::new(pg_service().await);
+    let (url, seen) = fake_service(201, json!({"checkout_url": "https://pay.example/c/1"})).await;
+    let (_, key) = seed_user(&pg).await;
+    let peer: SocketAddr = "198.51.100.7:40000".parse().unwrap();
+
+    let (status, _) = post_signup_from(
+        &app(&pg, Some(&url)),
+        Some(&key),
+        &[],
+        peer,
+        json!({"plan_id": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["x-forwarded-for"], "198.51.100.7");
 }
 
 #[tokio::test]

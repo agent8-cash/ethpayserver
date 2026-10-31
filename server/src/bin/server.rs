@@ -588,7 +588,10 @@ async fn main() -> Result<()> {
     // fault would also log as shutdown noise. Racing keeps the flag's "we
     // asked to stop" window bounded to the same order as evmmonitor's below.
     tokio::select! {
-        result = axum::serve(listener, app) => {
+        result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        ) => {
             result?;
         }
         () = shutdown_signal() => {
