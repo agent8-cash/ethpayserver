@@ -19,6 +19,7 @@ use axum::http::{Request, StatusCode};
 use chrono::{Duration, Utc};
 use data_service::PgDataService;
 use data_service::store_creation::StoreCreationWriter;
+use evm::{ChainFamily, HdWallet, generate_mnemonic};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use rates::NoOpRateProvider;
 use serde_json::{Value, json};
@@ -32,10 +33,15 @@ use server::services::RedisEVMMonitor;
 use server::state::PgAppState;
 use types::{ChainId, StorePaymentMethodWriter};
 
-/// Valid BIP-32 test vectors, as in `wallet_rotation_invoice_derivation.rs`.
-const OLD_XPUB: &str = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
-const NEW_XPUB: &str = "xpub6Bmqz11Kt5qtj3xbXZkzEyYw43EDFGCon5GzC4udf7DPugyKjVppdX2amQZrGs4rqAJH79pDtge2UDENZzjz9DgcV3WmfbwYAXj2epC5cgz";
-const NEXT_XPUB: &str = "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw";
+/// A valid, never-before-registered xpub. A fixed literal is refused as already
+/// claimed once any other test in the shared database has used it.
+fn fresh_xpub() -> String {
+    let mnemonic = generate_mnemonic(24).expect("generate mnemonic");
+    HdWallet::from_mnemonic(&mnemonic, "")
+        .expect("derive wallet from mnemonic")
+        .account_xpub_string_for(ChainFamily::Evm)
+        .expect("account xpub")
+}
 
 fn app(pg: &Arc<PgDataService>) -> Router {
     let auth_service = Arc::new(AuthService::with_config(
@@ -111,9 +117,11 @@ async fn seed_session(pool: &PgPool, user_id: Uuid, created_at: chrono::DateTime
     session_id
 }
 
-/// A store owned by `owner` with one EVM method pinned to `OLD_XPUB`, rotated
-/// once onto `NEW_XPUB` so the history holds one event.
-async fn store_with_one_rotation(pg: &PgDataService, owner: Uuid) -> Uuid {
+/// A store owned by `owner` with one EVM method on a fresh key, rotated once
+/// onto another fresh key so the history holds one event. Returns the store and
+/// both xpubs, so a test can check they never appear in a response.
+async fn store_with_one_rotation(pg: &PgDataService, owner: Uuid) -> (Uuid, String, String) {
+    let (old_xpub, new_xpub) = (fresh_xpub(), fresh_xpub());
     let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
     pg.create_store_owned_by(&store, UserId(owner))
         .await
@@ -125,14 +133,14 @@ async fn store_with_one_rotation(pg: &PgDataService, owner: Uuid) -> Uuid {
         None,
         "ETH",
         18,
-        Some(OLD_XPUB),
+        Some(&old_xpub),
     )
     .await
     .expect("seed payment method on the old key");
-    pg.rotate_store_xpub(store.id.0, "eip155", NEW_XPUB, Some("test rotation"))
+    pg.rotate_store_xpub(store.id.0, "eip155", &new_xpub, Some("test rotation"))
         .await
         .expect("rotate once");
-    store.id.0
+    (store.id.0, old_xpub, new_xpub)
 }
 
 /// One request through the router. Returns the status and the parsed body,
@@ -183,7 +191,7 @@ async fn rotate(app: &Router, store: Uuid, bearer: &str) -> (StatusCode, Value) 
         "POST",
         format!("/stores/{store}/wallet/rotate"),
         Some(bearer),
-        json!({ "xpub": NEXT_XPUB, "reason": "alert wiring", "namespace": "eip155" }),
+        json!({ "xpub": fresh_xpub(), "reason": "alert wiring", "namespace": "eip155" }),
     )
     .await
 }
@@ -193,7 +201,7 @@ async fn rotate(app: &Router, store: Uuid, bearer: &str) -> (StatusCode, Value) 
 async fn an_unauthenticated_history_read_is_refused() {
     let pg = Arc::new(pg_service().await);
     let (owner, _) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
     let (status, _) = get_history(&app(&pg), store, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
@@ -203,7 +211,7 @@ async fn an_unauthenticated_history_read_is_refused() {
 async fn the_owner_reads_their_history_with_xpubs_masked() {
     let pg = Arc::new(pg_service().await);
     let (owner, key) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, old_xpub, new_xpub) = store_with_one_rotation(&pg, owner).await;
 
     let (status, body) = get_history(&app(&pg), store, Some(&key)).await;
     assert_eq!(status, StatusCode::OK);
@@ -213,11 +221,11 @@ async fn the_owner_reads_their_history_with_xpubs_masked() {
 
     let raw = body.to_string();
     assert!(
-        !raw.contains(OLD_XPUB),
+        !raw.contains(&old_xpub),
         "the old xpub must not leave masked"
     );
     assert!(
-        !raw.contains(NEW_XPUB),
+        !raw.contains(&new_xpub),
         "the new xpub must not leave masked"
     );
 }
@@ -228,7 +236,7 @@ async fn another_merchant_cannot_read_a_stores_history() {
     let pg = Arc::new(pg_service().await);
     let (owner, owner_key) = seed_user(pg.pool()).await;
     let (_, other_key) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
     let app = app(&pg);
 
     let (status, body) = get_history(&app, store, Some(&other_key)).await;
@@ -275,7 +283,7 @@ async fn rotation_metrics(pg: &Arc<PgDataService>, store: Uuid, bearer: &str) ->
 async fn a_rotation_by_an_api_key_raises_the_not_fresh_alert() {
     let pg = Arc::new(pg_service().await);
     let (owner, key) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
 
     // An API key never satisfies `FreshlyAuthenticatedUser`.
     let rendered = rotation_metrics(&pg, store, &key).await;
@@ -297,7 +305,7 @@ async fn a_rotation_by_an_api_key_raises_the_not_fresh_alert() {
 async fn a_rotation_from_a_stale_session_raises_the_not_fresh_alert() {
     let pg = Arc::new(pg_service().await);
     let (owner, _) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
     // Valid for a day, but signed in long enough ago that it is not fresh.
     let session = seed_session(pg.pool(), owner, Utc::now() - Duration::minutes(30)).await;
 
@@ -316,7 +324,7 @@ async fn a_rotation_from_a_stale_session_raises_the_not_fresh_alert() {
 async fn a_rotation_from_a_fresh_session_raises_no_not_fresh_alert() {
     let pg = Arc::new(pg_service().await);
     let (owner, _) = seed_user(pg.pool()).await;
-    let store = store_with_one_rotation(&pg, owner).await;
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
     let session = seed_session(pg.pool(), owner, Utc::now()).await;
 
     // Positive control for the two alerts above: the same wiring with a fresh
