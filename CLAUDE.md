@@ -129,9 +129,8 @@ that are not in CI's path. Several people have lost an hour to this.
 
 ## Sensitive paths
 
-Auth, crypto, `evm/`, wallet and key derivation, migrations,
-`server/src/api/invoices*`, `server/src/api/payments*`, `server/src/api/payouts*`,
-`server/src/api/refunds*`, anything touching movement of funds.
+Auth, crypto, wallet and key derivation, migrations, and anything touching
+movement of funds.
 
 Work in them normally, but say so prominently in the commit message. These are
 human-reviewed without exception.

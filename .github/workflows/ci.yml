@@ -489,6 +489,67 @@ jobs:
       - name: cargo deny
         run: cargo deny check licenses sources
 
+  # Pull requests only. Scans the commits a PR adds for committed secrets, and
+  # labels a PR that touches a sensitive area so a person reviews it. The label
+  # never fails the job; merging stays gated by a human either way.
+  security-gate:
+    name: Security gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pinned release, checksum verified before it runs.
+      - name: Install secret scanner
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          archive="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" "$base/$archive"
+          curl -sSfL -o sums.txt "$base/gitleaks_${VERSION}_checksums.txt"
+          grep " ${archive}\$" sums.txt | sha256sum -c -
+          tar xzf "$archive" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Secret scan self-test
+        run: ./scripts/secret-scan.test.sh
+
+      - name: Secret scan (commits in this PR)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/secret-scan.sh "$BASE_SHA"
+
+      - name: Sensitive-path self-test
+        run: ./scripts/sensitive-paths.test.sh
+
+      - name: Flag sensitive paths for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          hits="$(git diff --name-only "$BASE_SHA" HEAD | ./scripts/sensitive-paths.sh)"
+          if [ -z "$hits" ]; then
+            echo "No sensitive paths touched."
+            exit 0
+          fi
+          echo "Sensitive paths touched:"
+          echo "$hits" | sed 's/^/  /'
+          gh label create security-review --color B60205 \
+            --description "Touches a sensitive path; needs human review" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label security-review \
+            || echo "::warning::could not add the security-review label"
+
   build:
     name: Build
     # Pinned to match `e2e`'s runner (see the comment on that job). `e2e`
@@ -976,7 +1037,7 @@ jobs:
           ./scripts/cosign-sign.sh monitor "$DIGEST" "${{ steps.tag.outputs.tlog_upload }}"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
-  # staging (main) + production (tags) deploy via SSH push — see central-infrastructure/deploy.yml
+  # staging (main) + production (tags) deploy via SSH push.
   # testnet deploys by dispatch like every other environment. It used
   # to run here, on a self-hosted runner attached to this PUBLIC repository -
   # which GitHub warns against, because a fork PR can execute on it. The only
@@ -985,17 +1046,17 @@ jobs:
   # also described the deploy host in detail: compose layout, ports, health
   # probes, rollback.
   #
-  # NOTE: removing the job does NOT deregister the runner. `debianbase` (id 22)
+  # NOTE: removing the job does NOT deregister the runner. The self-hosted runner
   # is still registered and online on this repository, so any workflow file
-  # saying `runs-on: [self-hosted, debianbase]` still lands on the deploy box -
+  # targeting its label still lands on the deploy box -
   # and now there is no `if:` guarding it, because nothing references it. This
   # change removes the only current use, not the exposure. Deregistering it
   # (and removing the runner service on the box) is the step that finishes the
   # job; until then, treat this as half done.
   #
   # Separate from notify-deploy below because the payload differs: this targets
-  # central-infrastructure's deploy-testnet.yml, which takes `sha_tag` and runs
-  # docker compose locally on the box. The other targets deploy.yml, which takes
+  # the operator's testnet deploy workflow, which takes `sha_tag` and runs
+  # docker compose locally on the box. The other targets take a
   # {service, environment, tag} and goes over SSH.
   notify-deploy-testnet:
     name: Notify Deploy (testnet)
@@ -1012,7 +1073,7 @@ jobs:
       # Guard self-test lives in the lint job (it needs no secrets and no
       # docker output, so it runs on every PR rather than only on testnet
       # pushes) - see scripts/dispatch-deploy-testnet.test.sh.
-      - name: Trigger central-infrastructure deploy
+      - name: Trigger deploy
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
           SHA_TAG: ${{ needs.docker.outputs.sha_tag }}
@@ -1054,7 +1115,7 @@ jobs:
             echo "\`${{ github.ref_name }}\` is a prerelease - image published, mainnet deploy skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Trigger central-infrastructure deploy
+      - name: Trigger deploy
         if: steps.resolve.outputs.deploy == 'true'
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
@@ -1242,7 +1303,7 @@ jobs:
   # already proved this commit is what is live before this job starts.
   #
   # `ubuntu-latest`, not self-hosted, on purpose. `notify-deploy-testnet`
-  # above used to run on `runs-on: [self-hosted, debianbase]` and was
+  # above used to run on a self-hosted runner and was
   # deliberately moved off it: on a PUBLIC repository a self-hosted runner is
   # reachable from a fork PR, and the only thing standing between that and
   # code execution on the box was a single `if:` nobody would notice going
