@@ -27,19 +27,28 @@ chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign
 ## Docker images
 
 Signed with cosign in keyless (OIDC) mode: there is no private key: the signing
-identity is the GitHub Actions job itself, and the signature is recorded in the
-public Sigstore transparency log (Rekor).
+identity is the GitHub Actions job itself.
+
+**Only release tags (`vMAJOR.MINOR.PATCH`) record the signature in the public
+Sigstore transparency log (Rekor).** Every per-commit `sha-<short-sha>` image —
+what testnet and `main` push on every commit — is signed without it: Rekor is a
+third-party service with no SLA, and a push happens many times a day, so one
+outage there must not be able to block it. A release is what you verify
+independently of this pipeline, so it keeps the transparency-log entry and is
+worth the (rare) outage risk. See [What the signature
+proves](#what-the-signature-proves) below for what that means for verification.
 
 ```sh
 TAG=sha-a1b2c3d   # or a release tag such as v0.1.0
 
-# Server (API + migrations)
+# Server (API + migrations) — add --insecure-ignore-tlog for a sha-* tag,
+# drop it for a release tag (see note above)
 cosign verify \
   --certificate-identity-regexp "^https://github.com/randomcash/ethpayserver/\.github/workflows/ci\.yml@refs/(heads|tags)/.*$" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   ghcr.io/randomcash/ethpayserver:$TAG
 
-# EVM monitor
+# EVM monitor — same rule
 cosign verify \
   --certificate-identity-regexp "^https://github.com/randomcash/ethpayserver/\.github/workflows/ci\.yml@refs/(heads|tags)/.*$" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
@@ -93,8 +102,11 @@ Tags follow `sha-<short-sha>` (immutable, one per commit) or a release tag.
 
 A successful `cosign verify` tells you the image was built and pushed by the
 `ci.yml` workflow in the named repository, on a commit reachable from the branch
-or tag embedded in the certificate, and that this was recorded publicly in Rekor
-at the time of signing.
+or tag embedded in the certificate. For a release tag, it also tells you this
+was recorded publicly in Rekor at the time of signing; for a per-commit
+`sha-<short-sha>` image, there is no Rekor entry to check, so verify those with
+`--insecure-ignore-tlog` — the certificate and signature are still checked in
+full, only the transparency-log lookup is skipped.
 
 It does **not** tell you the source code is free of defects, that the commit was
 reviewed, or that the person who pushed that commit was authorised. It binds
