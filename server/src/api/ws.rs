@@ -38,7 +38,7 @@ use futures::{SinkExt, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use auth::{SessionService, UserRepository, repository::UserStoreRepository};
+use auth::{SessionService, repository::UserStoreRepository};
 use types::{InvoiceId, InvoiceReader, StoreId};
 
 use super::invoices::{StoreScope, verify_store_access_for_query};
@@ -285,28 +285,20 @@ impl WsBroadcast {
 /// topics its user may listen to. `None` means the socket must be closed.
 type Revalidate = std::sync::Arc<dyn Fn() -> BoxFuture<'static, Option<Entitlement>> + Send + Sync>;
 
-/// The topics `user_id` may listen to: everything for a server admin, else
+/// The topics `user` may listen to: everything for a server admin, else
 /// the stores they are a member of.
 ///
-/// The user is read afresh, so a demotion takes effect at the next
-/// re-validation, and the scope is the one the REST list endpoints use. Fails
-/// closed: every error, and a user row that is gone, answers `None`.
+/// `user` is the one session validation just produced, so a demotion takes
+/// effect at the next re-validation, and the scope is the one the REST list
+/// endpoints use. Fails closed: any membership read error answers `None`.
 pub(crate) async fn entitlement_of<D>(
     data_service: &D,
-    user_id: auth::UserId,
+    user: &auth::UserInfo,
 ) -> Option<Entitlement>
 where
-    D: UserRepository + UserStoreRepository + ?Sized,
+    D: UserStoreRepository + ?Sized,
 {
-    let user = match data_service.get_user(user_id).await {
-        Ok(Some(user)) => auth::UserInfo::from(&user),
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::warn!(error = %e, "ws: could not read the user; closing the socket");
-            return None;
-        }
-    };
-    let topics = match verify_store_access_for_query(data_service, &user, None).await {
+    let topics = match verify_store_access_for_query(data_service, user, None).await {
         Ok(StoreScope::All) => [Topic::Admin].into_iter().collect(),
         Ok(StoreScope::Membership(stores)) => stores.into_iter().map(Topic::Store).collect(),
         Ok(StoreScope::One(_)) => return None,
@@ -404,7 +396,7 @@ async fn handle_socket<A: SessionService + 'static>(
                     return None;
                 }
             };
-            entitlement_of(&*data_service, user.id).await
+            entitlement_of(&*data_service, &user).await
         })
     });
 
@@ -938,5 +930,95 @@ mod tests {
         // so this assertion catches a future skip_serializing_if annotation
         // that would omit the key entirely.
         assert!(json.get("amount").unwrap().is_null());
+    }
+
+    /// Membership stub: `Memberships(stores)` belongs to exactly `stores`.
+    /// Only the membership listing is exercised by `entitlement_of`.
+    struct Memberships(Vec<StoreId>);
+
+    #[async_trait::async_trait]
+    impl UserStoreRepository for Memberships {
+        async fn get_user_stores(
+            &self,
+            user_id: auth::UserId,
+        ) -> auth::Result<Vec<auth::store::UserStore>> {
+            Ok(self
+                .0
+                .iter()
+                .map(|s| {
+                    auth::store::UserStore::new(
+                        user_id,
+                        *s,
+                        auth::store::StoreRoleId(uuid::Uuid::nil()),
+                    )
+                })
+                .collect())
+        }
+        async fn get_user_store(
+            &self,
+            _: auth::UserId,
+            _: StoreId,
+        ) -> auth::Result<Option<auth::store::UserStore>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn add_user_to_store(&self, _: &auth::store::UserStore) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn get_store_users(&self, _: StoreId) -> auth::Result<Vec<auth::store::UserStore>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn update_user_store(&self, _: &auth::store::UserStore) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn remove_user_from_store(&self, _: auth::UserId, _: StoreId) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn user_has_store_permission(
+            &self,
+            _: auth::UserId,
+            _: StoreId,
+            _: &str,
+        ) -> auth::Result<bool> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn get_user_store_info(
+            &self,
+            _: auth::UserId,
+            _: StoreId,
+        ) -> auth::Result<Option<auth::store::UserStoreInfo>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+        async fn get_user_store_infos(
+            &self,
+            _: auth::UserId,
+        ) -> auth::Result<Vec<auth::store::UserStoreInfo>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+    }
+
+    fn user_with_role(role: auth::Role) -> auth::UserInfo {
+        auth::UserInfo {
+            id: auth::UserId(uuid::Uuid::from_bytes([9; 16])),
+            email: None,
+            primary_wallet_address: None,
+            created_at: chrono::Utc::now(),
+            last_login_at: None,
+            role,
+        }
+    }
+
+    #[tokio::test]
+    async fn entitlement_depends_on_the_user_passed_in() {
+        let memberships = Memberships(vec![store()]);
+        let member = entitlement_of(&memberships, &user_with_role(auth::Role::User))
+            .await
+            .unwrap();
+        let admin = entitlement_of(&memberships, &user_with_role(auth::Role::ServerAdmin))
+            .await
+            .unwrap();
+
+        assert_eq!(member.topics, [Topic::Store(store())].into_iter().collect());
+        assert_eq!(admin.topics, [Topic::Admin].into_iter().collect());
+        assert_ne!(member, admin);
     }
 }
