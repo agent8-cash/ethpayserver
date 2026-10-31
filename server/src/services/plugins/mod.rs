@@ -48,8 +48,10 @@
 //!
 //! `account_notice` is capability 7: tell an account something, through a
 //! channel and an address only the host chooses - a plugin names an account
-//! id, never a recipient. Host-side only for now; see that module's doc for
-//! why it has no wasmtime wiring yet.
+//! id, never a recipient. Wired: `host_calls::PluginCalls::account_notice_impl`
+//! calls this module's `AccountNotifier::notify_account` through a
+//! `DeferredNotifier` cell, published unconditionally in `server.rs` since it
+//! needs only the instance's own user directory and email sender.
 //!
 //! `account_closed` is capability 8: tell every plugin an account no longer
 //! exists, the mirror image of `payment_observer`'s capability 4. Unlike
@@ -69,6 +71,7 @@ mod merchant_volume;
 mod page_renderer;
 mod payment_observer;
 mod pools;
+mod read_capabilities;
 pub mod reconcile;
 mod storage;
 
@@ -89,8 +92,8 @@ pub use filter::{
     run_invoice_creation_filters,
 };
 pub use host_calls::{
-    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredStanding, DeferredVolume,
-    PluginCalls,
+    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredNotifier, DeferredStanding,
+    DeferredVolume, PluginCalls,
 };
 pub use invoice_issuer::{
     HostInvoiceIssuer, InvoiceCreateRequest, InvoiceIssuerError, PluginHostApi, enforce_own_store,
@@ -105,6 +108,7 @@ pub use payment_observer::{
     is_own_store, notify_own_store_payment,
 };
 pub use pools::{DEFAULT_MAX_IN_FLIGHT, PluginPoolError, PluginPools};
+pub use read_capabilities::publish_unconditional_capabilities;
 pub use storage::{
     PluginSchema, PluginStorage, PluginStorageError, generate_role_password, role_name,
 };
