@@ -30,7 +30,65 @@ fn redacts_mnemonic() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_secrets(&format!("loaded wallet: {m}"));
     assert!(!out.contains("sausage"), "mnemonic leaked: {out}");
-    assert!(out.contains("[redacted-mnemonic]"));
+    assert!(out.contains("[redacted: 12+ word run]"));
+}
+
+/// The placeholder must say what matched, not what it guesses the text was.
+/// A shape rule fires on 12+-word prose exactly as readily as on a real
+/// mnemonic, so a label that says "mnemonic" is read as "a secret was here" —
+/// which is how an ordinary log sentence became a false incident: a 17-word
+/// fail-open alert matched this same rule and `[redacted-mnemonic]` was taken
+/// as proof a seed phrase had leaked, triggering a wallet-rotation escalation
+/// over a sentence that never contained one.
+#[test]
+fn placeholder_states_the_shape_not_the_secret_kind() {
+    let alert = "invoice creation allowed on a standing that was never received or is older than the freshness bound";
+    let out = redact_secrets(alert);
+    assert_eq!(out, "[redacted: 12+ word run]");
+    assert!(!out.contains("mnemonic"));
+}
+
+/// Capitalisation and non-ASCII letters must not be a way around the shape
+/// rule: `[a-z]+` only ever saw lowercase ASCII, so a capitalised phrase or
+/// one in a BIP-39 language that is not English passed in clear.
+#[test]
+fn redacts_mnemonic_regardless_of_case_or_script() {
+    let capitalised = "Legal Winner Thank Year Wave Sausage Worth Useful Legal Winner Thank Yellow";
+    assert!(
+        redact_secrets(capitalised).contains("[redacted: 12+ word run]"),
+        "capitalised phrase survived: {}",
+        redact_secrets(capitalised)
+    );
+
+    // Twelve words of accented/non-ASCII letters - what a non-English BIP-39
+    // wordlist (Spanish, Portuguese, Czech...) looks like.
+    let non_ascii = "ábaco ábaco ábaco ábaco ábaco ábaco ábaco ábaco ábaco ábaco ábaco ábaco";
+    assert!(
+        redact_secrets(non_ascii).contains("[redacted: 12+ word run]"),
+        "non-ASCII phrase survived: {}",
+        redact_secrets(non_ascii)
+    );
+}
+
+/// Measured against the previous rule: a zero-width space or the invisible
+/// separator U+2063 between words reads as whitespace to a human looking at
+/// a rendered page (or copy-pasted from one) but matched no `\s`, so a real
+/// mnemonic pasted with either survived in the clear. `\s` itself already
+/// covers the non-breaking space case.
+#[test]
+fn redacts_mnemonic_separated_by_invisible_characters() {
+    let words = [
+        "legal", "winner", "thank", "year", "wave", "sausage", "worth", "useful", "legal",
+        "winner", "thank", "yellow",
+    ];
+    for sep in ["\u{00A0}", "\u{200B}", "\u{2063}", " \u{2063}"] {
+        let phrase = words.join(sep);
+        let out = redact_secrets(&phrase);
+        assert!(
+            out.contains("[redacted: 12+ word run]"),
+            "phrase joined with {sep:?} survived: {out}"
+        );
+    }
 }
 
 #[test]
