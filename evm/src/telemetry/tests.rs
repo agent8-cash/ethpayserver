@@ -30,7 +30,19 @@ fn redacts_mnemonic() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_secrets(&format!("loaded wallet: {m}"));
     assert!(!out.contains("sausage"), "mnemonic leaked: {out}");
-    assert!(out.contains("[redacted-mnemonic]"));
+    assert!(out.contains("[redacted: 12+ word run]"));
+}
+
+#[test]
+fn mnemonic_placeholder_states_the_shape_not_the_secret_kind() {
+    // A shape rule fires on ordinary 12+-word prose exactly as readily as on
+    // a real seed phrase, so the label must not claim what the text was -
+    // same property `scrub`'s own test of the same name asserts.
+    let out = redact_secrets(
+        "invoice creation allowed on a standing that was never received or is older than the freshness bound",
+    );
+    assert!(out.contains("[redacted: 12+ word run]"));
+    assert!(!out.contains("mnemonic"));
 }
 
 #[test]
@@ -53,6 +65,57 @@ fn redacts_keyed_secrets() {
     }
     let out = redact_secrets("password = hunter2");
     assert!(!out.contains("hunter2"), "password leaked: {out}");
+}
+
+/// `auth`, `dsn`, `credential`, `session`, `cookie` and `signature` are also
+/// everyday English words (`auth failed`, `session expired`), so - unlike
+/// `api_key`/`token`/`bearer`/etc - a bare space must not turn the next word
+/// into a redacted value; only an explicit `:` or `=` does. Mirrors `scrub`'s
+/// `everyday_words_need_an_explicit_separator`.
+#[test]
+fn everyday_key_words_need_an_explicit_separator() {
+    assert_eq!(
+        redact_secrets("auth failed for user"),
+        "auth failed for user"
+    );
+    assert_eq!(redact_secrets("session expired"), "session expired");
+    assert_eq!(redact_secrets("dsn: https://k@h/1"), "dsn: [redacted]");
+    assert_eq!(redact_secrets("dsn=https://k@h/1"), "dsn=[redacted]");
+}
+
+/// Every key `is_sensitive_key` and the free-text rule must agree covers a
+/// value - including the keys added alongside `auth`/`dsn`/`credential`/
+/// `session`/`cookie` that only trigger on an explicit separator. Mirrors
+/// `scrub`'s `every_sensitive_key_is_matched`.
+#[test]
+fn every_sensitive_key_is_redacted_with_an_explicit_separator() {
+    for key in [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "api-key",
+        "mnemonic",
+        "seed",
+        "privatekey",
+        "private_key",
+        "private-key",
+        "authorization",
+        "bearer",
+        "auth",
+        "dsn",
+        "credential",
+        "session",
+        "cookie",
+        "signature",
+    ] {
+        assert!(is_sensitive_key(&key.to_uppercase()), "{key}");
+        let out = redact_secrets(&format!("{key}=hunter2value"));
+        assert!(!out.contains("hunter2value"), "{key} not redacted: {out}");
+    }
+    assert!(!is_sensitive_key("merchant_name"));
 }
 
 #[test]

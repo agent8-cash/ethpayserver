@@ -65,10 +65,16 @@ fn rules() -> &'static [(Regex, &'static str)] {
             (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]"),
             // Bare 64-char hex (private keys / hashes without the 0x prefix).
             (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]"),
-            // BIP-39 mnemonics: 12+ consecutive lowercase words.
+            // BIP-39 mnemonics: 12+ consecutive lowercase words. The
+            // placeholder states the shape, not a claim about what the text
+            // was - this rule fires on ordinary 12+-word prose exactly as
+            // readily as on a real seed phrase (see `scrub`'s
+            // `placeholder_states_the_shape_not_the_secret_kind`), and a
+            // label like `[redacted-mnemonic]` on a false positive used to
+            // read as an incident that never happened.
             (
                 build(r"\b(?:[a-z]+\s+){11,}[a-z]+\b"),
-                "[redacted-mnemonic]",
+                "[redacted: 12+ word run]",
             ),
             // Email addresses (customer PII).
             (
@@ -76,9 +82,22 @@ fn rules() -> &'static [(Regex, &'static str)] {
                 "[redacted-email]",
             ),
             // `key: value` / `key=value` for sensitive keys, plus `Bearer <tok>`.
+            // A bare space still introduces a value for this set - that's
+            // what lets `Bearer <tok>` and `token abc` match with no `:`/`=`
+            // at all.
             (
                 build(
                     r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b(\s*[:=]\s*|\s+)("?)[^\s,;"']+"#,
+                ),
+                "$1$2$3[redacted]",
+            ),
+            // The same shape, for key names that are also everyday English
+            // words (`auth failed`, `session expired`, `cookie banner`) and
+            // so must not trigger on a bare space - only an explicit `:` or
+            // `=` marks these as a value, never whitespace alone.
+            (
+                build(
+                    r#"(?i)\b(auth|dsn|credential|session|cookie|signature)\b(\s*[:=]\s*)("?)[^\s,;"']+"#,
                 ),
                 "$1$2$3[redacted]",
             ),
@@ -145,11 +164,13 @@ fn is_sensitive_key(key: &str) -> bool {
         "private_key",
         "private-key",
         "authorization",
+        "bearer",
         "auth",
         "dsn",
         "credential",
         "session",
         "cookie",
+        "signature",
     ];
     let key = key.to_ascii_lowercase();
     SENSITIVE.iter().any(|needle| key.contains(needle))

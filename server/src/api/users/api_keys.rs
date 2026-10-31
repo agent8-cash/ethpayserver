@@ -152,32 +152,6 @@ where
     Ok(Json(ApiKeyListResponse { keys }))
 }
 
-/// An empty list is persisted as NULL - "inherits the owner's role in full" -
-/// not as `Some([])`, which means "can do nothing".
-///
-/// The wire type cannot tell the two apart. `CreateApiKeyPayload.permissions`
-/// is a `Vec<String>` with `#[serde(default)]`, so a request that omits the
-/// field entirely and one that sends `[]` both arrive here as an empty vec.
-/// Something has to be chosen for that case, and the choice decides whether
-/// existing callers keep working: the dashboard posts `{name, expires_at}`
-/// and no `permissions` at all, so persisting `Some([])` would make every key
-/// it creates authenticate and then be refused every permission check -
-/// `key_retains_unrestricted_access(Some(&[]))` and
-/// `key_grants_store_permission(Some(&[]), ..)` are both false - while the
-/// request still returned 201 and showed the user a key to save.
-///
-/// Narrowing therefore has to be asked for explicitly. Once the field can
-/// distinguish "absent" from "deliberately empty" - an `Option<Vec<String>>`
-/// in the shared type - the stricter reading becomes available for the
-/// explicitly-empty case without breaking callers that never send it.
-fn requested_scope(permissions: &[String]) -> Option<&[String]> {
-    if permissions.is_empty() {
-        None
-    } else {
-        Some(permissions)
-    }
-}
-
 /// Create a new API key for the authenticated user.
 #[utoipa::path(
     post,
@@ -204,11 +178,17 @@ where
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    validate_requested_permissions(&payload.permissions)?;
+    // `CreateApiKeyPayload.permissions` is `Option<Vec<String>>`: an absent
+    // field deserializes to `None` (inherit the owner's role - unchanged
+    // existing behaviour) and an explicit `[]` to `Some(vec![])` (a
+    // deliberately powerless key), so the two no longer need collapsing
+    // here - the wire type already carries the distinction this handler
+    // used to have to invent. `Some([..])` still goes through the same
+    // validation as before.
+    let requested: Option<&[String]> = payload.permissions.as_deref();
+    validate_requested_permissions(requested.unwrap_or(&[]))?;
 
     let (raw_key, api_key) = build_api_key(&name, user.id, payload.expires_at);
-
-    let requested = requested_scope(&payload.permissions);
 
     state
         .data_service
@@ -226,9 +206,9 @@ where
             created_at: api_key.created_at,
             expires_at: api_key.expires_at,
             key: raw_key,
-            // What was stored, not what was asked for. `requested_scope`
-            // maps an empty request to `None`, and that is the value the
-            // caller needs to see.
+            // What was stored, not an echo of the raw payload - `requested`
+            // is exactly `payload.permissions` reborrowed, so this already
+            // matches `None`/`Some([])`/`Some([..])` as persisted.
             permissions: requested.map(<[String]>::to_vec),
         }),
     ))
@@ -444,6 +424,9 @@ where
     ))
 }
 
-#[cfg(test)]
-#[path = "api_keys_tests.rs"]
-mod tests;
+// Unit tests for `requested_scope` used to live here. That helper is gone -
+// `CreateApiKeyPayload.permissions` is `Option<Vec<String>>` now, so the
+// absent/empty/scoped distinction it used to invent comes straight from the
+// wire type - and the behaviour it covered is exercised through the real
+// handler instead, in `server/tests/api_key_create_scope.rs`: a unit test
+// against a deleted function proves nothing a caller can observe.
