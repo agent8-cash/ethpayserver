@@ -22,6 +22,10 @@ pub enum InviteAcceptance {
     /// The caller already belongs to the store. The invite is left unspent and
     /// the existing role is untouched - an invite must never demote anyone.
     AlreadyMember,
+    /// The caller's account has an email that differs from the address the
+    /// invite was mailed to. Refused, and the invite stays redeemable by its
+    /// addressee.
+    EmailMismatch,
     /// Missing, expired or already used; not distinguished, so a guesser
     /// learns nothing about how close a token was.
     Invalid,
@@ -42,9 +46,17 @@ pub trait StoreInviteWriter: Send + Sync {
 
     /// Redeem a token for `user_id`, atomically: the invite is spent and the
     /// membership created together, or neither happens.
+    ///
+    /// `user_email` is the redeemer's account email, or `None` for a
+    /// wallet-only account, which is not compared against the invite. Every
+    /// attempt is recorded, whatever its outcome.
     async fn accept_store_invite(
         &self,
         token: Uuid,
         user_id: UserId,
+        user_email: Option<&str>,
     ) -> RepositoryResult<InviteAcceptance>;
+
+    /// The accounts that joined `store_id` by redeeming an invite.
+    async fn invite_redeemers(&self, store_id: StoreId) -> RepositoryResult<Vec<UserId>>;
 }

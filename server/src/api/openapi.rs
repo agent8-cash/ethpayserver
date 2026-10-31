@@ -129,6 +129,7 @@ use super::{
         stores::AddMemberRequest,
         stores::UpdateMemberRequest,
         stores::MemberResponse,
+        stores::MemberListItem,
         stores::CreateWalletRequest,
         stores::UpdateWalletRequest,
         stores::SetStoreWalletRequest,

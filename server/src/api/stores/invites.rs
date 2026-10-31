@@ -13,11 +13,10 @@
 //!
 //! Limitation: the code is a bearer token. Any signed-in account that holds it
 //! can redeem it, so a membership proves possession of a token, not the
-//! identity of the addressee. `store_invites` records who sent an invite,
-//! when it was accepted, and - since the redeeming account need not be the
-//! invited address's owner - which account `accepted_by` redeemed it. Whether
-//! a mismatch between that account's verified email and the invite's address
-//! should be allowed, flagged or refused is not decided here.
+//! identity of the addressee. So redemption is also bound to the invited
+//! address: an account whose email differs from it is refused (403), and a
+//! wallet-only account, which has no email, redeems as normal. Every attempt
+//! is recorded in `store_invite_attempts`, refusals included.
 //!
 //! Gated on `caninviteusers`, held by Owner only. It is not
 //! `canmodifystoreusers`, which also gates changing roles and removing
@@ -188,8 +187,9 @@ where
 
 /// Accept a store invite with the code mailed to the invited address.
 ///
-/// Holding the code is the proof of owning the address, so any signed-in
-/// account may redeem it, including one that registered with a wallet only.
+/// Holding the code is not enough on its own: an account with an email must
+/// have that email match the invited address, so a forwarded code is refused.
+/// A wallet-only account has no email to compare and may redeem it.
 #[utoipa::path(
     post,
     path = "/users/me/invites/accept",
@@ -200,6 +200,7 @@ where
         (status = 200, description = "Membership created", body = AcceptInviteResponse),
         (status = 400, description = "Invalid, expired or already used code"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "The account's email differs from the invited address"),
         (status = 409, description = "Already a member of that store"),
     )
 )]
@@ -213,7 +214,7 @@ where
 {
     match state
         .data_service
-        .accept_store_invite(req.token, user.id)
+        .accept_store_invite(req.token, user.id, user.email.as_deref())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
@@ -229,6 +230,7 @@ where
                 role_name: role.role,
             }))
         }
+        InviteAcceptance::EmailMismatch => Err(StatusCode::FORBIDDEN),
         InviteAcceptance::AlreadyMember => Err(StatusCode::CONFLICT),
         InviteAcceptance::Invalid => Err(StatusCode::BAD_REQUEST),
     }
