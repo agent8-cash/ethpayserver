@@ -120,6 +120,32 @@ pub fn validate_xpub(xpub_str: &str) -> bool {
     MainnetEncoder::xpub_from_base58(xpub_str).is_ok()
 }
 
+/// Version bytes of the SLIP-132 single-sig public keys this converts.
+const XPUB_VERSION: [u8; 4] = [0x04, 0x88, 0xb2, 0x1e];
+const YPUB_VERSION: [u8; 4] = [0x04, 0x9d, 0x7c, 0xb2]; // BIP-49, P2SH-P2WPKH
+const ZPUB_VERSION: [u8; 4] = [0x04, 0xb2, 0x47, 0x46]; // BIP-84, P2WPKH
+
+/// Rewrites a BIP-49 `ypub` or BIP-84 `zpub` account key as the `xpub` with the
+/// same key material, so one canonical form is stored. Matched on the version
+/// bytes, not the prefix text, so SLIP-132 multisig keys (`Ypub`/`Zpub`, other
+/// bytes) and anything else fall through as `None` and are never reinterpreted.
+///
+/// Returns `None` for an xpub too: it is already the stored form.
+pub fn xpub_from_slip132(key_str: &str) -> Option<String> {
+    // The decoder panics on a payload shorter than its 4-byte checksum, so
+    // refuse short input here, as `validate_xpub` does.
+    if key_str.len() < 10 {
+        return None;
+    }
+    let mut payload = coins_bip32::enc::decode_b58_check(key_str).ok()?;
+    let version: [u8; 4] = payload.get(..4)?.try_into().ok()?;
+    if version != YPUB_VERSION && version != ZPUB_VERSION {
+        return None;
+    }
+    payload[..4].copy_from_slice(&XPUB_VERSION);
+    Some(coins_bip32::enc::encode_b58_check(&payload))
+}
+
 /// BIP-32 depth of the key the deriver expects: `m/44'/{coin}'/0'` is three
 /// derivations below the master key.
 pub const ACCOUNT_XPUB_DEPTH: u8 = 3;
