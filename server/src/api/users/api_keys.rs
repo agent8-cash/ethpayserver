@@ -155,27 +155,15 @@ where
 /// An empty list is persisted as NULL - "inherits the owner's role in full" -
 /// not as `Some([])`, which means "can do nothing".
 ///
-/// The wire type cannot tell the two apart. `CreateApiKeyPayload.permissions`
-/// is a `Vec<String>` with `#[serde(default)]`, so a request that omits the
-/// field entirely and one that sends `[]` both arrive here as an empty vec.
-/// Something has to be chosen for that case, and the choice decides whether
-/// existing callers keep working: the dashboard posts `{name, expires_at}`
-/// and no `permissions` at all, so persisting `Some([])` would make every key
-/// it creates authenticate and then be refused every permission check -
-/// `key_retains_unrestricted_access(Some(&[]))` and
-/// `key_grants_store_permission(Some(&[]), ..)` are both false - while the
-/// request still returned 201 and showed the user a key to save.
-///
-/// Narrowing therefore has to be asked for explicitly. Once the field can
-/// distinguish "absent" from "deliberately empty" - an `Option<Vec<String>>`
-/// in the shared type - the stricter reading becomes available for the
-/// explicitly-empty case without breaking callers that never send it.
-fn requested_scope(permissions: &[String]) -> Option<&[String]> {
-    if permissions.is_empty() {
-        None
-    } else {
-        Some(permissions)
-    }
+/// Absent and explicitly-empty both mean "inherit the owner's role" and are
+/// persisted as `NULL`. Persisting `Some([])` instead would make every key
+/// created without a scope (the dashboard posts no `permissions` at all)
+/// authenticate and then be refused every permission check, while the request
+/// still returned 201. The shared type now tells absent from `[]`, but making
+/// an explicit `[]` mean "can do nothing" is a policy change this code does
+/// not make; both still map to inherit.
+fn requested_scope(permissions: Option<&[String]>) -> Option<&[String]> {
+    permissions.filter(|p| !p.is_empty())
 }
 
 /// Create a new API key for the authenticated user.
@@ -204,11 +192,12 @@ where
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    validate_requested_permissions(&payload.permissions)?;
+    let requested_in = payload.permissions.as_deref().unwrap_or(&[]);
+    validate_requested_permissions(requested_in)?;
 
     let (raw_key, api_key) = build_api_key(&name, user.id, payload.expires_at);
 
-    let requested = requested_scope(&payload.permissions);
+    let requested = requested_scope(payload.permissions.as_deref());
 
     state
         .data_service

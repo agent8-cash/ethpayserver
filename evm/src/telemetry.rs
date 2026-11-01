@@ -68,7 +68,7 @@ fn rules() -> &'static [(Regex, &'static str)] {
             // BIP-39 mnemonics: 12+ consecutive lowercase words.
             (
                 build(r"\b(?:[a-z]+\s+){11,}[a-z]+\b"),
-                "[redacted-mnemonic]",
+                "[redacted: 12+ word run]",
             ),
             // Email addresses (customer PII).
             (

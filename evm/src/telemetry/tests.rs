@@ -30,7 +30,7 @@ fn redacts_mnemonic() {
     let m = "legal winner thank year wave sausage worth useful legal winner thank yellow";
     let out = redact_secrets(&format!("loaded wallet: {m}"));
     assert!(!out.contains("sausage"), "mnemonic leaked: {out}");
-    assert!(out.contains("[redacted-mnemonic]"));
+    assert!(out.contains("[redacted: 12+ word run]"));
 }
 
 #[test]

@@ -105,7 +105,7 @@ async fn an_explicitly_scoped_key_is_persisted_with_exactly_that_scope() {
         State(state),
         axum::Json(api_types::CreateApiKeyPayload {
             name: "scoped key".to_string(),
-            permissions: requested.clone(),
+            permissions: Some(requested.clone()),
             expires_at: None,
         }),
     )
@@ -152,7 +152,7 @@ async fn an_absent_scope_is_persisted_as_inherit_rather_than_as_an_empty_scope()
         State(state),
         axum::Json(api_types::CreateApiKeyPayload {
             name: "inheriting key".to_string(),
-            permissions: Vec::new(),
+            permissions: None,
             expires_at: None,
         }),
     )
