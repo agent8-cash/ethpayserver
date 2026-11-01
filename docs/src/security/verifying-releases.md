@@ -2,8 +2,16 @@
 
 random.cash signs its Docker images with [Sigstore cosign](https://docs.sigstore.dev/)
 in keyless mode. No long-lived signing key exists: the GitHub Actions job's OIDC
-identity is the signer, and every signature is recorded in the public
-[Rekor transparency log](https://docs.sigstore.dev/logging/overview/).
+identity is the signer.
+
+**Only a release tag's signature is recorded in the public
+[Rekor transparency log](https://docs.sigstore.dev/logging/overview/).** The
+per-commit `sha-<short-sha>` images that testnet and `main` push on every
+commit are signed without a Rekor upload: Rekor is a third-party service with
+no SLA, and a push happens many times a day, so one outage there must not be
+able to block it. A release tag is the artifact verified independently of this
+pipeline, so it keeps the transparency-log entry and is worth that (rare)
+outage risk — see [How it works](#how-it-works).
 
 Images are the only signed artifact. See
 [What is not signed](#what-is-not-signed) — it is listed explicitly so you know
@@ -24,6 +32,9 @@ cosign verify \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   ghcr.io/randomcash/ethpayserver:$TAG
 ```
+
+Add `--insecure-ignore-tlog` for a `sha-*` tag — it has no Rekor entry to check
+(see above). Drop it for a release tag, which still has one.
 
 Two images are published per commit from this repository:
 
@@ -67,19 +78,27 @@ cosign verify ... ghcr.io/randomcash/ethpayserver@$DIGEST
 
 1. CI builds the binaries and pushes the images.
 2. Immediately after each push, the job resolves the image's digest and calls
-   `cosign sign --yes` on it, using a short-lived GitHub OIDC token
-   (`id-token: write`) — no key material exists to store or leak.
+   `cosign sign --yes`, using a short-lived GitHub OIDC token (`id-token:
+   write`) — no key material exists to store or leak.
 3. Cosign exchanges that token for a short-lived code-signing certificate from
-   [Fulcio](https://docs.sigstore.dev/certificate_authority/overview/) and
-   records the signature in [Rekor](https://docs.sigstore.dev/logging/overview/).
+   [Fulcio](https://docs.sigstore.dev/certificate_authority/overview/). On a
+   release tag, it also records the signature in
+   [Rekor](https://docs.sigstore.dev/logging/overview/)
+   (`--tlog-upload=true`); on every other build — testnet and `main` push on
+   every commit — it signs with `--tlog-upload=false` and skips Rekor, so an
+   outage of that third-party service can't block a push that happens many
+   times a day.
 4. Signing runs inside the publish step, so a signing failure fails the step that
    pushed the image and the pipeline stops.
 
 ## What a signature proves
 
 That the image was built and pushed by the `ci.yml` workflow in the named
-repository, from a commit reachable from the branch or tag in the certificate,
-and that this was publicly recorded in Rekor at signing time.
+repository, from a commit reachable from the branch or tag in the certificate.
+For a release tag, also that this was publicly recorded in Rekor at signing
+time; a per-commit `sha-<short-sha>` image has no Rekor entry, so verify it
+with `--insecure-ignore-tlog` — the certificate and signature are checked in
+full regardless, only the transparency-log lookup is skipped.
 
 It does **not** prove the code is free of defects, that the commit was reviewed,
 or that whoever pushed it was authorised. It binds artifact to pipeline.
@@ -98,5 +117,5 @@ or that whoever pushed it was authorised. It binds artifact to pipeline.
 |-------|-----------|
 | Build | Per-commit immutable image tags |
 | Container images | cosign keyless via GitHub Actions OIDC, signed by digest |
-| Transparency | Sigstore Rekor public log |
+| Transparency | Sigstore Rekor public log — release tags only; per-commit builds skip it so a Rekor outage can't block a push |
 | Frontend | Separately built, signed, and deployed on its own cadence; `ops/client-image.pin` records the tag this repo tested against |

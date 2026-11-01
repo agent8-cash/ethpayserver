@@ -25,23 +25,20 @@
 //! "delivered" from "nowhere to deliver to" would have no way to decide
 //! whether that is worth surfacing to an operator.
 //!
-//! Not yet reachable from a plugin, but the gap is now one mechanical step
-//! rather than an unstarted one. `payserver-plugin-host`'s `PluginHostCalls`
-//! trait has gained an `account_notice` method and a matching wasm import
+//! Reachable from a plugin now. `payserver-plugin-host`'s `PluginHostCalls`
+//! trait has an `account_notice` method and a matching wasm import
 //! (`define_answering_call`, the same helper `invoice_create` and
 //! `merchant_volume` use), tested the same way those two are - instantiate a
 //! module that imports only `account_notice` and check the request reaches
-//! that method and no other. None of that is visible to this repo yet:
-//! `payserver-plugin-host` is pinned by revision in this repo's
-//! `Cargo.toml`, and a change there does not reach here until the pin moves,
-//! which needs the commons change merged first - a same-session commit on a
-//! branch that could still be rebased is not something a pin should ever
-//! point at. Once the pin does move, wiring this repo's side is: implement
-//! `account_notice` on [`super::host_calls::PluginCalls`], the same shape as
-//! `issuer`/`volume` there (a `DeferredNotifier` cell, since building a
-//! [`PluginAccountNotifier`] needs the full `PgAppState` that is not ready
-//! at plugin-registration time either), and call [`AccountNotifier::notify_account`]
-//! from it. No design decision is open at that point, only the wiring.
+//! that method and no other. This repo's side,
+//! [`super::host_calls::PluginCalls::account_notice_impl`], is the same
+//! shape as `issuer`/`volume` there: a `DeferredNotifier` cell, since
+//! building a [`PluginAccountNotifier`] needs the full `PgAppState` that is
+//! not ready at plugin-registration time either, calling
+//! [`AccountNotifier::notify_account`] from it. `server.rs` publishes the
+//! cell unconditionally - unlike `issuer`, this needs no operator store, only
+//! the instance's own user directory and email sender, both of which exist
+//! on every instance.
 //!
 //! Deciding *when* to call this is a second, independent gap: the
 //! thresholds that would trigger a warning are a billing plan's own config,

@@ -239,6 +239,27 @@ jobs:
       - name: Sentry release guard self-test
         run: ./scripts/check-sentry-release.test.sh
 
+      # Proves the testnet/mainnet split below - which ref keeps the
+      # Sigstore transparency-log upload and which drops it - actually
+      # follows the ref rather than a comment asserting someone checked it.
+      - name: Image tag guard self-test
+        run: ./scripts/compute-image-tags.test.sh
+
+      # The signing self-test replays its arguments against the real cosign,
+      # so it needs the pinned binary. Same pin as the docker job's installer;
+      # change both together.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      # Proves a signing failure (eg the transparency log being unreachable)
+      # produces an error naming signing, not the digest guard that already
+      # passed - nothing in normal CI operation exercises cosign failing, so
+      # nothing organically proves this.
+      - name: Cosign sign guard self-test
+        run: ./scripts/cosign-sign.test.sh
+
       # Nothing in normal operation exercises the testnet dispatch's failure
       # branches - RCS_DISPATCH_PAT is normally set and the target normally
       # answers 2xx - so this is what proves a redirect or an error actually
@@ -475,6 +496,67 @@ jobs:
         run: ./scripts/check-advisory-ignores.sh
       - name: cargo deny
         run: cargo deny check licenses sources
+
+  # Pull requests only. Scans the commits a PR adds for committed secrets, and
+  # labels a PR that touches a sensitive area so a person reviews it. The label
+  # never fails the job; merging stays gated by a human either way.
+  security-gate:
+    name: Security gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pinned release, checksum verified before it runs.
+      - name: Install secret scanner
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          archive="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" "$base/$archive"
+          curl -sSfL -o sums.txt "$base/gitleaks_${VERSION}_checksums.txt"
+          grep " ${archive}\$" sums.txt | sha256sum -c -
+          tar xzf "$archive" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Secret scan self-test
+        run: ./scripts/secret-scan.test.sh
+
+      - name: Secret scan (commits in this PR)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/secret-scan.sh "$BASE_SHA"
+
+      - name: Sensitive-path self-test
+        run: ./scripts/sensitive-paths.test.sh
+
+      - name: Flag sensitive paths for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          hits="$(git diff --name-only "$BASE_SHA" HEAD | ./scripts/sensitive-paths.sh)"
+          if [ -z "$hits" ]; then
+            echo "No sensitive paths touched."
+            exit 0
+          fi
+          echo "Sensitive paths touched:"
+          echo "$hits" | sed 's/^/  /'
+          gh label create security-review --color B60205 \
+            --description "Touches a sensitive path; needs human review" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label security-review \
+            || echo "::warning::could not add the security-review label"
 
   build:
     name: Build
@@ -925,27 +1007,22 @@ jobs:
 
       - name: Compute image tags
         id: tag
-        run: |
-          # Two tags per build. The moving one (testnet-latest) is
-          # what humans pull; the per-commit one is never reused, so the
-          # previous build keeps a name after the next push and rolling back
-          # is a `compose up` instead of revert -> rebuild -> redeploy.
-          # 7 chars matches `git rev-parse --short`, i.e. the build_sha the
-          # server reports on /health — so a running container can be matched
-          # to the image it came from.
-          echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}-latest" >> "$GITHUB_OUTPUT"
-          fi
+        # See scripts/compute-image-tags.sh for the tag scheme and for why
+        # tlog_upload - whether the signature below is recorded in the
+        # public Sigstore transparency log - differs between a release tag
+        # and everything else.
+        run: ./scripts/compute-image-tags.sh "${{ github.ref }}" "${{ github.ref_name }}" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       # Signed by DIGEST, never by tag. A tag is a moving pointer: signing
       # `:testnet-latest` says "something called that was signed once", which is
       # not a statement about the bytes anyone actually pulls. The digest is the
       # bytes. `cosign verify` on a tag resolves it to a digest and checks that,
       # so verifying by tag still works for humans.
+      #
+      # scripts/cosign-sign.sh does the signing and, on failure, names signing
+      # in the error rather than the digest guard above it - see that script
+      # for why: a Sigstore outage used to abort here with nothing to tell a
+      # reader it wasn't the registry.
       - name: Build & push server
         run: |
           docker build -f docker/ethpayserver.Dockerfile \
@@ -954,8 +1031,7 @@ jobs:
           docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.tag }}
           docker push ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }}
           DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the server image"; exit 1; }
-          cosign sign --yes "$DIGEST"
+          ./scripts/cosign-sign.sh server "$DIGEST" "${{ steps.tag.outputs.tlog_upload }}"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build & push monitor
@@ -966,8 +1042,7 @@ jobs:
           docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.tag }}
           docker push ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }}
           DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.IMAGE_BASE }}/evmmonitor:${{ steps.tag.outputs.sha_tag }})"
-          [ -n "$DIGEST" ] || { echo "::error::no digest for the monitor image"; exit 1; }
-          cosign sign --yes "$DIGEST"
+          ./scripts/cosign-sign.sh monitor "$DIGEST" "${{ steps.tag.outputs.tlog_upload }}"
           echo "signed $DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
   # staging (main) + production (tags) deploy via SSH push.
@@ -1274,6 +1349,10 @@ jobs:
     concurrency:
       group: e2e-postmerge-testnet
       cancel-in-progress: false
+    env:
+      # cloudflared pinned release and the SHA256 of its .deb asset. Bump both together.
+      CLOUDFLARED_VERSION: 2026.10.7
+      CLOUDFLARED_SHA256: 70b1a1e0f46033ffc8d90b406e554044ba6cbf2e4360295ef1163aed31e09393
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1291,10 +1370,14 @@ jobs:
         run: npm ci && npx playwright install --with-deps chromium
 
       # The sink's quick-tunnel fallback spawns this binary directly.
+      # Pinned release, checksum verified before it is installed.
       - name: Install cloudflared
         run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
           curl -fsSL -o cloudflared.deb \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          echo "${CLOUDFLARED_SHA256}  cloudflared.deb" | sha256sum -c -
           sudo dpkg -i cloudflared.deb
 
       - name: Invoice -> pay -> settle -> webhook -> payout (native + ERC-20)

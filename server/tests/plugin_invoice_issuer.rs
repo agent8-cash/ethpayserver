@@ -34,8 +34,8 @@ use payserver_plugin_host::PluginHostCalls;
 use rates::NoOpRateProvider;
 use server::services::RedisEVMMonitor;
 use server::services::plugins::{
-    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredStanding, DeferredVolume,
-    HostInvoiceIssuer, PluginCalls, PluginHostApi, PluginPools,
+    DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredNotifier, DeferredStanding,
+    DeferredVolume, HostInvoiceIssuer, PluginCalls, PluginHostApi, PluginPools,
 };
 use server::state::PgAppState;
 use types::ChainId;
@@ -121,6 +121,7 @@ fn issue(issuer: DeferredIssuer, request: &[u8]) -> Result<serde_json::Value, St
             volume: DeferredVolume::default(),
             bulk_volume: DeferredBulkVolume::default(),
             standing: DeferredStanding::default(),
+            notifier: DeferredNotifier::default(),
         });
     let answer = PluginHostCalls::invoice_create(&calls, request)?;
     Ok(serde_json::from_slice(&answer).expect("issuer answered non-JSON"))
