@@ -14,15 +14,15 @@ ignore = [
     # server. Stops applying only if that path drops paste - alloy forking
     # away from it, or commons dropping alloy-primitives.
     "RUSTSEC-2024-0436", # paste unmaintained - see the note above
-    # zip < 9.0.0, reached only by utoipa-swagger-ui's build script, which
-    # unpacks the Swagger UI dist vendored inside that crate. All three are
-    # extraction advisories - symlink targets and permission bits - so they
-    # describe a risk to whoever extracts an archive they did not author.
-    # scripts/check-zip-ignores.sh fails if any non-build edge reaches zip, if
-    # a dependent it does not name appears, or once the lock reaches 9.0.0.
-    "RUSTSEC-2026-0367", # zip extraction: symlink targets not validated
-    "RUSTSEC-2026-0368", # zip extraction: symlink targets not validated
-    "RUSTSEC-2026-0369", # zip extraction: privileged permission bits
+    # zip RUSTSEC-2026-0367/0368/0369 ignores removed: the lock is on zip
+    # 9.2.2, which is a fixed release for all three, and
+    # scripts/check-zip-ignores.sh fails once that happens with any of them
+    # still listed. They were only ever here because zip 3.0.0 could not be
+    # left behind without utoipa 6, and that is what this change did. The
+    # fourth advisory in the same family, RUSTSEC-2026-0429, was never
+    # ignorable: it is the one that turned the whole gate red and forced the
+    # bump, because `Vec::with_capacity` aborts the process rather than
+    # panicking, so no caller could have contained it.
     # MAINNET BLOCKER. Timing variability in operations crypto-bigint
     # intends to be constant-time (published 2026-10-23, fixed upstream at
     # >=0.7.6). EXPIRES 2026-11-23 or any mainnet deploy, whichever is sooner -
