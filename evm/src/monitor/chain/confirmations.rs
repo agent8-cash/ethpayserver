@@ -70,11 +70,12 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
     ///
     /// What this monitor *can* answer authoritatively is whether a specific
     /// transaction is still on chain: `survived_tx_hashes` re-scans
-    /// `[fork_block, new_block.number]` for currently watched addresses, so
-    /// a transaction the reorg merely relocated to a different block is
-    /// reported as still present rather than assumed gone. Retracting one of
-    /// those would be the opposite error — un-paying an invoice that is
-    /// still genuinely paid.
+    /// `[fork_block, new_block.number]` for currently watched addresses, or
+    /// every transaction in range when nothing is watched (see
+    /// `find_survived_tx_hashes`), so a transaction the reorg merely
+    /// relocated to a different block is reported as still present rather
+    /// than assumed gone. Retracting one of those would be the opposite
+    /// error — un-paying an invoice that is still genuinely paid.
     pub(super) async fn handle_reorg(
         &self,
         fork_block: u64,
@@ -138,52 +139,38 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
         Ok(())
     }
 
-    /// Re-scan `[from, to]` for transfers to currently watched addresses, to
-    /// find transactions a reorg relocated to a different block rather than
-    /// dropped entirely.
+    /// Re-scan `[from, to]` to find transactions a reorg relocated to a
+    /// different block rather than dropped entirely.
     ///
-    /// Watched addresses are restored from persistence on monitor restart, so
-    /// this still works after one — unlike `pending`, which starts empty. It
-    /// misses a payment whose address has since been unwatched, which is a
-    /// known limitation: confirming survival for those would require asking
-    /// the chain about a specific historical transaction hash, which no
-    /// `BlockSource` method does today. This process (evmmonitor) has no
-    /// database access and talks to the server only over a Redis command/event
-    /// bridge, so it cannot itself ask "which addresses does the DB still care
-    /// about" — the server is the one place that knows, and it drives
-    /// unwatching. The server-side mitigation is
-    /// `InvoiceCleanupService::paid_unwatch_grace_period_secs`, which keeps a
-    /// just-paid address watched for a while after confirmation specifically
-    /// so this scan can still find it if a deep reorg follows quickly, floored
-    /// per chain by `ChainConfig::min_paid_unwatch_grace_period_secs` rather
-    /// than trusting one flat number for every chain. That narrows the gap
-    /// for the realistic window; it does not close it for a reorg arriving
-    /// after the effective grace period elapses — closing it for good would
-    /// need the server to hand the monitor the specific DB candidate set for
-    /// a second round of validation, which the command/event bridge does not
-    /// support today.
+    /// With a non-empty watch set this filters to currently-watched
+    /// addresses, the cheap path (`eth_getLogs`/one `find_native_transfers_to`
+    /// per block rather than fetching every transaction in range). Watched
+    /// addresses are restored from persistence on monitor restart, so this
+    /// still works after one — unlike `pending`, which starts empty. It
+    /// misses a payment whose address has since been unwatched, which the
+    /// empty-watch-set fallback below exists to close.
+    ///
+    /// With an empty watch set — the ordinary state of a quiet server once
+    /// every invoice has settled and passed its grace period — there is
+    /// nothing to filter *for*, but the chain's block contents don't depend
+    /// on any address being watched: `scan_all_transactions` asks what is
+    /// actually in `[from, to]` directly. A payment whose address was
+    /// unwatched before a reorg arrived used to be unverifiable for exactly
+    /// this reason — see `InvoiceCleanupService::paid_unwatch_grace_period_secs`,
+    /// which only narrows that window, it does not close it — and is now
+    /// checked the same way regardless of watch state.
+    ///
     /// Returns the transactions still on chain in `[from, to]`, and whether
-    /// the scan could verify anything at all.
-    ///
-    /// The second half matters as much as the first: the consumer retracts a
-    /// payment it cannot find, so an empty list from a scan that checked
-    /// nothing must not read as an empty list from a scan that checked
-    /// everything.
+    /// the scan could verify anything at all. The second half matters as much
+    /// as the first: the consumer retracts a payment it cannot find, so an
+    /// empty list from a scan that checked nothing must not read as an empty
+    /// list from a scan that checked everything. It is `false` today only on
+    /// a genuine RPC failure (see `scan_all_transactions`), never merely
+    /// because nothing was watched.
     async fn find_survived_tx_hashes(&self, from: u64, to: u64) -> EvmResult<(Vec<B256>, bool)> {
         let watched = self.watched.read().await;
         if watched.is_empty() {
-            // Nothing to scan *for*. Erring here wedged the monitor: the error
-            // propagates through `handle_reorg` into `process_block`, which
-            // then never advances `last_block`, so every subsequent block
-            // re-enters the gap branch and fails again - permanently, on any
-            // server quiet enough to have no watched addresses. A payment
-            // processor that stops detecting payments overnight is a worse
-            // failure than the one that was being guarded against.
-            //
-            // Reported as "not verifiable" instead, which the consumer refuses
-            // to retract on. That keeps the guarantee - an unverified payment
-            // is never retracted - without stopping the chain.
-            return Ok((Vec::new(), false));
+            return self.scan_all_transactions(from, to).await;
         }
         let native_addresses: Vec<Address> = watched
             .keys()
@@ -252,6 +239,38 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
             }
         }
 
+        Ok((survived, true))
+    }
+
+    /// Re-scan `[from, to]` for every transaction actually included in each
+    /// block, regardless of address.
+    ///
+    /// This is what `find_survived_tx_hashes` falls back to when nothing is
+    /// watched: a transaction's presence in a block is a property of the
+    /// transaction, not of who it paid, so it can be checked without an
+    /// address to filter on at all. A payment the chain genuinely dropped
+    /// then correctly comes back absent instead of the whole reorg being
+    /// reported as unverifiable - the gap this closes is exactly a quiet
+    /// server with no watched addresses, not a rare edge case.
+    ///
+    /// One `get_block` per height, same shape and cost as the native
+    /// address-filtered path's one `find_native_transfers_to` per height - this
+    /// does not add a new order of RPC cost, it reads the same block that
+    /// path would have read anyway. A missing block is a hard error rather
+    /// than "no transactions": conflating the two would retract a payment
+    /// that is actually still there, in a block this scan merely failed to
+    /// fetch - the opposite error, and the worse one.
+    async fn scan_all_transactions(&self, from: u64, to: u64) -> EvmResult<(Vec<B256>, bool)> {
+        let mut survived = Vec::new();
+        for block_number in from..=to {
+            let block = self.source.get_block(block_number).await?.ok_or_else(|| {
+                crate::error::EvmError::Rpc(format!(
+                    "block {block_number} not available while re-validating a reorg with \
+                     nothing watched"
+                ))
+            })?;
+            survived.extend(block.transactions.into_hashes_vec());
+        }
         Ok((survived, true))
     }
 }

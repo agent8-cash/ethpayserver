@@ -152,32 +152,24 @@ where
     Ok(Json(ApiKeyListResponse { keys }))
 }
 
-/// An empty list is persisted as NULL - "inherits the owner's role in full" -
-/// not as `Some([])`, which means "can do nothing".
+/// `permissions` is an `Option<Vec<String>>` in the shared type, and the two
+/// `None`/`Some(vec![])` cases are DIFFERENT requests, not two spellings of
+/// one. The collapse that used to live here - a `requested_scope` helper
+/// mapping an empty list to `None` - meant a caller asking for a key with no
+/// permissions was handed the owner's full role instead, which is the
+/// opposite of what they asked for. The helper's own doc comment named this
+/// as the thing to do once the wire type could tell the two apart. It can.
 ///
-/// The wire type cannot tell the two apart. `CreateApiKeyPayload.permissions`
-/// is a `Vec<String>` with `#[serde(default)]`, so a request that omits the
-/// field entirely and one that sends `[]` both arrive here as an empty vec.
-/// Something has to be chosen for that case, and the choice decides whether
-/// existing callers keep working: the dashboard posts `{name, expires_at}`
-/// and no `permissions` at all, so persisting `Some([])` would make every key
-/// it creates authenticate and then be refused every permission check -
-/// `key_retains_unrestricted_access(Some(&[]))` and
-/// `key_grants_store_permission(Some(&[]), ..)` are both false - while the
-/// request still returned 201 and showed the user a key to save.
+///   field absent      -> None       -> stored NULL -> inherits the owner's role
+///   `permissions: []` -> Some([])   -> stored empty -> authenticates, every
+///                                      scoped action refused
+///   `permissions: [..]` -> Some(..) -> validated as before
 ///
-/// Narrowing therefore has to be asked for explicitly. Once the field can
-/// distinguish "absent" from "deliberately empty" - an `Option<Vec<String>>`
-/// in the shared type - the stricter reading becomes available for the
-/// explicitly-empty case without breaking callers that never send it.
-fn requested_scope(permissions: &[String]) -> Option<&[String]> {
-    if permissions.is_empty() {
-        None
-    } else {
-        Some(permissions)
-    }
-}
-
+/// Enforcement itself is unchanged and still lives at read time in
+/// `api_key_scope.rs` - `key_retains_unrestricted_access(Some(&[]))` and
+/// `key_grants_store_permission(Some(&[]), ..)` were already both false. The
+/// only thing that changes is that the handler stops flattening the
+/// distinction before it reaches them.
 /// Create a new API key for the authenticated user.
 #[utoipa::path(
     post,
@@ -204,11 +196,16 @@ where
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    validate_requested_permissions(&payload.permissions)?;
+    // An absent field asks for nothing and is not a scope to validate.
+    // `Some([])` IS validated, and is accepted - an empty scope is a legal
+    // request, just a maximally narrow one.
+    if let Some(requested) = payload.permissions.as_deref() {
+        validate_requested_permissions(requested)?;
+    }
 
     let (raw_key, api_key) = build_api_key(&name, user.id, payload.expires_at);
 
-    let requested = requested_scope(&payload.permissions);
+    let requested = payload.permissions.as_deref();
 
     state
         .data_service
@@ -226,10 +223,9 @@ where
             created_at: api_key.created_at,
             expires_at: api_key.expires_at,
             key: raw_key,
-            // What was stored, not what was asked for. `requested_scope`
-            // maps an empty request to `None`, and that is the value the
-            // caller needs to see.
-            permissions: requested.map(<[String]>::to_vec),
+            // What was stored, which is now exactly what was asked for:
+            // absent stays absent, `[]` comes back as `[]`.
+            permissions: payload.permissions.clone(),
         }),
     ))
 }

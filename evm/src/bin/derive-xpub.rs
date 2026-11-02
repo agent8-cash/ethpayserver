@@ -9,19 +9,32 @@
 //! derive-xpub generate       # new dedicated receiving wallet
 //! derive-xpub from-existing  # derive from a mnemonic already held
 //! ```
+//!
+//! Both take `--json`: stdout then carries one JSON object with `xpub`,
+//! `path` and `verification_addresses`, and the generated mnemonic goes to
+//! stderr instead, so it is still shown without polluting stdout.
 
 use evm::{ChainFamily, HdWallet, VERIFICATION_ADDRESS_COUNT, generate_mnemonic};
 use std::io::BufRead;
 use std::process::ExitCode;
+
+/// Machine-readable output for `--json`. Field names are a public contract.
+#[derive(serde::Serialize)]
+struct XpubExport {
+    xpub: String,
+    path: String,
+    verification_addresses: Vec<String>,
+}
 
 /// Every payment this server derives is Ethereum/EVM; the tool has no reason
 /// to ask which family, so it never does.
 const FAMILY: ChainFamily = ChainFamily::Evm;
 
 fn main() -> ExitCode {
+    let json = std::env::args().skip(2).any(|arg| arg == "--json");
     match std::env::args().nth(1).as_deref() {
-        Some("generate") => generate(),
-        Some("from-existing") => from_existing(),
+        Some("generate") => generate(json),
+        Some("from-existing") => from_existing(json),
         _ => {
             print_usage();
             ExitCode::FAILURE
@@ -38,11 +51,16 @@ fn print_usage() {
     );
 }
 
-fn generate() -> ExitCode {
+fn generate(json: bool) -> ExitCode {
     let mnemonic = match generate_mnemonic(24) {
         Ok(m) => m,
         Err(e) => return fail(&format!("could not generate a mnemonic: {e}")),
     };
+    if json {
+        // Stdout is reserved for the JSON object; the mnemonic must still reach the user.
+        eprintln!("mnemonic: {mnemonic}");
+        return emit(&mnemonic, "", true);
+    }
     println!(
         "New mnemonic - write it down somewhere offline and never type it into a \
          website:\n\nmnemonic: {mnemonic}\n"
@@ -51,10 +69,10 @@ fn generate() -> ExitCode {
         "This wallet exists to receive payments and nothing else. Don't reuse it \
          as a daily-driver wallet, and don't import it into a browser extension."
     );
-    emit(&mnemonic, "")
+    emit(&mnemonic, "", false)
 }
 
-fn from_existing() -> ExitCode {
+fn from_existing(json: bool) -> ExitCode {
     eprintln!(
         "Paste the mnemonic on one line and press Enter. Do this only on a \
          machine you trust, offline if you can manage it - typing a seed phrase \
@@ -86,10 +104,10 @@ fn from_existing() -> ExitCode {
     // mismatch the prompt above warns about. Only strip the line ending.
     let passphrase = passphrase.trim_end_matches(['\n', '\r']);
 
-    emit(&mnemonic, passphrase)
+    emit(&mnemonic, passphrase, json)
 }
 
-fn emit(mnemonic: &str, passphrase: &str) -> ExitCode {
+fn emit(mnemonic: &str, passphrase: &str, json: bool) -> ExitCode {
     let wallet = match HdWallet::from_mnemonic(mnemonic, passphrase) {
         Ok(w) => w,
         Err(e) => return fail(&format!("invalid mnemonic: {e}")),
@@ -98,6 +116,9 @@ fn emit(mnemonic: &str, passphrase: &str) -> ExitCode {
         Ok(x) => x,
         Err(e) => return fail(&format!("could not derive xpub: {e}")),
     };
+    if json {
+        return emit_json(&wallet, xpub);
+    }
     println!("\naccount path: {}", FAMILY.account_path());
     println!("xpub:         {xpub}\n");
     println!(
@@ -106,6 +127,28 @@ fn emit(mnemonic: &str, passphrase: &str) -> ExitCode {
          before a single invoice quotes one:\n"
     );
     print_check_addresses(&wallet)
+}
+
+fn emit_json(wallet: &HdWallet, xpub: String) -> ExitCode {
+    let mut verification_addresses = Vec::with_capacity(VERIFICATION_ADDRESS_COUNT as usize);
+    for index in 0..VERIFICATION_ADDRESS_COUNT {
+        match wallet.derive_address_for(FAMILY, index) {
+            Ok(address) => verification_addresses.push(FAMILY.encode_address(address)),
+            Err(e) => return fail(&format!("could not derive address {index}: {e}")),
+        }
+    }
+    let export = XpubExport {
+        xpub,
+        path: FAMILY.account_path(),
+        verification_addresses,
+    };
+    match serde_json::to_string(&export) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("could not encode json: {e}")),
+    }
 }
 
 fn print_check_addresses(wallet: &HdWallet) -> ExitCode {

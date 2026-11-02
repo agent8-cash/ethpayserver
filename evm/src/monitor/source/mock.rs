@@ -9,7 +9,7 @@
 use super::{BlockNotification, BlockSource, BlockStream, LogFilter, NativeTransfer, SourceStatus};
 use crate::error::{EvmError, EvmResult};
 use alloy::primitives::{Address, B256, U256};
-use alloy::rpc::types::Block;
+use alloy::rpc::types::{Block, BlockTransactions, Header};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock as SyncRwLock;
@@ -68,6 +68,13 @@ struct Inner {
     /// `get_block_hash`, which reorg detection uses to check chain
     /// continuity across a gap.
     block_hashes: SyncRwLock<HashMap<u64, B256>>,
+    /// Transaction hashes contained in each block, keyed by number. Backs
+    /// `get_block`, which reorg re-validation falls back to when nothing is
+    /// watched: the address-filtered scan has nothing to filter *for*, but
+    /// the chain's own block contents don't depend on any address being
+    /// watched. Absent from this map but present in `block_hashes` means a
+    /// pushed block with no registered transactions, not an unknown block.
+    block_tx_hashes: SyncRwLock<HashMap<u64, Vec<B256>>>,
     /// When set, `find_native_transfers_to` returns this error instead of
     /// looking anything up. Lets a test simulate an RPC failure during reorg
     /// re-validation without disturbing ordinary payment detection.
@@ -116,6 +123,7 @@ impl MockBlockSource {
                 hung: AtomicBool::new(false),
                 hang_notify: Notify::new(),
                 block_hashes: SyncRwLock::new(HashMap::new()),
+                block_tx_hashes: SyncRwLock::new(HashMap::new()),
                 find_native_transfers_error: SyncRwLock::new(None),
                 get_block_hash_error: SyncRwLock::new(None),
             }),
@@ -320,6 +328,22 @@ impl MockBlockSource {
             .unwrap()
             .insert(number, hash);
     }
+
+    /// Set the transaction hashes `get_block` reports for block `number`,
+    /// independent of any watched address.
+    ///
+    /// Lets a test simulate what a reorg actually left at a height -
+    /// including "nothing", for a transaction the reorg genuinely dropped -
+    /// without going through `add_native_transfer`/`add_log`, which are
+    /// address-filtered and so cannot express a transaction's presence on
+    /// its own.
+    pub fn set_block_transactions(&self, number: u64, tx_hashes: Vec<B256>) {
+        self.inner
+            .block_tx_hashes
+            .write()
+            .unwrap()
+            .insert(number, tx_hashes);
+    }
 }
 
 #[async_trait]
@@ -412,9 +436,39 @@ impl BlockSource for MockBlockSource {
         Ok(self.inner.current_block.load(Ordering::SeqCst))
     }
 
-    async fn get_block(&self, _number: u64) -> EvmResult<Option<Block>> {
+    async fn get_block(&self, number: u64) -> EvmResult<Option<Block>> {
         self.record_call("get_block");
-        Ok(None)
+        let Some(hash) = self
+            .inner
+            .block_hashes
+            .read()
+            .unwrap()
+            .get(&number)
+            .copied()
+        else {
+            return Ok(None);
+        };
+        let tx_hashes = self
+            .inner
+            .block_tx_hashes
+            .read()
+            .unwrap()
+            .get(&number)
+            .cloned()
+            .unwrap_or_default();
+        let header = Header {
+            hash,
+            inner: alloy::consensus::Header {
+                number,
+                ..Default::default()
+            },
+            total_difficulty: None,
+            size: None,
+        };
+        Ok(Some(Block::new(
+            header,
+            BlockTransactions::Hashes(tx_hashes),
+        )))
     }
 
     async fn get_block_hash(&self, number: u64) -> EvmResult<Option<B256>> {

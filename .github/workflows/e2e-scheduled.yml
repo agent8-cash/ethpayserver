@@ -36,7 +36,7 @@ env:
 jobs:
   server-not-empty:
     name: Refuse a wiped server
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # THE FIRST ACCOUNT ON A SERVER BECOMES ITS ADMINISTRATOR, so this suite
@@ -84,7 +84,28 @@ jobs:
 
   browser:
     name: Playwright vs testnet
-    runs-on: ubuntu-latest
+    # PINNED, and the pin is the fix for a 6-day silent outage.
+    #
+    # `ubuntu-latest` moved to Ubuntu 26.04 and the pinned @playwright/test
+    # 1.59.1 publishes no chromium build for it, so from 2026-10-28 every run
+    # of this job died in `playwright install` with
+    #
+    #   ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    #
+    # before a single test executed. ci.yml's `e2e` job was already pinned to
+    # ubuntu-24.04 for the same class of drift; this one and `e2e-postmerge-
+    # testnet` were left floating, so the repository carried the fix and the
+    # bug side by side.
+    #
+    # A floating runner image is the same defect as a floating toolchain: the
+    # thing that decides whether the job can run at all is chosen by somebody
+    # else, at a time nobody picked. Pin it.
+    #
+    # EXIT CONDITION: bump @playwright/test to a release that supports 26.04
+    # (1.64.1 is current) and move both jobs forward together. Until then the
+    # runner is the pinned half, because bumping Playwright changes what the
+    # tests DO and this change must only change where they run.
+    runs-on: ubuntu-24.04
     needs: server-not-empty
     timeout-minutes: 30
     steps:
@@ -151,11 +172,15 @@ jobs:
 
   synthetic-payment:
     name: Synthetic payment (Sepolia)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: server-not-empty
     timeout-minutes: 30
     # Independent of `browser`: a broken checkout page must not hide a broken
     # money path, and vice versa.
+    env:
+      # cloudflared pinned release and the SHA256 of its .deb asset. Bump both together.
+      CLOUDFLARED_VERSION: 2026.10.7
+      CLOUDFLARED_SHA256: 70b1a1e0f46033ffc8d90b406e554044ba6cbf2e4360295ef1163aed31e09393
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,10 +199,14 @@ jobs:
 
       # The store webhook URL must be HTTPS, and the server's own `localhost`
       # is inside its container, so the sink needs a public tunnel.
+      # Pinned release, checksum verified before it is installed.
       - name: Install cloudflared
         run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
           curl -fsSL -o cloudflared.deb \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          echo "${CLOUDFLARED_SHA256}  cloudflared.deb" | sha256sum -c -
           sudo dpkg -i cloudflared.deb
 
       # Option to remove the quick-tunnel dependency: a named tunnel, run from a
@@ -226,7 +255,7 @@ jobs:
 
   report:
     name: Report
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [browser, synthetic-payment]
     if: always()
     steps:
