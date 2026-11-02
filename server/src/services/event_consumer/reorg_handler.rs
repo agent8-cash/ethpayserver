@@ -47,12 +47,13 @@ impl<
     ) -> Result<(), EventConsumerError> {
         let chain_id = types::ChainId::evm(event.chain_id);
 
-        // A scan that checked nothing reports an empty survivor list, and an
-        // empty survivor list is exactly what "everything was dropped" looks
-        // like from here. Retracting on it would un-pay every settled invoice
-        // above `fork_block` - the whole chain's worth - on the ordinary state
-        // of a quiet server, which watches no addresses once its invoices are
-        // settled and past their grace period.
+        // An empty survivor list from a scan that never ran looks identical
+        // to "everything was dropped", and retracting on it would un-pay
+        // every candidate payment above `fork_block`. An empty watch set no
+        // longer causes this - the monitor's scan falls back to the chain's
+        // own block contents when there's nothing to filter by address (see
+        // `ChainMonitor::scan_all_transactions`) - so `false` here now means
+        // a genuine failure to reach the chain while re-validating.
         //
         // The monitor can confirm a survivor; it can never prove an absence.
         // So absence is only actionable when the scan could actually look.
@@ -61,9 +62,9 @@ impl<
                 chain_id = %chain_id,
                 fork_block = event.fork_block,
                 depth = event.depth,
-                "reorg detected but its survivors could not be verified (nothing was \
-                 watched to scan for); no payment is retracted. Any payment the chain \
-                 really dropped stays marked valid until something re-validates it."
+                "reorg detected but its survivors could not be verified (chain unreachable \
+                 while re-validating); no payment is retracted. Any payment the chain really \
+                 dropped stays marked valid until the next reorg re-validates it."
             );
             return Ok(());
         }
