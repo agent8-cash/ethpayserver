@@ -8,6 +8,22 @@ GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runner-pin.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
+# A SELFTEST SKIPS where the check refuses: every case below asserts a verdict
+# the check can only reach by PARSING a workflow, so without PyYAML they are
+# not testing the control, they are testing the image - and reporting that as a
+# failure takes the whole suite down with it. Exit 77 is the suite's skip.
+HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pyyaml_or_skip() {
+    python3 -c 'import yaml' 2>/dev/null && return 0
+    printf 'SKIPPED every case: python3 here has no yaml module, so %s cannot be parsed and no case below would be testing the subject - it would be testing the image. Nothing was checked. Install python3-yaml (PyYAML) to exercise this control on this host.\n' "$1"
+    exit 77
+}
+if [ -r "$HERE_DIR/pyyaml-or-say-so.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$HERE_DIR/pyyaml-or-say-so.sh"
+fi
+pyyaml_or_skip "the planted workflow fixtures below"
+
 mkwf() { mkdir -p "$TMP/$1/.github/workflows"; cat > "$TMP/$1/.github/workflows/w.yml"; }
 
 check() { # desc expected_rc root

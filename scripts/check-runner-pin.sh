@@ -53,6 +53,33 @@ MARKER="${PLAYWRIGHT_INSTALL_MARKER:-playwright install}"
 
 [ -d "$WFDIR" ] || { echo "FAILED: no $WFDIR - refusing to report clean over an empty set"; exit 2; }
 
+# PYYAML FIRST, AND SAY SO WHEN IT IS ABSENT.
+#
+# This reads the workflows with python3 + PyYAML. On a runner image that has
+# python3 and NOT PyYAML, a ModuleNotFoundError rendered through the error
+# path below would read as "could not read the workflow set" - a claim about
+# the workflow FILES, made by a line that never opened one. A reader chasing
+# that goes to the workflows, which are fine. central-infrastructure lost
+# hours to exactly that on 2026-10-19 and wrote scripts/pyyaml-or-say-so.sh
+# to hold the decision once; this repository has no such library, so the same
+# two-arm decision is stated here.
+#
+# A CHECK refuses - exit 2, could-not-run, naming the module. It must never
+# pass: a floating runner it cannot look for is not an absent one.
+pyyaml_or_refuse() {
+    python3 -c 'import yaml' 2>/dev/null && return 0
+    printf 'FAILED: python3 here has no yaml module, so %s cannot be parsed at all.\n' "$1"
+    printf '        This is a MISSING DEPENDENCY, not a finding about the workflows.\n'
+    printf '        Install python3-yaml (PyYAML) where this runs. Could not run is not a pass.\n'
+    exit 2
+}
+# Prefer the shared decision where it exists, so the two cannot drift apart.
+if [ -r "$HERE/pyyaml-or-say-so.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$HERE/pyyaml-or-say-so.sh"
+fi
+pyyaml_or_refuse "the workflow files under $WFDIR"
+
 found=0
 fail=0
 unreadable=0
