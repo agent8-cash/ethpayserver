@@ -291,6 +291,19 @@ type Revalidate = std::sync::Arc<dyn Fn() -> BoxFuture<'static, Option<Entitleme
 /// `user` is the one session validation just produced, so a demotion takes
 /// effect at the next re-validation, and the scope is the one the REST list
 /// endpoints use. Fails closed: any membership read error answers `None`.
+///
+/// REQUIRES a role-authoritative `user`. This used to re-read the user row
+/// itself and so could not be wrong about the role; trusting the caller's
+/// `UserInfo` saves that read but moves the decision onto an implicit
+/// contract of `SessionService::validate_session`, which the real
+/// implementation honours (it reads the row and builds the `UserInfo` from
+/// it) and which nothing in the trait states. That is not hypothetical: the
+/// websocket harness's own session double returned a `UserInfo` fixed at
+/// setup with `Role::User` for everyone, and a seeded server admin
+/// subscribed to no topics and silently received nothing. Any
+/// `SessionService` whose `UserInfo` can carry a stale role changes who is
+/// sent a tenant's live payment events, so a new implementation must read
+/// the role afresh or this function must go back to reading it.
 pub(crate) async fn entitlement_of<D>(
     data_service: &D,
     user: &auth::UserInfo,

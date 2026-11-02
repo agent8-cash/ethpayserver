@@ -55,21 +55,58 @@ const QUIET: Duration = Duration::from_millis(600);
 /// Maps a session token to the user it was issued to. The `/ws` handler only
 /// asks it who a token belongs to; everything else it decides from the
 /// database, which is what these tests are about.
-struct Sessions(std::sync::Mutex<HashMap<SessionId, UserInfo>>);
+struct Sessions {
+    /// Session token -> the id of the user it was issued to. Deliberately NOT
+    /// a stored `UserInfo`: the role is read from Postgres on every
+    /// validation, because that is what the real service does.
+    issued: std::sync::Mutex<HashMap<SessionId, Uuid>>,
+    pool: PgPool,
+}
 
 impl Sessions {
     fn revoke(&self, session: SessionId) {
-        self.0.lock().unwrap().remove(&session);
+        self.issued.lock().unwrap().remove(&session);
     }
 }
 
 #[async_trait]
 impl SessionService for Sessions {
+    /// Mirrors `SessionService`'s real implementation, which reads the user
+    /// row here and builds the `UserInfo` from it — so the role it returns is
+    /// the one in the database at this moment.
+    ///
+    /// This used to hand back a `UserInfo` fixed at harness setup, always
+    /// `Role::User`. That was invisible while `entitlement_of` re-read the
+    /// user itself and ignored this value; once it started trusting it, a
+    /// seeded server admin arrived here as an ordinary user, matched no
+    /// membership, subscribed to no topics and silently received nothing.
+    /// A double that cannot represent a role cannot test a decision made
+    /// from one.
     async fn validate_session(&self, session_id: SessionId) -> AuthResult<(UserInfo, Session)> {
-        match self.0.lock().unwrap().get(&session_id).cloned() {
-            Some(user) => Ok((user.clone(), Session::new(user.id, auth::DeviceId::new()))),
-            None => Err(auth::AuthError::SessionInvalid),
-        }
+        // Scoped so the guard is dropped before the await below: holding it
+        // across one makes this future non-`Send`.
+        let user_id = {
+            let issued = self.issued.lock().unwrap();
+            match issued.get(&session_id).copied() {
+                Some(id) => id,
+                None => return Err(auth::AuthError::SessionInvalid),
+            }
+        };
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| auth::AuthError::SessionInvalid)?;
+        let role = match row {
+            // No user row: invalid, as in the real service.
+            None => return Err(auth::AuthError::SessionInvalid),
+            Some(Some(r)) if r == "server_admin" => auth::Role::ServerAdmin,
+            // A null or any other role is an ordinary user.
+            Some(_) => auth::Role::User,
+        };
+        let user = support::user_info_with_role(user_id, role);
+        Ok((user.clone(), Session::new(user.id, auth::DeviceId::new())))
     }
     async fn logout(&self, _: SessionId) -> AuthResult<()> {
         unimplemented!("not exercised")
@@ -156,12 +193,10 @@ async fn serve_configured(
     people: &[&Person],
     broadcast: WsBroadcast,
 ) -> Harness {
-    let sessions = Arc::new(Sessions(std::sync::Mutex::new(
-        people
-            .iter()
-            .map(|p| (p.session, support::user_info(p.user_id)))
-            .collect(),
-    )));
+    let sessions = Arc::new(Sessions {
+        issued: std::sync::Mutex::new(people.iter().map(|p| (p.session, p.user_id)).collect()),
+        pool: data_service.pool().clone(),
+    });
     let broadcast = Arc::new(broadcast);
     let mut state = PgAppState::new(
         data_service,
