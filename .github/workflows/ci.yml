@@ -45,11 +45,18 @@ jobs:
           # Full history: the session-URL guard scans a commit range.
           fetch-depth: 0
 
+      # Every check below runs even when an earlier one fails. Each reads only
+      # the checkout, so none depends on another's result, and a gate that stops
+      # the rest hides them: a failing file-size gate kept Clippy from running,
+      # so a compile error in a test binary went unreported. The job still fails
+      # as a whole if any check fails. Setup steps keep the default: if the
+      # checkout or toolchain is broken, there is nothing meaningful to run.
       # This repository is public. A ticket id in a source file leaks the
       # title and shape of unreleased work, and an outside reader cannot open
       # the tracker anyway. Ticket ids belong in the commit message and PR
       # title, not the tree - see CLAUDE.md.
       - name: No ticket ids or tracker links in source
+        if: always()
         run: ./scripts/check-no-ticket-refs.sh
 
       - uses: dtolnay/rust-toolchain@stable
@@ -77,6 +84,7 @@ jobs:
       # silently un-pins commons for everyone and restores exactly the
       # non-reproducible builds the pin removed - and it looks like nothing.
       - name: Commons pin matches the lock file
+        if: always()
         run: |
           REV="$(grep -m1 -oP 'rev = "\K[0-9a-f]{40}' Cargo.toml)"
           if [ -z "$REV" ]; then
@@ -104,6 +112,7 @@ jobs:
       # claims to, against a real throwaway commons history built on the fly -
       # not a comment asserting someone ran it once by hand.
       - name: Commons pin guard self-test
+        if: always()
         run: scripts/check-commons-pin.test.sh
 
       # A cross-repo ticket pins commons by the commons PR's branch sha before
@@ -114,6 +123,7 @@ jobs:
       # next clean checkout tries to resolve the pin and finds nothing there.
       # Commons is public, so this needs no token.
       - name: Commons pin is on commons main
+        if: always()
         run: scripts/check-commons-pin.sh
 
       # A collision here is not a naming nit: sqlx keys applied migrations by
@@ -126,6 +136,7 @@ jobs:
       # one anyway - the rule was written down and nothing read it. Needs the
       # full history, hence fetch-depth 0 on the checkout above.
       - name: No session URLs in commits or source
+        if: always()
         env:
           BASE_REF: origin/${{ github.base_ref || 'testnet' }}
         run: |
@@ -133,6 +144,7 @@ jobs:
           ./scripts/check-no-session-urls.sh
 
       - name: Session URL guard self-test
+        if: always()
         run: ./scripts/check-no-session-urls.test.sh
 
       # A 2026-09-14 audit found 26 files over 400 lines; nine days later, with
@@ -171,17 +183,21 @@ jobs:
       # resolves before any step in this job runs, this one included, run in
       # any order.
       - name: No file grows past the line limit
+        if: always()
         env:
           BASE_REF: ${{ github.event_name == 'push' && github.event.before || github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'testnet') }}
         run: ./scripts/check-file-size.sh
 
       - name: File size guard self-test
+        if: always()
         run: ./scripts/check-file-size.test.sh
 
       - name: Migration versions are distinct
+        if: always()
         run: ./scripts/check-migrations.sh
 
       - name: Migration guard self-test
+        if: always()
         run: ./scripts/check-migrations.test.sh
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
@@ -190,6 +206,7 @@ jobs:
       # trailer adds files the diff does not show);
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
+        if: always()
         env:
           BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
         run: |
@@ -198,23 +215,28 @@ jobs:
           ./scripts/check-test-inventory.sh
 
       - name: Test inventory guard self-test
+        if: always()
         run: ./scripts/check-test-inventory.test.sh
 
       # A database test helper that returns on a missing or unreachable
       # database makes "ran" and "skipped" the same output. See the script.
       - name: Database tests fail loudly, never skip
+        if: always()
         run: ./scripts/check-test-db-skips.sh
 
       - name: Database-skip guard self-test
+        if: always()
         run: ./scripts/check-test-db-skips.test.sh
 
       # A scope check with no test driving it in both directions is how a key
       # came to exceed its owner without any test noticing. See the script for
       # what it does and does not prove.
       - name: Scope-gated call sites are tested both ways
+        if: always()
         run: ./scripts/check-scope-call-sites.sh
 
       - name: Scope call-site guard self-test
+        if: always()
         run: ./scripts/check-scope-call-sites.test.sh
 
       # Proves check-health-deep.sh - the between-deploys watchdog for
@@ -223,12 +245,14 @@ jobs:
       # erroring), against a real local HTTP server rather than a comment
       # asserting someone ran it once.
       - name: Health check guard self-test
+        if: always()
         run: ./scripts/check-health-deep.test.sh
 
       # The deploy gate decides whether a cutover is allowed to stand, and CI
       # runs it post-deploy - so every refusal branch in it was code nobody had
       # ever seen refuse anything. Same reasoning as the guard self-test above.
       - name: Deploy health gate self-test
+        if: always()
         run: ./scripts/health-gate.test.sh
 
       # The build steps below refuse to compile with an empty SENTRY_RELEASE,
@@ -237,12 +261,14 @@ jobs:
       # goes red and green on the cases it claims to, rather than shipping a
       # check nobody ever saw refuse anything.
       - name: Sentry release guard self-test
+        if: always()
         run: ./scripts/check-sentry-release.test.sh
 
       # Proves the testnet/mainnet split below - which ref keeps the
       # Sigstore transparency-log upload and which drops it - actually
       # follows the ref rather than a comment asserting someone checked it.
       - name: Image tag guard self-test
+        if: always()
         run: ./scripts/compute-image-tags.test.sh
 
       # The signing self-test replays its arguments against the real cosign,
@@ -258,6 +284,7 @@ jobs:
       # passed - nothing in normal CI operation exercises cosign failing, so
       # nothing organically proves this.
       - name: Cosign sign guard self-test
+        if: always()
         run: ./scripts/cosign-sign.test.sh
 
       # Nothing in normal operation exercises the testnet dispatch's failure
@@ -266,6 +293,7 @@ jobs:
       # fails the step instead of looking like a successful deploy. Same
       # reasoning as the other guard self-tests above.
       - name: Testnet deploy dispatch guard self-test
+        if: always()
         run: ./scripts/dispatch-deploy-testnet.test.sh
 
       # The runner image of a browser job decides whether that job can run at
@@ -280,9 +308,11 @@ jobs:
         run: ./scripts/check-runner-pin-selftest.sh
 
       - name: Format check
+        if: always()
         run: cargo fmt --all -- --check
 
       - name: Clippy
+        if: always()
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Non-blocking on purpose. ops/client-image.pin only has to be non-empty to
