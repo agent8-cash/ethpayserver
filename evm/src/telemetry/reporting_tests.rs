@@ -243,6 +243,26 @@ fn parity_with_shared_scrubber() {
         "façade ↔ merchant@example.com ↔ 0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "token",
         "token=",
+        // The second tier of sensitive keys: also ordinary English words, so
+        // they redact only after an explicit separator. The corpus had no
+        // case for any of them while the two implementations disagreed about
+        // all six, which is how the divergence below reached a deployed
+        // image with this test green. A key added to either side's list
+        // belongs here in both forms, or this test stops being parity.
+        "dsn=https://k@h/1",
+        "dsn: https://k@h/1",
+        "dsn unreachable, reporting disabled",
+        "credential=abc123",
+        "credential store unreachable",
+        "session=sess_abc123",
+        "session expired",
+        "cookie=sid=abc123",
+        "cookie jar empty",
+        "signature=0xdeadbeef",
+        "signature mismatch on block 42",
+        "auth=Bearer abc123",
+        "auth failed for user",
+        "AUTH: abc123 SESSION = def456",
     ];
     for input in CORPUS {
         assert_eq!(
