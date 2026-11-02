@@ -151,20 +151,18 @@ that figure will drift. The `*/5` cron therefore does not hold a 5-minute
 cadence.
 
 **Where the 5-minute cadence actually comes from.** Not from this workflow.
-The deploy repository (`central-infrastructure`, private) defines a
-one-minute systemd timer that polls `/api/health/deep` and, per the script's
-own header as read when this was written (re-read it before relying on this),
-reports success to a dead-man's switch and treats a chain whose block has not
-advanced within `STALE_BLOCK_SECS` (default 600) as down, so a down service,
-a broken watcher and a dead box all surface as a late check-in. That is the
-intended path for prompt outage detection. The timer's
-unit and script are `systemd/rcs-health-watch@.timer` (`OnUnitActiveSec=1min`)
-and `scripts/health-watch.sh` in that repository, deliberately:
-they depend on host paths and credentials that must not be published here.
-Whether `rcs-health-watch@testnet.timer` is installed and enabled is
-**unverified from this repository**: enabling it is the deploy-repository
-owner's job, and it can be checked with `systemctl list-timers` on the host.
-Until that is confirmed, treat prompt outage detection as not yet in place.
+A private deploy-host service defines a one-minute timer that polls
+`/api/health/deep` and, per its own header as read when this was written
+(re-read it before relying on this), reports success to a dead-man's switch
+and treats a chain whose block has not advanced within `STALE_BLOCK_SECS`
+(default 600) as down, so a down service, a broken watcher and a dead box all
+surface as a late check-in. That is the intended path for prompt outage
+detection. The timer and the script it runs live in that private repository,
+deliberately: they depend on host paths and credentials that must not be
+published here. Whether that timer is installed and enabled is **unverified
+from this repository**: enabling it is the deploy-repository owner's job, and
+it can be checked with `systemctl list-timers` on the host. Until that is
+confirmed, treat prompt outage detection as not yet in place.
 
 Consequences for this workflow's Sentry Cron Monitors: their check-ins come
 only from the GitHub schedule, so a window sized for 5 minutes alarms

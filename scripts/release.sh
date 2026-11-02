@@ -18,7 +18,7 @@
 # WARNING - tagging a release deploys to mainnet, which holds real merchant
 # funds. `gh release create` pushes the tag, ci.yml triggers on `tags: ["v*"]`,
 # and a tag matching vMAJOR.MINOR.PATCH exactly dispatches a mainnet deploy to
-# central-infrastructure.
+# the private deploy repository.
 #
 # A prerelease does NOT deploy. ci.yml matches `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`
 # and stops at the resolve step for anything else, so -alpha/-beta/-rc build and

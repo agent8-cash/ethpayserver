@@ -43,6 +43,7 @@ fn volume_calls(volume: &DeferredVolume) -> PluginCalls {
             volume: volume.clone(),
             bulk_volume: DeferredBulkVolume::default(),
             standing: super::super::DeferredStanding::default(),
+            notifier: super::super::DeferredNotifier::default(),
         },
     )
 }
@@ -172,6 +173,7 @@ fn bulk_volume_calls(bulk_volume: &DeferredBulkVolume) -> PluginCalls {
             volume: DeferredVolume::default(),
             bulk_volume: bulk_volume.clone(),
             standing: super::super::DeferredStanding::default(),
+            notifier: super::super::DeferredNotifier::default(),
         },
     )
 }

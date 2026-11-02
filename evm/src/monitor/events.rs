@@ -21,6 +21,8 @@ pub enum MonitorCommand {
     UnwatchAddress(UnwatchAddressCommand),
     /// Request current status of watched addresses.
     GetStatus(GetStatusCommand),
+    /// Re-read a block window for an explicit set of addresses.
+    RescanFrom(RescanFromCommand),
 }
 
 /// Command to watch an address for payments.
@@ -54,6 +56,39 @@ pub struct UnwatchAddressCommand {
 pub struct GetStatusCommand {
     /// Target chain ID (None = all chains).
     pub chain_id: Option<u64>,
+}
+
+/// Re-scan `[from_block, tip]` for native transfers and ERC-20 `Transfer`
+/// logs against an explicit watch set, publishing anything found through the
+/// normal outbox.
+///
+/// Recovery from an event-outbox lineage break: a payment can confirm during
+/// the gap on a watch that has since expired, which the monitor's in-memory
+/// watch list no longer has - so the caller passes `watches` explicitly,
+/// drawn from persistence rather than this command relying on what is
+/// currently watched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RescanFromCommand {
+    /// Target chain ID.
+    pub chain_id: u64,
+    /// First block to scan (inclusive). The scan covers `[from_block, tip]`,
+    /// where `tip` is read from the chain when the command runs.
+    pub from_block: u64,
+    /// Addresses (optionally scoped to a token) to match transfers against.
+    /// Includes watches that have since expired - the caller's in-memory set
+    /// is not consulted.
+    pub watches: Vec<RescanWatch>,
+}
+
+/// One address(+token) to match during a rescan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RescanWatch {
+    /// Address to match transfers against.
+    pub address: Address,
+    /// Invoice ID this address is for.
+    pub invoice_id: uuid::Uuid,
+    /// Token contract address (None = native currency).
+    pub token_contract: Option<Address>,
 }
 
 // ============================================================================
@@ -293,12 +328,16 @@ pub struct ReorgDetected {
     pub survived_tx_hashes: Vec<B256>,
     /// Whether the survivor scan could actually verify anything.
     ///
-    /// `false` when the monitor had no watched addresses to scan, which is the
-    /// ordinary state of a quiet server - every invoice settled and past its
-    /// grace period. An empty `survived_tx_hashes` then means "nothing was
-    /// checked", not "nothing survived", and the two must not be confused:
-    /// the consumer retracts what it cannot find, so treating the first as the
-    /// second un-pays every settled invoice above `fork_block`.
+    /// An empty watch set no longer makes this `false`: the scan falls back
+    /// to reading every transaction actually in `[fork_block, new head]`
+    /// directly from the chain, which does not depend on any address being
+    /// watched. `false` now means a genuine failure to reach the chain while
+    /// re-validating - see `ChainMonitor::scan_all_transactions` and
+    /// `handle_reorg`'s own `inspect_err`. An empty `survived_tx_hashes` then
+    /// means "nothing was checked", not "nothing survived", and the two must
+    /// not be confused: the consumer retracts what it cannot find, so
+    /// treating the first as the second un-pays every candidate payment
+    /// above `fork_block` on a mere RPC hiccup.
     pub survivors_verifiable: bool,
     /// When detected.
     pub detected_at: DateTime<Utc>,

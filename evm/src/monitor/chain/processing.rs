@@ -223,7 +223,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
         self.block_hash_or_err(to).await
     }
 
-    async fn block_hash_or_err(&self, number: u64) -> EvmResult<B256> {
+    pub(super) async fn block_hash_or_err(&self, number: u64) -> EvmResult<B256> {
         self.source.get_block_hash(number).await?.ok_or_else(|| {
             crate::error::EvmError::Rpc(format!(
                 "block {number} not available while backfilling a gap"
@@ -254,7 +254,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
     /// was therefore already lost silently, before and after this change.
     /// Crediting those needs attribution this path never had; it is tracked
     /// separately and is a fix, not a regression.
-    async fn check_native_payments(
+    pub(super) async fn check_native_payments(
         &self,
         watched: &HashMap<WatchKey, WatchedAddress>,
         block_number: u64,
@@ -310,7 +310,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
     }
 
     /// Check for ERC20 token payments in blocks `from..=to`.
-    async fn check_erc20_payments(
+    pub(super) async fn check_erc20_payments(
         &self,
         watched: &HashMap<WatchKey, WatchedAddress>,
         from: u64,
@@ -385,7 +385,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
     }
 
     /// Log a detected payment, track it for confirmation and announce it.
-    async fn record_detected(&self, event: PaymentDetected) {
+    pub(super) async fn record_detected(&self, event: PaymentDetected) {
         if event.is_native {
             info!(
                 chain_id = self.chain_id(),

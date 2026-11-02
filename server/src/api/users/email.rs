@@ -65,11 +65,14 @@ pub struct EmailStatusResponse {
     /// Whether this server can send outgoing email at all. When false, every
     /// email channel (receipts, address verification) is inert.
     pub configured: bool,
+    /// How many minutes an email-change verification code stays redeemable.
+    pub change_ttl_minutes: i64,
 }
 
 fn email_status(sender: &dyn crate::services::EmailSender) -> EmailStatusResponse {
     EmailStatusResponse {
         configured: sender.is_configured(),
+        change_ttl_minutes: EMAIL_CHANGE_TOKEN_TTL.num_minutes(),
     }
 }
 
