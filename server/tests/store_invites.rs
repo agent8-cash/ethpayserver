@@ -22,7 +22,8 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use auth::{AuthConfig, AuthService, Store, UserId};
+use auth::repository::{StoreRoleRepository, UserStoreRepository};
+use auth::{AuthConfig, AuthService, Store, StoreRole, UserId, UserStore};
 use data_service::PgDataService;
 use data_service::store_creation::StoreCreationWriter;
 use data_service::test_support::pg_service;
@@ -570,4 +571,182 @@ async fn a_manager_and_an_employee_cannot_invite() {
             "a refused invite from {role} must send nothing"
         );
     }
+}
+
+/// The outcomes recorded for `user`'s redemptions of `token`, oldest first.
+async fn attempt_outcomes(pg: &PgDataService, token: Uuid, user: Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT outcome FROM store_invite_attempts WHERE token = $1 AND user_id = $2 ORDER BY id",
+    )
+    .bind(token)
+    .bind(user)
+    .fetch_all(pg.pool())
+    .await
+    .expect("attempts query")
+}
+
+#[tokio::test]
+#[ignore]
+async fn redemption_is_refused_when_the_redeemer_email_does_not_match_the_invite() {
+    let pg = Arc::new(pg_service().await);
+    let outbox = Arc::new(Outbox::default());
+    let app = app(&pg, &outbox);
+
+    let addressed_to = format!("addressee-{}@example.com", Uuid::new_v4());
+    let other = format!("forwardee-{}@example.com", Uuid::new_v4());
+    let owner = seed_account(&pg, None).await;
+    let addressee = seed_account(&pg, Some(&addressed_to)).await;
+    let forwardee = seed_account(&pg, Some(&other)).await;
+    let store = seed_store(&pg, &owner).await;
+
+    assert_eq!(
+        invite(&app, &owner.key, &store, &addressed_to).await.0,
+        StatusCode::ACCEPTED
+    );
+    let code = outbox
+        .code_for(&addressed_to)
+        .expect("the invite was mailed");
+
+    let (status, _) = accept(&app, &forwardee.key, code).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a forwarded invite must be refused"
+    );
+    assert!(
+        !is_member(&pg, forwardee.id, &store).await,
+        "a refused redemption must not create a membership"
+    );
+    assert_eq!(
+        attempt_outcomes(&pg, code, forwardee.id).await,
+        vec!["email_mismatch"],
+        "the refused attempt must be recorded with its identity"
+    );
+
+    // The refusal spends nothing: the addressee can still redeem the code.
+    let (status, body) = accept(&app, &addressee.key, code).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(is_member(&pg, addressee.id, &store).await);
+    assert_eq!(
+        attempt_outcomes(&pg, code, addressee.id).await,
+        vec!["accepted"]
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn redemption_succeeds_for_a_wallet_only_account_regardless_of_invite_email() {
+    let pg = Arc::new(pg_service().await);
+    let outbox = Arc::new(Outbox::default());
+    let app = app(&pg, &outbox);
+
+    let addressed_to = format!("addressee-{}@example.com", Uuid::new_v4());
+    let owner = seed_account(&pg, None).await;
+    let wallet_only = seed_account(&pg, None).await;
+    let store = seed_store(&pg, &owner).await;
+
+    assert_eq!(
+        invite(&app, &owner.key, &store, &addressed_to).await.0,
+        StatusCode::ACCEPTED
+    );
+    let code = outbox
+        .code_for(&addressed_to)
+        .expect("the invite was mailed");
+
+    let (status, body) = accept(&app, &wallet_only.key, code).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(is_member(&pg, wallet_only.id, &store).await);
+    assert_eq!(
+        attempt_outcomes(&pg, code, wallet_only.id).await,
+        vec!["accepted"]
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_email_match_ignores_case_and_surrounding_whitespace() {
+    let pg = Arc::new(pg_service().await);
+    let outbox = Arc::new(Outbox::default());
+    let app = app(&pg, &outbox);
+
+    let id = Uuid::new_v4();
+    let owner = seed_account(&pg, None).await;
+    let colleague = seed_account(&pg, Some(&format!("  Colleague-{id}@EXAMPLE.com "))).await;
+    let store = seed_store(&pg, &owner).await;
+
+    assert_eq!(
+        invite(
+            &app,
+            &owner.key,
+            &store,
+            &format!("colleague-{id}@example.com")
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let code = outbox
+        .code_for(&format!("colleague-{id}@example.com"))
+        .expect("the invite was mailed");
+
+    let (status, body) = accept(&app, &colleague.key, code).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(is_member(&pg, colleague.id, &store).await);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_member_list_shows_which_account_redeemed_an_invite() {
+    let pg = Arc::new(pg_service().await);
+    let outbox = Arc::new(Outbox::default());
+    let app = app(&pg, &outbox);
+
+    let email = format!("listed-{}@example.com", Uuid::new_v4());
+    let owner = seed_account(&pg, None).await;
+    let colleague = seed_account(&pg, Some(&email)).await;
+    let store = seed_store(&pg, &owner).await;
+    join_as(
+        &app, &outbox, &owner, &store, &colleague, &email, "Employee",
+    )
+    .await;
+    // No seeded role grants canviewstoreusers, so the owner is moved onto a
+    // store-scoped role that does (as the inline-scope tests do).
+    let viewer = StoreRole::new(
+        store.id,
+        format!("viewer-{}", Uuid::new_v4()),
+        vec!["ethpay.store.canviewstoreusers".to_string()],
+    );
+    pg.create_store_role(&viewer)
+        .await
+        .expect("create viewer role");
+    pg.update_user_store(&UserStore::new(UserId(owner.id), store.id, viewer.id))
+        .await
+        .expect("move the owner onto the viewer role");
+
+    let (status, body) = call(
+        &app,
+        &owner.key,
+        Method::GET,
+        &format!("/stores/{}/members", store.id.0),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let members: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let row = |id: Uuid| {
+        members
+            .iter()
+            .find(|m| m["user_id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("{id} must be listed"))
+            .clone()
+    };
+    assert_eq!(
+        row(colleague.id)["accepted_by"],
+        serde_json::json!(colleague.id),
+        "a member who joined by invite must carry accepted_by"
+    );
+    assert!(
+        row(owner.id)["accepted_by"].is_null(),
+        "a member who was never invited must carry no accepted_by"
+    );
 }
