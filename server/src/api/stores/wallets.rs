@@ -29,7 +29,9 @@ use auth::{SessionService, StoreId};
 use data_service::{
     self, StorePaymentMethod, StorePaymentMethodReader, WalletReader, WalletWriter,
 };
-use evm::{XpubDeriver, looks_like_a_private_key, validate_xpub, xpub_depth_problem};
+use evm::{
+    XpubDeriver, looks_like_a_private_key, validate_xpub, xpub_depth_problem, xpub_from_slip132,
+};
 use types::NAMESPACE_EIP155;
 
 use super::super::extractors::{
@@ -209,6 +211,19 @@ where
     Ok(Json(wallets.into_iter().map(Into::into).collect()))
 }
 
+/// The named reason a rejected xpub gets back. Shared by `POST /wallets` and
+/// the rotate endpoint so a pasted private key reads the same on both.
+fn invalid_xpub_reason(xpub: &str) -> String {
+    if looks_like_a_private_key(xpub) {
+        "invalid_xpub: this looks like a private key, not a public one - the account needs an \
+         extended PUBLIC key, and the private key must never leave the wallet software \
+         that holds it"
+            .to_string()
+    } else {
+        "invalid_xpub: not a valid base58-encoded extended public key".to_string()
+    }
+}
+
 /// Add a wallet to the account, for one chain family.
 ///
 /// Adding an xpub the account already holds *in the same family* returns the
@@ -250,10 +265,13 @@ pub async fn create_wallet<A>(
 where
     A: SessionService + 'static,
 {
-    if !validate_xpub(&req.xpub) {
-        return Err(StatusCode::BAD_REQUEST.into());
+    // BIP-49/84 keys are stored as the xpub with the same key material, so the
+    // row and the uniqueness check see one canonical form.
+    let xpub = xpub_from_slip132(&req.xpub).unwrap_or_else(|| req.xpub.clone());
+    if !validate_xpub(&xpub) {
+        return Err((StatusCode::BAD_REQUEST, invalid_xpub_reason(&req.xpub)).into());
     }
-    if let Some(reason) = xpub_depth_problem(&req.xpub) {
+    if let Some(reason) = xpub_depth_problem(&xpub) {
         return Err((StatusCode::BAD_REQUEST, reason).into());
     }
 
@@ -277,7 +295,7 @@ where
         &*state.data_service,
         user.id.0,
         &req.namespace,
-        &req.xpub,
+        &xpub,
         req.name.as_deref(),
     )
     .await
@@ -799,14 +817,7 @@ where
     // rejection itself is still `validate_xpub`'s version-byte check, not
     // this string match.
     if !validate_xpub(&req.xpub) {
-        let reason = if looks_like_a_private_key(&req.xpub) {
-            "invalid_xpub: this looks like a private key, not a public one - rotation needs an \
-             extended PUBLIC key, and the private key must never leave the wallet software \
-             that holds it"
-        } else {
-            "invalid_xpub: not a valid base58-encoded extended public key"
-        };
-        return Err((StatusCode::BAD_REQUEST, reason.to_string()).into());
+        return Err((StatusCode::BAD_REQUEST, invalid_xpub_reason(&req.xpub)).into());
     }
     if let Some(reason) = xpub_depth_problem(&req.xpub) {
         return Err((StatusCode::BAD_REQUEST, reason).into());

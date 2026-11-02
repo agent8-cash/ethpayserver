@@ -412,3 +412,53 @@ fn a_child_depth_xpub_is_refused_naming_its_depth() {
         "0x9858effd232b4033e47d90003d41ec34ecaeda94"
     );
 }
+
+/// The account key at `m/44'/60'/0'` (the one `EVM_ACCOUNT_XPUB` is) as this
+/// crate's encoder renders it under the BIP-49 and BIP-84 version bytes. The
+/// same key material, only the SLIP-132 prefix differs.
+const EVM_ACCOUNT_YPUB: &str = "ypub6Y34WV7pZEiWat8xcd8rbXBYpMTxhZVtCAygqUHziPuPxUSMi244aVWpm6CThpVjigtST46qqvDjfyJdywyb9LZJvKG44nGcuMbzRzKVHPj";
+const EVM_ACCOUNT_ZPUB: &str = "zpub6rsKp9njhvFzSBL5SyvUocH3zKcQeBVP7HVucsBt6QHH1aFaxgDdCZAxnJA3hj9f8L1FCXhQJaaHZFvChePbwaEunexUeh67B5fdpWEscjP";
+
+#[test]
+fn a_ypub_or_zpub_converts_to_the_xpub_of_the_same_key() {
+    assert_eq!(
+        xpub_from_slip132(EVM_ACCOUNT_YPUB).as_deref(),
+        Some(EVM_ACCOUNT_XPUB)
+    );
+    assert_eq!(
+        xpub_from_slip132(EVM_ACCOUNT_ZPUB).as_deref(),
+        Some(EVM_ACCOUNT_XPUB)
+    );
+    // The converted string is a real xpub, and derives the published address.
+    let converted = xpub_from_slip132(EVM_ACCOUNT_ZPUB).unwrap();
+    assert!(validate_xpub(&converted));
+    let deriver = XpubDeriver::from_xpub("eip155", &converted).unwrap();
+    assert_eq!(
+        deriver.derive_address(0).unwrap().to_lowercase(),
+        "0x9858effd232b4033e47d90003d41ec34ecaeda94"
+    );
+}
+
+/// Only BIP-49/84 public keys are rewritten. An xpub is already in the form
+/// we store, and a private key must never be re-labelled into a public one.
+#[test]
+fn xpub_from_slip132_leaves_everything_else_alone() {
+    assert_eq!(xpub_from_slip132(EVM_ACCOUNT_XPUB), None);
+    assert_eq!(xpub_from_slip132("not-a-key"), None);
+    assert_eq!(xpub_from_slip132(""), None);
+
+    const XPRV: &str = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
+    assert_eq!(xpub_from_slip132(XPRV), None);
+}
+
+/// A base58check payload with a version this crate does not map (here the
+/// SLIP-132 multisig `Ypub` bytes, which must not be read as single-sig) is
+/// refused rather than rewritten.
+#[test]
+fn an_unmapped_version_is_not_rewritten() {
+    let mut payload = coins_bip32::enc::decode_b58_check(EVM_ACCOUNT_XPUB).unwrap();
+    payload[..4].copy_from_slice(&[0x02, 0x95, 0xb4, 0x3f]);
+    let multisig_ypub = coins_bip32::enc::encode_b58_check(&payload);
+    assert!(multisig_ypub.starts_with("Ypub"));
+    assert_eq!(xpub_from_slip132(&multisig_ypub), None);
+}
