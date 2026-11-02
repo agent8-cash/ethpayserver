@@ -724,7 +724,11 @@ fn everyday_key_words_need_an_explicit_separator() {
         "credential store unreachable",
         "dsn unreachable, reporting disabled",
     ] {
-        assert_eq!(redact_secrets(sentence), sentence, "over-redacted: {sentence}");
+        assert_eq!(
+            redact_secrets(sentence),
+            sentence,
+            "over-redacted: {sentence}"
+        );
     }
 
     // The same words WITH a separator do introduce a value, and it goes.
