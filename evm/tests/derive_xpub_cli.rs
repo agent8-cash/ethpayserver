@@ -225,3 +225,151 @@ fn from_existing_with_an_invalid_mnemonic_fails_cleanly() {
         "expected the invalid-mnemonic error, got:\n{stderr}"
     );
 }
+
+/// Counts the `  [n] address (path)` lines in human-mode output.
+fn count_check_addresses(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with('['))
+        .count()
+}
+
+/// Parses a `--json` stdout and asserts it is exactly one object with the
+/// three documented keys and nothing else.
+fn parse_json_export(stdout: &str) -> serde_json::Map<String, serde_json::Value> {
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be one JSON document");
+    let object = value
+        .as_object()
+        .expect("JSON output must be an object")
+        .clone();
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["path", "verification_addresses", "xpub"]);
+    object
+}
+
+/// `generate --json` must put exactly one JSON object on stdout, its xpub
+/// must derive from the mnemonic (which travels on stderr so it is not lost),
+/// and its address count must match what the human output prints.
+#[test]
+fn generate_json_emits_the_export_object_and_matches_human_address_count() {
+    let json_out = Command::new(env!("CARGO_BIN_EXE_derive-xpub"))
+        .args(["generate", "--json"])
+        .output()
+        .expect("run derive-xpub generate --json");
+    assert!(
+        json_out.status.success(),
+        "generate --json exited non-zero: {}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let stdout = String::from_utf8(json_out.stdout).expect("utf8 stdout");
+    let export = parse_json_export(&stdout);
+
+    let xpub = export["xpub"].as_str().expect("xpub is a string");
+    assert!(xpub.starts_with("xpub"), "xpub not xpub-prefixed: {xpub}");
+    assert_eq!(
+        export["path"].as_str(),
+        Some(ChainFamily::Evm.account_path().as_str())
+    );
+    let addresses = export["verification_addresses"]
+        .as_array()
+        .expect("verification_addresses is an array");
+    assert!(addresses.iter().all(serde_json::Value::is_string));
+
+    let stderr = String::from_utf8(json_out.stderr).expect("utf8 stderr");
+    let mnemonic = stderr
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("mnemonic:"))
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .expect("mnemonic printed on stderr in --json mode");
+    let expected_xpub = HdWallet::from_mnemonic(mnemonic, "")
+        .expect("generated mnemonic must be valid")
+        .account_xpub_string_for(ChainFamily::Evm)
+        .expect("derive xpub");
+    assert_eq!(
+        xpub, expected_xpub,
+        "json xpub does not derive from the mnemonic"
+    );
+
+    let human = Command::new(env!("CARGO_BIN_EXE_derive-xpub"))
+        .arg("generate")
+        .output()
+        .expect("run derive-xpub generate");
+    let human_stdout = String::from_utf8(human.stdout).expect("utf8 stdout");
+    assert_eq!(
+        addresses.len(),
+        count_check_addresses(&human_stdout),
+        "verification_addresses count differs from human output"
+    );
+}
+
+/// `from-existing --json` on a known mnemonic must yield the same xpub and the
+/// same addresses as the human output for that mnemonic.
+#[test]
+fn from_existing_json_matches_the_human_output() {
+    let human = run_from_existing(TEST_MNEMONIC, "");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_derive-xpub"))
+        .args(["from-existing", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn derive-xpub");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    write!(stdin, "{TEST_MNEMONIC}\n\n").expect("write to stdin");
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for derive-xpub");
+    assert!(
+        output.status.success(),
+        "from-existing --json exited non-zero"
+    );
+    let export = parse_json_export(&String::from_utf8(output.stdout).expect("utf8"));
+
+    assert_eq!(export["xpub"].as_str(), Some(EVM_ACCOUNT_XPUB));
+    assert_eq!(
+        export["path"].as_str(),
+        Some(ChainFamily::Evm.account_path().as_str())
+    );
+    let addresses = export["verification_addresses"].as_array().expect("array");
+    assert_eq!(addresses.len(), count_check_addresses(&human));
+    for address in addresses {
+        let address = address.as_str().expect("string");
+        assert!(
+            human.contains(address),
+            "address {address} missing from human output"
+        );
+    }
+}
+
+/// An xprv is not a mnemonic. `--json` must refuse it like the human path
+/// does: nonzero exit, an error on stderr, and no JSON on stdout.
+#[test]
+fn from_existing_json_refuses_an_xprv() {
+    let xprv = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_derive-xpub"))
+        .args(["from-existing", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn derive-xpub");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    write!(stdin, "{xprv}\n\n").expect("write to stdin");
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for derive-xpub");
+
+    assert!(!output.status.success(), "xprv must be refused with --json");
+    assert!(
+        output.stdout.is_empty(),
+        "no stdout on failure: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("error:"),
+        "expected an error on stderr, got:\n{stderr}"
+    );
+}

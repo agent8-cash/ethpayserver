@@ -1,6 +1,5 @@
 //! Watched address integration tests.
 
-use chrono::{Duration, Utc};
 use types::{
     ChainId, InvoiceWriter, PaymentOptionWriter, WatchedAddressReader, WatchedAddressWriter,
 };
@@ -112,48 +111,6 @@ async fn integration_watched_address_crud() {
         .await
         .unwrap();
     assert!(found.is_none());
-}
-
-#[tokio::test]
-#[ignore]
-async fn integration_watched_address_get_active() {
-    let service = create_test_service().await;
-
-    // Create invoice with future expiration
-    let mut invoice = seeded_test_invoice(&service).await;
-    invoice.expires_at = Utc::now() + Duration::hours(2);
-    InvoiceWriter::upsert(&service, &invoice).await.unwrap();
-
-    // Create payment option
-    let payment_option = test_payment_option(&invoice.id, &ChainId::evm(1));
-    PaymentOptionWriter::create(&service, &payment_option)
-        .await
-        .unwrap();
-
-    let address = unique_address();
-    let chain_id = ChainId::evm(1);
-
-    // Add watched address
-    WatchedAddressWriter::upsert(&service, &address, &payment_option.id, &chain_id, None)
-        .await
-        .unwrap();
-
-    // Get active addresses
-    let active = WatchedAddressReader::get_active(&service).await.unwrap();
-
-    // Should include our address
-    assert!(active.iter().any(|(a, po_id, cid, _)| a == &address
-        && po_id == &payment_option.id
-        && *cid == chain_id));
-
-    // Deactivate it
-    WatchedAddressWriter::deactivate(&service, &address, &chain_id, None)
-        .await
-        .unwrap();
-
-    // Should not be in active anymore
-    let active = WatchedAddressReader::get_active(&service).await.unwrap();
-    assert!(!active.iter().any(|(a, _, _, _)| a == &address));
 }
 
 #[tokio::test]

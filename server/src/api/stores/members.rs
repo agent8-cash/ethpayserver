@@ -7,12 +7,32 @@ use axum::{
 };
 use uuid::Uuid;
 
+use std::collections::HashSet;
+
+use serde::Serialize;
+use utoipa::ToSchema;
+
 use auth::repository::{StoreRepository, StoreRoleRepository, UserStoreRepository};
 use auth::{SessionService, StoreId, UserId, UserStore};
+use data_service::StoreInviteWriter;
 
 use super::super::extractors::{StoreScopedUser, key_grants_store_permission};
 use crate::state::PgAppState;
 pub use api_types::{AddMemberRequest, MemberResponse, UpdateMemberRequest};
+
+/// A listed member, and whether they joined by redeeming an invite.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberListItem {
+    pub user_id: Uuid,
+    pub store_id: Uuid,
+    pub role_id: Uuid,
+    pub role_name: String,
+    pub permissions: Vec<String>,
+    /// Set to the member's own id when they joined by redeeming a mailed
+    /// invite, since the redeeming account is the member. `null` when an
+    /// owner added them directly.
+    pub accepted_by: Option<Uuid>,
+}
 
 /// List members of a store.
 ///
@@ -26,7 +46,7 @@ pub use api_types::{AddMemberRequest, MemberResponse, UpdateMemberRequest};
         ("store_id" = Uuid, Path, description = "Store ID")
     ),
     responses(
-        (status = 200, description = "List of members", body = Vec<MemberResponse>),
+        (status = 200, description = "List of members", body = Vec<MemberListItem>),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Insufficient permissions"),
         (status = 404, description = "Store not found"),
@@ -36,7 +56,7 @@ pub async fn list_store_members<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
-) -> Result<Json<Vec<MemberResponse>>, StatusCode>
+) -> Result<Json<Vec<MemberListItem>>, StatusCode>
 where
     A: SessionService + 'static,
 {
@@ -59,15 +79,25 @@ where
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let redeemers: HashSet<Uuid> = state
+        .data_service
+        .invite_redeemers(StoreId(store_id))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .map(|u| u.0)
+        .collect();
+
     let mut members = Vec::new();
     for us in user_stores {
         if let Ok(Some(role)) = state.data_service.get_store_role(us.store_role_id).await {
-            members.push(MemberResponse {
+            members.push(MemberListItem {
                 user_id: us.user_id.0,
                 store_id: us.store_id.0,
                 role_id: us.store_role_id.0,
                 role_name: role.role,
                 permissions: role.permissions,
+                accepted_by: redeemers.contains(&us.user_id.0).then_some(us.user_id.0),
             });
         }
     }
