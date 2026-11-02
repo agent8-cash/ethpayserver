@@ -53,7 +53,7 @@ permissions:
 jobs:
   testnet:
     name: Deep health (testnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +94,7 @@ jobs:
     #
     #   gh variable set MAINNET_LIVE --body 1 --repo randomcash/ethpayserver
     if: vars.MAINNET_LIVE == '1'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

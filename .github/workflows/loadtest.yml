@@ -27,7 +27,7 @@ env:
 jobs:
   loadtest:
     name: Load Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Skips forks, which have no access to the secrets. Whether the secrets
     # exist is checked by the first step: a job-level `if` cannot read them.
     if: github.repository == 'agent8-cash/ethpayserver'
