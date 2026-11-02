@@ -84,8 +84,8 @@ pub use chain::{BACKFILL_MAX_BLOCKS, ChainMonitor, ChainMonitorConfig, WatchedAd
 pub use coordinator::{CoordinatorConfig, MonitorCoordinator};
 pub use events::{
     AddressUnwatched, AddressWatched, GetStatusCommand, MonitorCommand, MonitorEvent,
-    PaymentConfirmed, PaymentDetected, ReorgDetected, StatusReport, UnwatchAddressCommand,
-    WatchAddressCommand,
+    PaymentConfirmed, PaymentDetected, ReorgDetected, RescanFromCommand, RescanWatch, StatusReport,
+    UnwatchAddressCommand, WatchAddressCommand,
 };
 pub use handlers::{EventHandler, EventHandlerFn, LoggingHandler};
 

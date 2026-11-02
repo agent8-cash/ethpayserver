@@ -469,6 +469,74 @@ async fn an_expired_invite_is_refused() {
 
 #[tokio::test]
 #[ignore]
+async fn redeeming_records_the_redeeming_account_and_a_second_attempt_does_not_overwrite_it() {
+    let pg = pg_service().await;
+    let pg = Arc::new(pg);
+    let outbox = Arc::new(Outbox::default());
+    let app = app(&pg, &outbox);
+
+    // The invite is addressed to A's email, but B - any signed-in account
+    // holding the mailed code - is the one who redeems it. `accepted_by` must
+    // record B, the redeemer, not A, the addressee.
+    let addressed_to = format!("addressee-{}@example.com", Uuid::new_v4());
+    let owner = seed_account(&pg, None).await;
+    let account_a = seed_account(&pg, Some(&addressed_to)).await;
+    let account_b = seed_account(&pg, None).await;
+    let store = seed_store(&pg, &owner).await;
+
+    assert_eq!(
+        invite(&app, &owner.key, &store, &addressed_to).await.0,
+        StatusCode::ACCEPTED
+    );
+    let code = outbox
+        .code_for(&addressed_to)
+        .expect("the invite was mailed");
+    let (status, body) = accept(&app, &account_b.key, code).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(is_member(&pg, account_b.id, &store).await);
+
+    let (accepted_by, accepted_at): (Option<Uuid>, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT accepted_by, accepted_at FROM store_invites WHERE token = $1")
+            .bind(code)
+            .fetch_one(pg.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        accepted_by,
+        Some(account_b.id),
+        "accepted_by must record the redeeming account, not the invited address's owner"
+    );
+    assert!(accepted_at.is_some(), "accepted_at must be set");
+
+    // A second redemption attempt - by a third account, with the same
+    // already-spent code - must be refused and must not overwrite the
+    // redeemer already on record.
+    let (again, _) = accept(&app, &account_a.key, code).await;
+    assert_eq!(
+        again,
+        StatusCode::BAD_REQUEST,
+        "a spent code must not redeem twice"
+    );
+
+    let (accepted_by_after, _): (Option<Uuid>, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT accepted_by, accepted_at FROM store_invites WHERE token = $1")
+            .bind(code)
+            .fetch_one(pg.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        accepted_by_after,
+        Some(account_b.id),
+        "a second redemption attempt must not overwrite the recorded accepted_by"
+    );
+    assert!(
+        !is_member(&pg, account_a.id, &store).await,
+        "the refused second attempt must not create a membership either"
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn a_manager_and_an_employee_cannot_invite() {
     let pg = pg_service().await;
     let pg = Arc::new(pg);

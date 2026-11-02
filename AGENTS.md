@@ -87,8 +87,8 @@ Do not name any tool or vendor in a file, comment, or commit message.
 
 ## Sensitive paths
 
-Auth, crypto, `evm/`, wallet and key derivation, migrations, and the invoice,
-payment, payout and refund handlers. Work in them normally, but **say so
+Auth, crypto, on-chain interaction, wallet and key derivation, migrations, and
+anything that moves or records funds. Work in them normally, but **say so
 prominently in the commit message**. These are human-reviewed without exception.
 
 ## What "done" means

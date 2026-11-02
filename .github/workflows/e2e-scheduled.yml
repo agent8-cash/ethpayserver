@@ -156,6 +156,10 @@ jobs:
     timeout-minutes: 30
     # Independent of `browser`: a broken checkout page must not hide a broken
     # money path, and vice versa.
+    env:
+      # cloudflared pinned release and the SHA256 of its .deb asset. Bump both together.
+      CLOUDFLARED_VERSION: 2026.10.7
+      CLOUDFLARED_SHA256: 70b1a1e0f46033ffc8d90b406e554044ba6cbf2e4360295ef1163aed31e09393
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,10 +178,14 @@ jobs:
 
       # The store webhook URL must be HTTPS, and the server's own `localhost`
       # is inside its container, so the sink needs a public tunnel.
+      # Pinned release, checksum verified before it is installed.
       - name: Install cloudflared
         run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
           curl -fsSL -o cloudflared.deb \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          echo "${CLOUDFLARED_SHA256}  cloudflared.deb" | sha256sum -c -
           sudo dpkg -i cloudflared.deb
 
       # Option to remove the quick-tunnel dependency: a named tunnel, run from a

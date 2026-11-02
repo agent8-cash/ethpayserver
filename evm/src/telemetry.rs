@@ -65,10 +65,23 @@ fn rules() -> &'static [(Regex, &'static str)] {
             (build(r"0x[0-9a-fA-F]{40,}"), "[redacted-hex]"),
             // Bare 64-char hex (private keys / hashes without the 0x prefix).
             (build(r"\b[0-9a-fA-F]{64}\b"), "[redacted-hex]"),
-            // BIP-39 mnemonics: 12+ consecutive lowercase words.
+            // Any run of 12+ letter-words, in any script or case — not just
+            // lowercase ASCII, and not just BIP-39's English wordlist. This is
+            // a shape rule, not a wordlist lookup: it fires on ordinary prose
+            // exactly as readily as on a real mnemonic, which is deliberate
+            // (a destroyed alert costs us legibility; a leaked seed costs a
+            // merchant their funds) and is why the placeholder below states
+            // the shape that matched rather than naming a secret.
+            //
+            // `\s` already treats a non-breaking space as a word separator,
+            // but not the zero-width space or invisible-separator characters
+            // a browser can render indistinguishably from a plain space —
+            // both are real paste sources for a phrase copied off a page, so
+            // they are added to the separator class explicitly rather than
+            // trusted to `\s`.
             (
-                build(r"\b(?:[a-z]+\s+){11,}[a-z]+\b"),
-                "[redacted-mnemonic]",
+                build(r"\b(?:\p{L}+[\s\u{200B}\u{200C}\u{200D}\u{2060}-\u{2064}\u{FEFF}]+){11,}\p{L}+\b"),
+                "[redacted: 12+ word run]",
             ),
             // Email addresses (customer PII).
             (

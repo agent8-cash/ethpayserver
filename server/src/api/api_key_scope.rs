@@ -47,6 +47,21 @@ pub(super) fn key_grants_standing_push(permissions: Option<&[String]>) -> bool {
     permissions.is_some_and(|set| set.iter().any(|p| p == STANDING_PUSH_SCOPE))
 }
 
+/// The scope entry that lets a key ask the host to notify an account
+/// holder, and nothing else. Mirrors [`STANDING_PUSH_SCOPE`]: a dedicated
+/// string rather than a commons policy, so this server can enforce it
+/// without a commons change.
+pub(super) const ACCOUNT_NOTICE_SCOPE: &str = "ethpay.server.cansendaccountnotice";
+
+/// Whether a key's stored scope names the account-notice entry.
+///
+/// Unscoped and `unrestricted` keys do NOT count, for the same reason as
+/// [`key_grants_standing_push`]: the sender must hold a credential good for
+/// nothing else, since it can name any account id on the instance.
+pub(super) fn key_grants_account_notice(permissions: Option<&[String]>) -> bool {
+    permissions.is_some_and(|set| set.iter().any(|p| p == ACCOUNT_NOTICE_SCOPE))
+}
+
 /// Whether a key's stored scope grants `policy` on `store_id` - the other
 /// half of "effective permission is the intersection of the key's set and
 /// the owner's role", specifically for store permissions.
@@ -171,6 +186,23 @@ mod tests {
             "ethpay.server.canviewusers"
         ]))));
         assert!(!key_grants_standing_push(Some(&[])));
+    }
+
+    #[test]
+    fn account_notice_is_granted_only_by_its_own_entry() {
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(key_grants_account_notice(Some(&strs(&[
+            "ethpay.server.cansendaccountnotice"
+        ]))));
+        assert!(
+            !key_grants_account_notice(None),
+            "an unscoped key is an admin key"
+        );
+        assert!(!key_grants_account_notice(Some(&strs(&["unrestricted"]))));
+        assert!(!key_grants_account_notice(Some(&strs(&[
+            "ethpay.server.canviewusers"
+        ]))));
+        assert!(!key_grants_account_notice(Some(&[])));
     }
 
     #[test]

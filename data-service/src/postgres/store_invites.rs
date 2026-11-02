@@ -94,11 +94,21 @@ impl StoreInviteWriter for PgDataService {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-        sqlx::query("UPDATE store_invites SET accepted_at = NOW() WHERE token = $1")
-            .bind(token)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        // One statement: accepted_by is recorded atomically with accepted_at,
+        // never as a second write that could land without the other. The
+        // `accepted_at IS NULL` guard is belt-and-suspenders - the row lock
+        // above already serialises this against a second redemption - but it
+        // means this statement can never overwrite a redeemer already
+        // recorded for this token.
+        sqlx::query(
+            "UPDATE store_invites SET accepted_at = NOW(), accepted_by = $2 \
+             WHERE token = $1 AND accepted_at IS NULL",
+        )
+        .bind(token)
+        .bind(user_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
         tx.commit().await.map_err(db)?;
 
         Ok(InviteAcceptance::Accepted {

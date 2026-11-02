@@ -46,8 +46,12 @@ pub(super) async fn cache_lookup(
 ) -> CacheLookup {
     let cached: Option<Vec<u8>> = match redis::cmd("GET").arg(cache_key).query_async(conn).await {
         Ok(v) => v,
-        Err(e) => return CacheLookup::Error(e),
+        Err(e) => {
+            super::record_health(false);
+            return CacheLookup::Error(e);
+        }
     };
+    super::record_health(true);
     let Some(bytes) = cached else {
         return CacheLookup::Miss;
     };
@@ -77,10 +81,17 @@ pub(super) async fn acquire_lock(
         .query_async::<Option<String>>(conn)
         .await
     {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+        Ok(Some(_)) => {
+            super::record_health(true);
+            true
+        }
+        Ok(None) => {
+            super::record_health(true);
+            false
+        }
         Err(e) => {
             tracing::warn!(error = %e, "Redis SET NX failed for idempotency lock, falling through");
+            super::record_health(false);
             true
         }
     }

@@ -6,7 +6,10 @@
 
 use utoipa::OpenApi;
 
-use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, stores, users};
+use super::{
+    account_notices, admin, dashboard, entitlements, health, invoices, plugins, rates, stores,
+    users,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -84,10 +87,12 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         users::wallets::list_wallet_credentials,
         users::wallets::create_wallet_reauth_challenge,
         users::wallets::set_primary_wallet_credential,
+        users::devices::add_device,
         // Admin
         admin::list_users,
         admin::list_stores,
         entitlements::push_entitlement,
+        account_notices::push_account_notice,
         admin::deletion::account::list_user_stores,
         admin::deletion::account::delete_user_account,
         admin::deletion::store::hard_delete_store,
@@ -163,10 +168,14 @@ use super::{admin, dashboard, entitlements, health, invoices, plugins, rates, st
         users::WalletCredentialResponse,
         users::WalletReauthChallengeResponse,
         users::PromoteWalletCredentialRequest,
+        users::AddDeviceRequest,
+        auth::DeviceInfo,
         admin::UserListResponse,
         admin::MerchantStoreEntry,
         entitlements::PushEntitlementRequest,
         entitlements::PushEntitlementResponse,
+        account_notices::PushAccountNoticeRequest,
+        account_notices::PushAccountNoticeResponse,
         users::StandingResponse,
         users::signup::SignupRequest,
         users::signup::SignupResponse,

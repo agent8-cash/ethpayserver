@@ -50,6 +50,7 @@ fn removing_an_email_that_is_not_there_is_refused_too() {
 fn status_reports_an_unconfigured_server_as_not_configured() {
     let status = email_status(&crate::services::email::NoopEmailSender);
     assert!(!status.configured);
+    assert_eq!(status.change_ttl_minutes, 30);
 }
 
 #[test]
@@ -67,5 +68,7 @@ fn status_reports_a_server_with_smtp_as_configured() {
         reason = "transport construction cannot fail without a real network call"
     )]
     let service = crate::services::email::EmailService::new(&config).expect("build transport");
-    assert!(email_status(&service).configured);
+    let status = email_status(&service);
+    assert!(status.configured);
+    assert_eq!(status.change_ttl_minutes, 30);
 }

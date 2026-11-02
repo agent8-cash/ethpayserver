@@ -453,6 +453,14 @@ fn describe_gauges() {
         "ethpayserver_db_pool_connections",
         "Current number of connections in the DB pool by state"
     );
+
+    describe_gauge!(
+        "ethpayserver_idempotency_healthy",
+        "Whether the idempotency control is connected to Redis and its last \
+         GET/SET NX succeeded (1) or not (0) - 0 covers all three ways it \
+         can be degraded: not yet connected at boot, a cache GET failure, \
+         and a lock SET NX failure"
+    );
 }
 
 fn describe_histograms() {
@@ -630,6 +638,12 @@ pub fn set_chain_healthy(chain_id: u64, is_healthy: bool) {
         "chain_id" => chain_id.to_string()
     )
     .set(if is_healthy { 1.0 } else { 0.0 });
+}
+
+/// Update the idempotency-control health gauge (1 = healthy, 0 = not). See
+/// `describe_gauges` for what "not" covers.
+pub fn set_idempotency_healthy(healthy: bool) {
+    gauge!("ethpayserver_idempotency_healthy").set(if healthy { 1.0 } else { 0.0 });
 }
 
 /// Update the registered users gauge.
@@ -1261,5 +1275,39 @@ mod tests {
         set_chain_blocks(1, None, None);
         set_chain_healthy(1, true);
         set_chain_healthy(1, false);
+    }
+
+    // Reached through `with_local_recorder` rather than the global handle,
+    // same reasoning as `fanout_recorder_forwards_real_chain_health_gauges`:
+    // a thread-scoped recorder so this doesn't race other tests in this
+    // file over the process-wide singleton `test_recorder()` installs.
+    //
+    // Breaks the exact guarantee the gauge exists for - the idempotency
+    // control going unhealthy - and confirms the gauge actually moves,
+    // rather than trusting it from reading `set_idempotency_healthy`'s body.
+    #[test]
+    fn idempotency_healthy_gauge_moves_with_redis_outcome() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            set_idempotency_healthy(true);
+        });
+        assert!(
+            handle
+                .render()
+                .contains("ethpayserver_idempotency_healthy 1"),
+            "gauge did not read healthy after a successful Redis op"
+        );
+
+        metrics::with_local_recorder(&recorder, || {
+            set_idempotency_healthy(false);
+        });
+        assert!(
+            handle
+                .render()
+                .contains("ethpayserver_idempotency_healthy 0"),
+            "gauge did not flip to unhealthy when the Redis op failed"
+        );
     }
 }

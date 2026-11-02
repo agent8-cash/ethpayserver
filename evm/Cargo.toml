@@ -135,3 +135,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # hit an actual connection reset in ws_pubsub_retry_escalation.rs. Pinned to
 # 0.28, the exact version alloy-transport-ws 1.8.3 itself depends on.
 tokio-tungstenite = "0.28"
+# Self-dependency, test-only: `evm/tests/*.rs` link against the compiled lib
+# as an external crate, so `#[cfg(test)]` never applies to them, and the
+# mock exports (`test-utils`) and `sentry_tracing` crate (`sentry-scrub`) are
+# otherwise gated behind features nothing turns on when building `-p evm`
+# alone. This line forces both on for the test build only - it does not
+# change the default library build any other crate gets when depending on
+# this one normally.
+evm = { path = ".", features = ["test-utils", "sentry-scrub"] }

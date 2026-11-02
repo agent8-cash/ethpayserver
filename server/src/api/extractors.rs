@@ -14,8 +14,8 @@ use chrono::{DateTime, Utc};
 use super::api_key_deprecation::DeprecationSlot;
 use super::api_key_hash::hash_api_key;
 pub(super) use super::api_key_scope::{
-    key_grants_merchant_read, key_grants_standing_push, key_grants_store_permission,
-    key_retains_unrestricted_access,
+    key_grants_account_notice, key_grants_merchant_read, key_grants_standing_push,
+    key_grants_store_permission, key_retains_unrestricted_access,
 };
 use super::auth_freshness::{is_grace_expired, is_reauth_stale};
 use super::standing_warning::AccountSlot;
@@ -499,6 +499,39 @@ where
         }
 
         Ok(StandingPusher(user_info))
+    }
+}
+
+/// The caller of the account-notice route: an API key scoped to exactly that
+/// action, owned by a `ServerAdmin`. Same shape as [`StandingPusher`] and for
+/// the same reason - this key can name any account id on the instance, so it
+/// must be good for nothing else.
+pub struct AccountNoticeSender(pub UserInfo);
+
+impl<A> FromRequestParts<PgAppState<A>> for AccountNoticeSender
+where
+    A: SessionService + 'static,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &PgAppState<A>,
+    ) -> Result<Self, Self::Rejection> {
+        let (user_info, _is_operator, scope) =
+            validate_session_with_scope(parts, state, false).await?;
+
+        if !key_grants_account_notice(scope.as_deref()) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "This credential is not scoped to send account notices",
+            ));
+        }
+        if user_info.role != Role::ServerAdmin {
+            return Err((StatusCode::FORBIDDEN, "Admin access required"));
+        }
+
+        Ok(AccountNoticeSender(user_info))
     }
 }
 

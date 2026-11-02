@@ -40,6 +40,7 @@ fn fast_confirm_config() -> ChainMonitorConfig {
         loop_hang_timeout_secs: 5,
         monitor_native: true,
         monitor_erc20: true,
+        rescan_max_blocks: 10_000,
     }
 }
 

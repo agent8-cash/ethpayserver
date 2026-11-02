@@ -4,6 +4,7 @@ mod config;
 mod confirmations;
 mod lifecycle;
 mod processing;
+mod rescan;
 pub use processing::BACKFILL_MAX_BLOCKS;
 
 pub use config::{ChainMonitorConfig, WatchedAddress};

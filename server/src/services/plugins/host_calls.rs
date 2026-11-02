@@ -84,11 +84,13 @@ use payserver_plugin_host::PluginHostCalls;
 use super::pools::PluginPools;
 
 mod invoicing;
+mod notifier;
 mod sql;
 mod standing;
 mod volume;
 
 pub use invoicing::DeferredIssuer;
+pub use notifier::DeferredNotifier;
 pub use standing::DeferredStanding;
 pub use volume::{DeferredBulkVolume, DeferredVolume};
 
@@ -111,6 +113,9 @@ pub struct DeferredCapabilities {
     pub bulk_volume: DeferredBulkVolume,
     /// Capability 7: reading the standing the host stored for an account.
     pub standing: DeferredStanding,
+    /// Capability 7 (`account_notice`): telling an account something,
+    /// through a channel and an address only the host resolves.
+    pub notifier: DeferredNotifier,
 }
 
 /// One plugin's host imports: its database, and whether it may invoice.
@@ -138,6 +143,10 @@ pub struct PluginCalls {
     /// Unpublished is reported as unavailable rather than as "no standing",
     /// which a plugin gating on it would read as permission to allow.
     standing: DeferredStanding,
+    /// Who delivers when this plugin asks the host to notify an account.
+    /// Unpublished means the plugin is told so, rather than told the notice
+    /// was delivered when nothing sent it.
+    notifier: DeferredNotifier,
     /// The runtime to drive the async database work on.
     ///
     /// [`PluginHostCalls`] is sync because the runtime calls plugins from
@@ -160,6 +169,7 @@ impl PluginCalls {
             volume: DeferredVolume::default(),
             bulk_volume: DeferredBulkVolume::default(),
             standing: DeferredStanding::default(),
+            notifier: DeferredNotifier::default(),
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -172,6 +182,7 @@ impl PluginCalls {
         self.volume = capabilities.volume.clone();
         self.bulk_volume = capabilities.bulk_volume.clone();
         self.standing = capabilities.standing.clone();
+        self.notifier = capabilities.notifier.clone();
         self
     }
 }
@@ -205,35 +216,7 @@ impl PluginHostCalls for PluginCalls {
         self.storage_query_impl(request)
     }
 
-    /// Refused: this host does not yet reach an account on a plugin's behalf.
-    /// The trait requires the method so that an implementation cannot hand out
-    /// a merchant-reaching capability by forgetting it; refusing is the
-    /// explicit choice, and the plugin is told so rather than left to assume
-    /// the notice was delivered.
-    fn account_notice(&self, _request: &[u8]) -> Result<Vec<u8>, String> {
-        Err("account_notice is not available on this host".to_string())
-    }
-}
-
-#[cfg(test)]
-mod account_notice_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use std::sync::Arc;
-
-    use payserver_plugin_api::PluginId;
-    use payserver_plugin_host::PluginHostCalls;
-
-    use super::PluginCalls;
-    use crate::services::plugins::pools::PluginPools;
-
-    /// A refusal that turned into `Ok` would tell the plugin a notice reached
-    /// a merchant when this host has no way to deliver one.
-    #[tokio::test]
-    async fn account_notice_is_refused_not_acknowledged() {
-        let pools = Arc::new(PluginPools::new("postgres://localhost/x".to_string(), 4));
-        let calls = PluginCalls::new(PluginId::new("cash.random.t").unwrap(), pools);
-        let err = calls.account_notice(b"{}").unwrap_err();
-        assert!(err.contains("not available"), "{err}");
+    fn account_notice(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        self.account_notice_impl(request)
     }
 }

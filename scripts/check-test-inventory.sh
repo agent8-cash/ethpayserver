@@ -14,15 +14,24 @@
 # needs no test to run, so it cannot be fooled by a test that passes
 # vacuously - a separate problem).
 #
-# How a change cites its justification: a trailer line in any commit message
-# between the merge base and HEAD,
+# Which files are checked: every .rs file the change touches (modified or
+# deleted since the merge base), plus any file named by a trailer line in a
+# commit message,
 #
 #     Cites-Tests: path/to/file.rs
 #
-# Only cited files are checked, so this is not a tax on every refactor. Every
-# test name in a cited file at the merge base must still exist in the head -
-# in that file or any other tracked .rs file, so moving a test is not a
-# deletion. A test that is genuinely meant to go is declared the same way:
+# The check used to run only for cited files. Nobody ever wrote the trailer, so
+# it protected nothing; an opt-in guard that is never opted into is no guard. A
+# file the change does not touch cannot lose a test, so touching is the scope,
+# and a refactor that keeps its tests pays nothing. The trailer remains for a
+# file the change should be held to even though its diff does not show it
+# (a merge that resolved the file back to the base's copy, say).
+#
+# Every test name in a checked file at the merge base must still exist in the
+# head - in that file or any other tracked .rs file, so moving a test is not a
+# deletion. A test renamed in place is not a deletion either: its body is
+# unchanged under a new name that did not exist before. A test that is
+# genuinely meant to go is declared in a commit message:
 #
 #     Removes-Test: name_of_the_test
 #
@@ -31,13 +40,18 @@
 #
 # A cited file in which no test is recognised at the merge base fails, because
 # it means the parser could not see them, not that there was nothing to lose.
+# A merely touched file with no tests is skipped.
 #
 # Recognised tests: a function following #[test], #[tokio::test],
 # #[sqlx::test], #[rstest] or similar, with any other attributes (such as
 # #[ignore]) in between. Matching is by name across all tracked .rs files, so
 # a deleted test whose name is also used elsewhere counts as present: that is
-# the price of treating a move as not-a-deletion. A test renamed in place has
-# lost its old name and must be declared with Removes-Test.
+# the price of treating a move as not-a-deletion. A rename candidate must
+# additionally be new to the merge base across every tracked file, not merely
+# absent from the one file's own base names, and each candidate excuses at
+# most one missing name - otherwise a deleted test with a common body (an
+# empty body, a one-line assert) is waved through against an unrelated test
+# that already existed, or against a single new test that two drops share.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -54,20 +68,44 @@ messages="$(git log --format=%B "$base..HEAD")" || exit 1
 cited="$(printf '%s\n' "$messages" | sed -n 's/^Cites-Tests:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | sort -u)"
 removed="$(printf '%s\n' "$messages" | sed -n 's/^Removes-Test:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | sort -u)"
 
-if [ -z "$cited" ]; then
-  echo "no Cites-Tests trailer between $BASE_REF and HEAD - nothing to compare"
-  exit 0
-fi
+touched="$(git diff --name-only --no-renames --diff-filter=MD "$base" HEAD -- '*.rs')" || exit 1
 
 # Test function names, one per line, read from stdin. An attribute may span
 # several lines (#[sqlx::test(\n migrations = ...\n)]), so it is read until its
 # brackets balance; a test whose attribute is not read to the end is invisible,
 # which is exactly the silent pass this exists to prevent.
 test_names() {
-  awk '
-    function emit(line) {
+  # ponytail: strip() does not handle a backslash-escaped quote inside a
+  # string/char literal (e.g. "a\"b" or the char literal for a quote mark
+  # itself) or a block comment - no reviewer finding named those, and the
+  # real incidents were a plain brace in a string/char literal or a line
+  # comment. Upgrade to escape-aware scanning if a test body needs one.
+  awk -v sq="'" '
+    function strip(s) {
+      gsub(/"[^"]*"/, "\"\"", s)
+      gsub(sq "[^" sq "]" sq, sq sq, s)
+      gsub(/\/\/.*/, "", s)
+      return s
+    }
+    # Output is "name<TAB>body with whitespace removed", so a rename in place
+    # can be told from a deletion. Braces inside a string literal, a char
+    # literal or a line comment are stripped first so they cannot desync the
+    # depth count and swallow every test that follows.
+    function feed(text,   i, ch) {
+      text = strip(text)
+      for (i = 1; i <= length(text); i++) {
+        ch = substr(text, i, 1)
+        if (ch == "{") { bd++; seen = 1 } else if (ch == "}") bd--
+        if (ch !~ /[[:space:]]/) body = body ch
+        if (seen && bd <= 0) { print cur "\t" body; pending = 0; return }
+      }
+    }
+    function emit(line,   s, rest) {
       if (match(line, /fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
-        s = substr(line, RSTART, RLENGTH); sub(/^fn[[:space:]]+/, "", s); print s
+        s = substr(line, RSTART, RLENGTH); sub(/^fn[[:space:]]+/, "", s)
+        rest = substr(line, RSTART + RLENGTH)
+        cur = s; body = ""; bd = 0; seen = 0; pending = 1
+        feed(rest)
         return 1
       }
       return 0
@@ -75,6 +113,7 @@ test_names() {
     function depth_delta(line,   t, o, c) {
       t = line; o = gsub(/\[/, "", t); c = gsub(/\]/, "", t); return o - c
     }
+    pending { feed($0); next }
     depth > 0 {
       attr = attr " " $0; depth += depth_delta($0)
       if (depth <= 0) {
@@ -99,10 +138,51 @@ test_names() {
     {
       if (armed) emit($0)
       armed = 0
-    }'
+    }
+    END { if (pending) print cur "\t" body }'
 }
 
-head_names="$(git ls-files -z -- '*.rs' | xargs -0 cat | test_names | sort -u)" || exit 1
+head_tests="$(git ls-files -z -- '*.rs' | xargs -0 cat | test_names | sort -u)" || exit 1
+head_names="$(cut -f1 <<<"$head_tests")"
+
+# Every test name that already existed anywhere at the merge base. A rename
+# candidate must be absent from this, not merely absent from the one file's
+# own base names - otherwise a deleted test with a common body (an empty
+# body, a one-line assert) is "renamed" to an unrelated test that already
+# existed somewhere else in the tree, and the deletion passes silently.
+base_names_global="$(
+  { git ls-tree -r --name-only "$base" | grep '\.rs$' || true; } |
+    while IFS= read -r f; do git show "$base:$f" 2>/dev/null; done |
+    test_names | sort -u | cut -f1
+)" || exit 1
+
+# Files to check: "cited" files are strict, "touched" ones are skipped when
+# they hold no tests.
+files="$( { printf '%s\n' "$cited"; printf '%s\n' "$touched"; } | sed '/^$/d' | sort -u)"
+if [ -z "$files" ]; then
+  echo "no .rs file changed since $BASE_REF - nothing to compare"
+  exit 0
+fi
+
+# Sets REN_TO to the name of a head test with this body that did not exist
+# anywhere at the merge base: the new name of a test renamed in place. Not a
+# command substitution - it has to mutate used_renames in this shell, not a
+# subshell, so that two deleted tests sharing one body cannot both be excused
+# by the same single candidate.
+declare -A used_renames=()
+renamed_to() { # body
+  local B="$1" cand
+  REN_TO=""
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    [ -n "${used_renames[$cand]:-}" ] && continue
+    grep -qxF -- "$cand" <<<"$base_names_global" && continue
+    used_renames["$cand"]=1
+    REN_TO="$cand"
+    return 0
+  done <<<"$(B="$B" awk -F'\t' '$2 == ENVIRON["B"] { print $1 }' <<<"$head_tests")"
+  return 1
+}
 
 fail=0
 while IFS= read -r file; do
@@ -125,11 +205,14 @@ while IFS= read -r file; do
   fi
   # Captured, not piped into the loop: a failure inside a process substitution
   # is lost, and "could not enumerate" must not read as "nothing deleted".
-  if ! base_names="$(git show "$base:$file" | test_names | sort -u)"; then
+  if ! base_tests="$(git show "$base:$file" | test_names | sort -u)"; then
     echo "::error file=$file::could not read the tests in $file at the merge base" >&2
     fail=1; continue
   fi
+  base_names="$(cut -f1 <<<"$base_tests")"
   if [ -z "$base_names" ]; then
+    # A touched file that never had tests has nothing to lose.
+    grep -qxF -- "$file" <<<"$cited" || continue
     # A file the parser sees no tests in is a parser miss (an attribute form it
     # does not know, say), not a file with nothing to lose.
     echo "::error file=$file::no tests recognised in $file at the merge base, so nothing would be compared" >&2
@@ -144,6 +227,11 @@ while IFS= read -r file; do
       echo "ok: $name removed from $file, and declared"
       continue
     }
+    body="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' <<<"$base_tests")"
+    if [ -n "$body" ] && renamed_to "$body"; then
+      echo "ok: $name renamed to $REN_TO in $file"
+      continue
+    fi
     missing+=("$name")
   done <<<"$base_names"
   # Every missing name is a deletion. Gaining tests does not excuse losing
@@ -155,7 +243,7 @@ while IFS= read -r file; do
     done
     fail=1
   fi
-done <<< "$cited"
+done <<< "$files"
 
 if [ "$fail" -ne 0 ]; then
   echo >&2

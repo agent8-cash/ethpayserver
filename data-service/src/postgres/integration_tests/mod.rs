@@ -21,6 +21,9 @@
 //! - `account_deletion`: what blocks deleting an account, against the real FKs
 //! - `store_creation`: a store and the membership that owns it, as one unit
 //! - `payout_claims`: which invoices a store's payouts already hold
+//! - `payout`: `PgDataService`'s payout CRUD, status `COALESCE` behaviour,
+//!   and every `PayoutStatus` surviving a write then a read
+//! - `refund`: the same shape as `payout`, for refunds
 //! - `email_change`: pending email changes leave the recovery salt untouched
 //! - `webhook_delivery`: retries of one job collapse to one row, and a
 //!   store's deliveries stay scoped to it
@@ -47,7 +50,9 @@ mod invoice;
 mod invoice_creation;
 mod merchant_directory;
 mod payment;
+mod payout;
 mod payout_claims;
+mod refund;
 mod seeded_tokens;
 mod server_settings;
 mod store_creation;
@@ -61,7 +66,8 @@ use chrono::Utc;
 use types::{PaymentMethodId, PaymentOptionData, PaymentOptionId};
 
 use super::tests::{
-    assert_amount_eq, create_test_service, seeded_test_invoice, test_payment, unique_address,
+    assert_amount_eq, create_test_service, seed_store, seeded_test_invoice, test_payment,
+    unique_address,
 };
 
 // =============================================================================

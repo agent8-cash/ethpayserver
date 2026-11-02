@@ -501,30 +501,8 @@ async fn main() -> Result<()> {
         ),
     }
 
-    // Capability 6, published unconditionally, batched form included. Unlike
-    // capability 3 it needs no own store: an instance that sells nothing
-    // still has merchants with volume, and a plugin asking what one settled
-    // deserves the real answer rather than silence that reads as zero. One
-    // reader answers both forms, published under each capability's own cell.
-    let volume_reader = Arc::new(server::services::plugins::PluginMerchantVolume::new(
-        state.clone(),
-    ));
-    if plugin_capabilities.volume.publish(volume_reader.clone()) {
-        tracing::info!("plugins may read what an account settled over a window");
-    }
-    if plugin_capabilities.bulk_volume.publish(volume_reader) {
-        tracing::info!("plugins may read what many accounts settled in one call");
-    }
-
-    // Capability 7: the standing the host stored for an account, read-only.
-    // Needs only the data layer, so it is published unconditionally; a plugin
-    // can read a standing and has no import by which to write one.
-    if plugin_capabilities
-        .standing
-        .publish(state.data_service.clone())
-    {
-        tracing::info!("plugins may read an account's stored standing");
-    }
+    // Capabilities 6 and 7, published unconditionally: see `publish_unconditional_capabilities`.
+    server::services::plugins::publish_unconditional_capabilities(&state, &plugin_capabilities);
 
     // Capability 5. `PageHost` is built empty by `AppState::new` and has
     // never had a production renderer registered in it, so every plugin page
@@ -555,10 +533,16 @@ async fn main() -> Result<()> {
     tracing::info!(?rate_limit_config, "Rate limiting configured");
     let rate_limiters = Arc::new(RateLimitState::from_config(&rate_limit_config));
 
-    // Create idempotency state (shares the existing Redis connection)
-    let idempotency = match api::idempotency::IdempotencyState::from_env(redis_url).await {
+    // Create idempotency state. Connecting to Redis happens in the
+    // background with retry (see `IdempotencyState::from_env`), so this only
+    // fails on a malformed `redis_url` - the middleware mounts below either
+    // way and passes requests through unchanged until Redis answers.
+    let idempotency = match api::idempotency::IdempotencyState::from_env(redis_url) {
         Ok(idem) => {
-            tracing::info!(ttl_secs = idem.ttl_secs, "Idempotency middleware enabled");
+            tracing::info!(
+                ttl_secs = idem.ttl_secs,
+                "Idempotency middleware mounted, connecting to Redis in the background"
+            );
             Some(Arc::new(idem))
         }
         Err(e) => {
@@ -604,7 +588,10 @@ async fn main() -> Result<()> {
     // fault would also log as shutdown noise. Racing keeps the flag's "we
     // asked to stop" window bounded to the same order as evmmonitor's below.
     tokio::select! {
-        result = axum::serve(listener, app) => {
+        result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        ) => {
             result?;
         }
         () = shutdown_signal() => {
