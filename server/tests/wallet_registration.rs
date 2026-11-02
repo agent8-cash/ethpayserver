@@ -250,11 +250,13 @@ async fn a_child_depth_xpub_is_refused_by_the_real_wallet_endpoint() {
     cleanup(&pool, user_id).await;
 }
 
-/// The account key of the standard test mnemonic at `m/44'/60'/0'`, and its
+/// The account key of the standard test mnemonic at `m/44'/60'/1'`, and its
 /// BIP-49 and BIP-84 renderings from this crate's encoder. Same key material.
-const TEST_ACCOUNT_XPUB: &str = "xpub6DCoCpSuQZB2jawqnGMEPS63ePKWkwWPH4TU45Q7LPXWuNd8TMtVxRrgjtEshuqpK3mdhaWHPFsBngh5GFZaM6si3yZdUsT8ddYM3PwnATt";
-const TEST_ACCOUNT_YPUB: &str = "ypub6Y34WV7pZEiWat8xcd8rbXBYpMTxhZVtCAygqUHziPuPxUSMi244aVWpm6CThpVjigtST46qqvDjfyJdywyb9LZJvKG44nGcuMbzRzKVHPj";
-const TEST_ACCOUNT_ZPUB: &str = "zpub6rsKp9njhvFzSBL5SyvUocH3zKcQeBVP7HVucsBt6QHH1aFaxgDdCZAxnJA3hj9f8L1FCXhQJaaHZFvChePbwaEunexUeh67B5fdpWEscjP";
+/// Index 1, not 0: the index-0 key is registered by other DB-backed tests that
+/// never clean up, and a row held by another account would refuse this one.
+const TEST_ACCOUNT_XPUB: &str = "xpub6DCoCpSuQZB2k9PnGSMK9tinTK8kx3hcv7F4BWwhs5N2wnwGiLg17r9J7j2JcYP9gkip3sC87J1F99YxeBHGuFMg6ejA8qQEKSuzzaKvqBR";
+const TEST_ACCOUNT_YPUB: &str = "ypub6Y34WV7pZEiWbSau6o8wMypHdHHCtfh7qDmGxuqbF5juztkVxzqZjuoS8vytcT356PqcoLngZxMo2SAXMshHhV3GxzRaikDibAyePDBXYjj";
+const TEST_ACCOUNT_ZPUB: &str = "zpub6rsKp9njhvFzSjn1w9vZa4unoFReqHgckLHVkJjUd67o3zZjDf18MyTaA8wUcMgzW2xRYpPF2ciLuin65a7JViisqL81Jf3Cru3Hmow1sqV";
 
 fn merchant(user_id: Uuid) -> UserInfo {
     UserInfo {
@@ -293,7 +295,7 @@ async fn rejection_body(
 
 /// A BIP-49 `ypub` or BIP-84 `zpub` is accepted by `POST /wallets` and stored
 /// as the equivalent `xpub`, so the same key registered either way is one
-/// wallet. The first verification address is the published one for the key.
+/// wallet. The first verification address is the key's index-0 address.
 #[tokio::test]
 #[ignore]
 async fn a_ypub_or_zpub_is_stored_as_the_equivalent_xpub() {
@@ -322,7 +324,7 @@ async fn a_ypub_or_zpub_is_stored_as_the_equivalent_xpub() {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(
             body.verification_addresses[0].address.to_lowercase(),
-            "0x9858effd232b4033e47d90003d41ec34ecaeda94"
+            "0x78839f6054d7ed13918bae0473ba31b1ca9d7265"
         );
 
         let stored: String = sqlx::query_scalar("SELECT xpub FROM wallets WHERE user_id = $1")
