@@ -249,3 +249,151 @@ async fn a_child_depth_xpub_is_refused_by_the_real_wallet_endpoint() {
     assert_eq!(rows, 0, "a refused key must not be stored");
     cleanup(&pool, user_id).await;
 }
+
+/// The account key of the standard test mnemonic at `m/44'/60'/1'`, and its
+/// BIP-49 and BIP-84 renderings from this crate's encoder. Same key material.
+/// Index 1, not 0: the index-0 key is registered by other DB-backed tests that
+/// never clean up, and a row held by another account would refuse this one.
+const TEST_ACCOUNT_XPUB: &str = "xpub6DCoCpSuQZB2k9PnGSMK9tinTK8kx3hcv7F4BWwhs5N2wnwGiLg17r9J7j2JcYP9gkip3sC87J1F99YxeBHGuFMg6ejA8qQEKSuzzaKvqBR";
+const TEST_ACCOUNT_YPUB: &str = "ypub6Y34WV7pZEiWbSau6o8wMypHdHHCtfh7qDmGxuqbF5juztkVxzqZjuoS8vytcT356PqcoLngZxMo2SAXMshHhV3GxzRaikDibAyePDBXYjj";
+const TEST_ACCOUNT_ZPUB: &str = "zpub6rsKp9njhvFzSjn1w9vZa4unoFReqHgckLHVkJjUd67o3zZjDf18MyTaA8wUcMgzW2xRYpPF2ciLuin65a7JViisqL81Jf3Cru3Hmow1sqV";
+
+fn merchant(user_id: Uuid) -> UserInfo {
+    UserInfo {
+        id: UserId(user_id),
+        email: Some(format!("wallet-slip132-{user_id}@example.com")),
+        primary_wallet_address: None,
+        created_at: Utc::now(),
+        last_login_at: None,
+        role: Role::User,
+    }
+}
+
+async fn rejection_body(
+    state: PgAppState<UnusedSessionService>,
+    user: UserInfo,
+    xpub: &str,
+) -> (StatusCode, String) {
+    let err = create_wallet(
+        AuthenticatedUser(user),
+        State(state),
+        Json(CreateWalletRequest {
+            xpub: xpub.to_string(),
+            name: None,
+            namespace: NAMESPACE_EIP155.to_string(),
+        }),
+    )
+    .await
+    .expect_err("this input must be refused");
+    let response = axum::response::IntoResponse::into_response(err);
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A BIP-49 `ypub` or BIP-84 `zpub` is accepted by `POST /wallets` and stored
+/// as the equivalent `xpub`, so the same key registered either way is one
+/// wallet. The first verification address is the key's index-0 address.
+#[tokio::test]
+#[ignore]
+async fn a_ypub_or_zpub_is_stored_as_the_equivalent_xpub() {
+    for pasted in [TEST_ACCOUNT_YPUB, TEST_ACCOUNT_ZPUB] {
+        let state = state().await;
+        let pool = state.data_service.pool().clone();
+        let user_id = Uuid::new_v4();
+        seed_user(
+            &pool,
+            user_id,
+            &format!("wallet-slip132-{user_id}@example.com"),
+        )
+        .await;
+
+        let (status, Json(body)) = create_wallet(
+            AuthenticatedUser(merchant(user_id)),
+            State(state),
+            Json(CreateWalletRequest {
+                xpub: pasted.to_string(),
+                name: None,
+                namespace: NAMESPACE_EIP155.to_string(),
+            }),
+        )
+        .await
+        .expect("a ypub or zpub must be accepted by POST /wallets");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            body.verification_addresses[0].address.to_lowercase(),
+            "0x78839f6054d7ed13918bae0473ba31b1ca9d7265"
+        );
+
+        let stored: String = sqlx::query_scalar("SELECT xpub FROM wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored, TEST_ACCOUNT_XPUB,
+            "must store the xpub, not {pasted}"
+        );
+        cleanup(&pool, user_id).await;
+    }
+}
+
+/// A pasted private key gets the same named error the rotate endpoint gives,
+/// and nothing is stored.
+#[tokio::test]
+#[ignore]
+async fn a_private_key_pasted_into_the_wallet_endpoint_is_named() {
+    const XPRV: &str = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
+    const HEX_KEY: &str = "5176b09f63694525911cea338ef089c6c304288e3c769bbb4e99d23d1a1e4f68";
+    let pool = state().await.data_service.pool().clone();
+    let user_id = Uuid::new_v4();
+    seed_user(
+        &pool,
+        user_id,
+        &format!("wallet-slip132-{user_id}@example.com"),
+    )
+    .await;
+
+    for key in [XPRV, HEX_KEY] {
+        let (status, body) = rejection_body(state().await, merchant(user_id), key).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("looks like a private key"),
+            "body was: {body}"
+        );
+    }
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wallets WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "a refused key must not be stored");
+    cleanup(&pool, user_id).await;
+}
+
+/// Any other malformed string is still a 400, now with the named reason
+/// rather than an empty body.
+#[tokio::test]
+#[ignore]
+async fn a_malformed_xpub_gets_a_named_400() {
+    let state = state().await;
+    let pool = state.data_service.pool().clone();
+    let user_id = Uuid::new_v4();
+    seed_user(
+        &pool,
+        user_id,
+        &format!("wallet-slip132-{user_id}@example.com"),
+    )
+    .await;
+
+    let (status, body) = rejection_body(state, merchant(user_id), "xpub6garbage-not-base58!").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("invalid_xpub: not a valid base58-encoded extended public key"),
+        "body was: {body}"
+    );
+    cleanup(&pool, user_id).await;
+}
