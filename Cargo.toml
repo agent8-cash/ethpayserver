@@ -17,11 +17,11 @@ resolver = "3"
 # `scripts/commons.sh link`, which writes an uncommitted `.cargo/config.toml`
 # patch. To move the pin, `scripts/commons.sh pin <rev>`.
 [workspace.dependencies]
-api-types = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-scrub = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-types = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-auth = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-crypto = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-rates = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-payserver-plugin-api = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
-payserver-plugin-host = { git = "https://github.com/randomcash/payserver-commons.git", rev = "8191f0687e828a68d6fce0d39052ee6e91d37da2" }
+api-types = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+scrub = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+types = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+auth = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+crypto = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+rates = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+payserver-plugin-api = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }
+payserver-plugin-host = { git = "https://github.com/agent8-cash/payserver-commons.git", rev = "6382134022d6761cf2be877730b42aa67a1de39e" }

@@ -101,7 +101,7 @@ regex = { version = "1", optional = true }
 
 # API (optional)
 axum = { version = "0.8", optional = true }
-utoipa = { version = "5", features = ["axum_extras"], optional = true }
+utoipa = { version = "6", features = ["axum_extras"], optional = true }
 types = { workspace = true, optional = true }
 data-service = { path = "../data-service", optional = true }
 auth = { workspace = true, optional = true }

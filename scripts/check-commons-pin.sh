@@ -25,7 +25,7 @@ manifest="$repo_root/Cargo.toml"
 # Overridable so the retry-and-give-up path can actually be exercised. A branch
 # that only runs during an outage is the kind that turns out not to work during
 # one.
-url="${COMMONS_URL:-https://github.com/randomcash/payserver-commons.git}"
+url="${COMMONS_URL:-https://github.com/agent8-cash/payserver-commons.git}"
 
 # Every `rev = "..."` on a payserver-commons line, deduped. One revision is
 # shared by all crates in practice, but read them all rather than assume it -
