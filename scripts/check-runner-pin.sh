@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every workflow job that installs a browser must name its runner image.
+# EVERY workflow job must name its runner image. Not only the browser jobs.
 #
 # `ubuntu-latest` is chosen by GitHub, not by us. It moved to Ubuntu 26.04 and
 # @playwright/test 1.59.1 publishes no chromium build for 26.04, so from
@@ -18,19 +18,37 @@
 # impossible. A fix applied to one of three jobs is not a fix, and nothing
 # compared them.
 #
-# Pinned means an explicit image. `ubuntu-latest` is the only spelling
-# refused; `ubuntu-24.04`, `ubuntu-26.04` or a self-hosted label all pass,
-# because the point is that a human chose it, not which one they chose.
+# SCOPE IS EVERY JOB, and that is the owner's standing instruction: lock the
+# Ubuntu version, do not run `-latest`. An earlier pass pinned only the jobs
+# that install a browser, on the reasoning that those were the ones observed
+# to break. That reasoning is wrong twice over. It treats the symptom that
+# happened to surface as the boundary of the defect, and it had already failed
+# once here: `build` carries a comment explaining that it must be pinned
+# because `e2e` runs its binary on the runner's own glibc and OpenSSL, so a
+# 26.04-built binary refuses to start on 24.04 with
 #
-#   rc 0  every browser-installing job names its image
+#   libcrypto.so.3: version 'OPENSSL_3.2.0' not found
+#
+# which read as a server crash rather than a runner mismatch. A job does not
+# have to install a browser to be broken by the image moving under it.
+#
+# Pinned means an explicit image. Any `*-latest` spelling is refused;
+# `ubuntu-24.04`, `ubuntu-26.04` or a self-hosted label all pass, because the
+# point is that a human chose it, not which one they chose. Moving the fleet
+# to a newer image is then a visible one-line diff per job rather than
+# something that happens to us on GitHub's schedule.
+#
+#   rc 0  every job names its image
 #   rc 1  at least one floats
-#   rc 2  COULD NOT RUN - no workflows, or none installs a browser. Not a pass:
-#         if the install step is renamed, this guard must say so rather than
-#         quietly report clean over an empty set.
+#   rc 2  COULD NOT RUN - no workflows, no jobs, or a workflow that will not
+#         parse. Never a pass: a guard that reports clean over a set it could
+#         not read is the failure mode this whole family exists to avoid.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${1:-$(cd "$HERE/.." && pwd)}"
 WFDIR="$ROOT/.github/workflows"
+# Kept only to label the browser jobs in the output - they are the ones whose
+# float cost six days of absent E2E signal - not to select what is checked.
 MARKER="${PLAYWRIGHT_INSTALL_MARKER:-playwright install}"
 
 [ -d "$WFDIR" ] || { echo "FAILED: no $WFDIR - refusing to report clean over an empty set"; exit 2; }
@@ -60,15 +78,18 @@ for f in sorted(wfdir.glob("*.yml")) + sorted(wfdir.glob("*.yaml")):
     for name, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
-        if marker in yaml.dump(job):
-            runs_on = job.get("runs-on")
-            rows.append((f.name, name, runs_on))
-for f, n, r in rows:
-    print(f"JOB\t{f}\t{n}\t{r}")
+        note = "browser" if marker in yaml.dump(job) else "-"
+        # A reusable-workflow job has no runs-on of its own; the called
+        # workflow owns that choice and this file cannot judge it.
+        if "uses" in job and "runs-on" not in job:
+            note = "reusable"
+        rows.append((f.name, name, job.get("runs-on"), note))
+for f, n, r, note in rows:
+    print(f"JOB\t{f}\t{n}\t{r}\t{note}")
 PY
 ) || { echo "FAILED: could not read the workflow files - the check COULD NOT RUN (not a pass)"; exit 2; }
 
-while IFS=$'\t' read -r kind file job runs_on; do
+while IFS=$'\t' read -r kind file job runs_on note; do
     [ -n "${kind:-}" ] || continue
     if [ "$kind" = "UNPARSEABLE" ]; then
         # COULD NOT RUN, not FAIL. A workflow this cannot read might contain a
@@ -78,18 +99,24 @@ while IFS=$'\t' read -r kind file job runs_on; do
         unreadable=1
         continue
     fi
+    if [ "${note:-}" = "reusable" ]; then
+        echo "skip    $file job '$job' calls a reusable workflow, which owns its own runner"
+        continue
+    fi
     found=$((found + 1))
+    label=""
+    [ "${note:-}" = "browser" ] && label=" (installs a browser)"
     case "$runs_on" in
-        *ubuntu-latest*|*macos-latest*|*windows-latest*)
-            echo "FAILED  $file job '$job' installs a browser on '$runs_on' - a floating image decides whether this job can run at all"
+        *-latest*)
+            echo "FAILED  $file job '$job'$label runs on '$runs_on' - a floating image decides whether this job can run at all, and GitHub picks when it moves"
             fail=1
             ;;
         None|"")
-            echo "FAILED  $file job '$job' installs a browser and declares no runs-on"
+            echo "FAILED  $file job '$job'$label declares no runs-on"
             fail=1
             ;;
         *)
-            echo "ok      $file job '$job' -> $runs_on"
+            echo "ok      $file job '$job'$label -> $runs_on"
             ;;
     esac
 done <<EOF
@@ -102,9 +129,9 @@ if [ "$unreadable" = 1 ]; then
 fi
 
 if [ "$found" = 0 ]; then
-    echo "FAILED: no job in $WFDIR matched '$MARKER' - either the install step was renamed, in which case fix this guard, or the browser tests are gone. Reporting clean here would be reporting on nothing."
+    echo "FAILED: no job with its own runs-on was found in $WFDIR - reporting clean here would be reporting on nothing."
     exit 2
 fi
 
-[ "$fail" = 0 ] || { echo "FAIL: $found browser-installing job(s) checked, at least one floats."; exit 1; }
-echo "OK: all $found browser-installing job(s) name their runner image."
+[ "$fail" = 0 ] || { echo "FAIL: $found job(s) checked, at least one floats."; exit 1; }
+echo "OK: all $found job(s) name their runner image."

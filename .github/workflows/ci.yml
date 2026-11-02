@@ -37,7 +37,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -273,11 +273,11 @@ jobs:
       # mattered because it did not exist: `e2e` was pinned against this exact
       # drift while two other browser jobs floated, and the scheduled E2E died
       # in `playwright install` for six days with nothing comparing them.
-      - name: Browser jobs name their runner image
-        run: ./scripts/check-playwright-runner-pin.sh
+      - name: Every job names its runner image
+        run: ./scripts/check-runner-pin.sh
 
-      - name: Browser-runner-pin guard self-test
-        run: ./scripts/check-playwright-runner-pin-selftest.sh
+      - name: Runner-pin guard self-test
+        run: ./scripts/check-runner-pin-selftest.sh
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -295,7 +295,7 @@ jobs:
   # visible without holding anything up.
   client-pin-drift:
     name: Client pin drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -334,7 +334,7 @@ jobs:
   # Sepolia to find out.
   e2e-static-checks:
     name: E2E static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -356,7 +356,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     needs: [lint]
     services:
@@ -467,7 +467,7 @@ jobs:
   # objected could not run on a PR.
   audit:
     name: Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [lint]
     env:
@@ -514,7 +514,7 @@ jobs:
   security-gate:
     name: Security gate
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [lint]
     permissions:
@@ -967,7 +967,7 @@ jobs:
 
   docker:
     name: Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Lint, audit and test are listed here because `build` no longer waits on
     # them: this is the gate between a failing check and a published image.
@@ -1079,7 +1079,7 @@ jobs:
   # {service, environment, tag} and goes over SSH.
   notify-deploy-testnet:
     name: Notify Deploy (testnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: github.ref == 'refs/heads/testnet'
@@ -1127,7 +1127,7 @@ jobs:
   # such directory.
   notify-deploy:
     name: Notify Deploy (mainnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -1202,7 +1202,7 @@ jobs:
   # been in the tree unreferenced. This is the reference.
   deploy-verify-testnet:
     name: Verify testnet deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [notify-deploy-testnet]
     if: github.ref == 'refs/heads/testnet'
@@ -1240,7 +1240,7 @@ jobs:
   # anywhere was red for the deploy. This job is.
   testnet-deploy-status:
     name: Testnet deploy status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [lint, test, audit, build, docker, notify-deploy-testnet, deploy-verify-testnet]
     if: always() && github.ref == 'refs/heads/testnet'
@@ -1291,7 +1291,7 @@ jobs:
   # `gh issue list` long after a run has scrolled out of view.
   e2e-status:
     name: E2E status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [e2e]
     # `failure` specifically, not `!= success`. When an upstream job breaks,
