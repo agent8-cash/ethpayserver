@@ -106,5 +106,63 @@ assert_exit "a GITHUB_SHA that isn't a 40-char sha fails before any request" 1 \
 assert_exit "a sha tag that doesn't belong to the commit fails before any request" 1 \
   "good/repo" "sha-0000000" "$FULL_SHA" "token"
 
+# --------------------------------------------------------------------------
+# The script above is proven. None of it mattered, because the WORKFLOW JOB
+# that runs it had no actions/checkout, so its one step exited 127 on every
+# push to testnet from 2026-10-30 to 2026-11-02 while this very self-test
+# passed on every PR - it runs in the lint job, which does check out.
+#
+# A guard that exercises a script in a job that can reach it says nothing
+# about the job that actually runs it. These two cases close that gap by
+# reading the workflow file that GitHub executes, not a restatement of it.
+# --------------------------------------------------------------------------
+WORKFLOW="$HERE/../.github/workflows/ci.yml"
+
+# Extract one top-level job block (2-space key, to the next 2-space key).
+job_block() {
+  awk -v want="  $1:" '
+    $0 == want { inj = 1; next }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+    inj { print }
+  ' "$WORKFLOW"
+}
+
+check_job_checks_out() {
+  desc="$1"; job="$2"
+  block="$(job_block "$job")"
+  if [ -z "$block" ]; then
+    echo "FAIL: $desc - job '$job' not found in $WORKFLOW (renamed? then fix this guard)"
+    fail=$((fail + 1))
+    return
+  fi
+  # Only jobs that run a repo-relative script need the workspace populated.
+  if ! printf '%s' "$block" | grep -qE 'run:[[:space:]]*(\./)?scripts/|bash[[:space:]]+scripts/'; then
+    echo "ok: $desc - job runs no repo script, checkout not required"
+    pass=$((pass + 1))
+    return
+  fi
+  if printf '%s' "$block" | grep -q 'actions/checkout'; then
+    echo "ok: $desc"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: $desc - '$job' runs a script from the repository and never checks it out; the step will exit 127"
+    fail=$((fail + 1))
+  fi
+}
+
+check_job_checks_out "the job that dispatches the testnet deploy checks out the repo" notify-deploy-testnet
+check_job_checks_out "the job that verifies the testnet deploy checks out the repo" deploy-verify-testnet
+
+# The owner rename is the other half of the same outage: the old owner answers
+# 307, and a dispatch that is redirected has dispatched nothing. The script
+# itself defaults to agent8-cash; the mainnet job's inline curl did not.
+if grep -nE 'api\.github\.com/repos/(randomcash|gcannelloni)/' "$WORKFLOW"; then
+  echo "FAIL: a dispatch URL above names a pre-rename owner; that path 307s and sends nothing"
+  fail=$((fail + 1))
+else
+  echo "ok: no dispatch URL in the workflow names a pre-rename owner"
+  pass=$((pass + 1))
+fi
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
