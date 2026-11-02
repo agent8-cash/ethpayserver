@@ -1,0 +1,7 @@
+# Review ownership for CI and the security-gate scripts.
+# Changes to these paths automatically request a review from the owner.
+/.github/workflows/ci.yml @gcannelloni
+/.forgejo/workflows/ci.yml @gcannelloni
+/scripts/secret-scan.sh @gcannelloni
+/scripts/secret-scan.test.sh @gcannelloni
+/scripts/sensitive-paths.sh @gcannelloni

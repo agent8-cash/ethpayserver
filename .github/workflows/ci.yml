@@ -37,7 +37,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -45,11 +45,18 @@ jobs:
           # Full history: the session-URL guard scans a commit range.
           fetch-depth: 0
 
+      # Every check below runs even when an earlier one fails. Each reads only
+      # the checkout, so none depends on another's result, and a gate that stops
+      # the rest hides them: a failing file-size gate kept Clippy from running,
+      # so a compile error in a test binary went unreported. The job still fails
+      # as a whole if any check fails. Setup steps keep the default: if the
+      # checkout or toolchain is broken, there is nothing meaningful to run.
       # This repository is public. A ticket id in a source file leaks the
       # title and shape of unreleased work, and an outside reader cannot open
       # the tracker anyway. Ticket ids belong in the commit message and PR
       # title, not the tree - see CLAUDE.md.
       - name: No ticket ids or tracker links in source
+        if: always()
         run: ./scripts/check-no-ticket-refs.sh
 
       - uses: dtolnay/rust-toolchain@stable
@@ -77,6 +84,7 @@ jobs:
       # silently un-pins commons for everyone and restores exactly the
       # non-reproducible builds the pin removed - and it looks like nothing.
       - name: Commons pin matches the lock file
+        if: always()
         run: |
           REV="$(grep -m1 -oP 'rev = "\K[0-9a-f]{40}' Cargo.toml)"
           if [ -z "$REV" ]; then
@@ -104,6 +112,7 @@ jobs:
       # claims to, against a real throwaway commons history built on the fly -
       # not a comment asserting someone ran it once by hand.
       - name: Commons pin guard self-test
+        if: always()
         run: scripts/check-commons-pin.test.sh
 
       # A cross-repo ticket pins commons by the commons PR's branch sha before
@@ -114,6 +123,7 @@ jobs:
       # next clean checkout tries to resolve the pin and finds nothing there.
       # Commons is public, so this needs no token.
       - name: Commons pin is on commons main
+        if: always()
         run: scripts/check-commons-pin.sh
 
       # A collision here is not a naming nit: sqlx keys applied migrations by
@@ -126,6 +136,7 @@ jobs:
       # one anyway - the rule was written down and nothing read it. Needs the
       # full history, hence fetch-depth 0 on the checkout above.
       - name: No session URLs in commits or source
+        if: always()
         env:
           BASE_REF: origin/${{ github.base_ref || 'testnet' }}
         run: |
@@ -133,6 +144,7 @@ jobs:
           ./scripts/check-no-session-urls.sh
 
       - name: Session URL guard self-test
+        if: always()
         run: ./scripts/check-no-session-urls.test.sh
 
       # A 2026-09-14 audit found 26 files over 400 lines; nine days later, with
@@ -171,17 +183,21 @@ jobs:
       # resolves before any step in this job runs, this one included, run in
       # any order.
       - name: No file grows past the line limit
+        if: always()
         env:
           BASE_REF: ${{ github.event_name == 'push' && github.event.before || github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'testnet') }}
         run: ./scripts/check-file-size.sh
 
       - name: File size guard self-test
+        if: always()
         run: ./scripts/check-file-size.test.sh
 
       - name: Migration versions are distinct
+        if: always()
         run: ./scripts/check-migrations.sh
 
       - name: Migration guard self-test
+        if: always()
         run: ./scripts/check-migrations.test.sh
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
@@ -190,6 +206,7 @@ jobs:
       # trailer adds files the diff does not show);
       # this fails if a named test in them vanishes undeclared. See the script.
       - name: Cited tests still exist
+        if: always()
         env:
           BASE_BRANCH: ${{ github.base_ref || 'testnet' }}
         run: |
@@ -198,23 +215,28 @@ jobs:
           ./scripts/check-test-inventory.sh
 
       - name: Test inventory guard self-test
+        if: always()
         run: ./scripts/check-test-inventory.test.sh
 
       # A database test helper that returns on a missing or unreachable
       # database makes "ran" and "skipped" the same output. See the script.
       - name: Database tests fail loudly, never skip
+        if: always()
         run: ./scripts/check-test-db-skips.sh
 
       - name: Database-skip guard self-test
+        if: always()
         run: ./scripts/check-test-db-skips.test.sh
 
       # A scope check with no test driving it in both directions is how a key
       # came to exceed its owner without any test noticing. See the script for
       # what it does and does not prove.
       - name: Scope-gated call sites are tested both ways
+        if: always()
         run: ./scripts/check-scope-call-sites.sh
 
       - name: Scope call-site guard self-test
+        if: always()
         run: ./scripts/check-scope-call-sites.test.sh
 
       # Proves check-health-deep.sh - the between-deploys watchdog for
@@ -223,12 +245,14 @@ jobs:
       # erroring), against a real local HTTP server rather than a comment
       # asserting someone ran it once.
       - name: Health check guard self-test
+        if: always()
         run: ./scripts/check-health-deep.test.sh
 
       # The deploy gate decides whether a cutover is allowed to stand, and CI
       # runs it post-deploy - so every refusal branch in it was code nobody had
       # ever seen refuse anything. Same reasoning as the guard self-test above.
       - name: Deploy health gate self-test
+        if: always()
         run: ./scripts/health-gate.test.sh
 
       # The build steps below refuse to compile with an empty SENTRY_RELEASE,
@@ -237,12 +261,14 @@ jobs:
       # goes red and green on the cases it claims to, rather than shipping a
       # check nobody ever saw refuse anything.
       - name: Sentry release guard self-test
+        if: always()
         run: ./scripts/check-sentry-release.test.sh
 
       # Proves the testnet/mainnet split below - which ref keeps the
       # Sigstore transparency-log upload and which drops it - actually
       # follows the ref rather than a comment asserting someone checked it.
       - name: Image tag guard self-test
+        if: always()
         run: ./scripts/compute-image-tags.test.sh
 
       # The signing self-test replays its arguments against the real cosign,
@@ -258,6 +284,7 @@ jobs:
       # passed - nothing in normal CI operation exercises cosign failing, so
       # nothing organically proves this.
       - name: Cosign sign guard self-test
+        if: always()
         run: ./scripts/cosign-sign.test.sh
 
       # Nothing in normal operation exercises the testnet dispatch's failure
@@ -266,12 +293,26 @@ jobs:
       # fails the step instead of looking like a successful deploy. Same
       # reasoning as the other guard self-tests above.
       - name: Testnet deploy dispatch guard self-test
+        if: always()
         run: ./scripts/dispatch-deploy-testnet.test.sh
 
+      # The runner image of a browser job decides whether that job can run at
+      # all, so it is ours to choose, not GitHub's. This caught nothing when it
+      # mattered because it did not exist: `e2e` was pinned against this exact
+      # drift while two other browser jobs floated, and the scheduled E2E died
+      # in `playwright install` for six days with nothing comparing them.
+      - name: Every job names its runner image
+        run: ./scripts/check-runner-pin.sh
+
+      - name: Runner-pin guard self-test
+        run: ./scripts/check-runner-pin-selftest.sh
+
       - name: Format check
+        if: always()
         run: cargo fmt --all -- --check
 
       - name: Clippy
+        if: always()
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Non-blocking on purpose. ops/client-image.pin only has to be non-empty to
@@ -284,7 +325,7 @@ jobs:
   # visible without holding anything up.
   client-pin-drift:
     name: Client pin drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -323,7 +364,7 @@ jobs:
   # Sepolia to find out.
   e2e-static-checks:
     name: E2E static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -345,7 +386,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     needs: [lint]
     services:
@@ -456,7 +497,7 @@ jobs:
   # objected could not run on a PR.
   audit:
     name: Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [lint]
     env:
@@ -503,7 +544,7 @@ jobs:
   security-gate:
     name: Security gate
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [lint]
     permissions:
@@ -956,7 +997,7 @@ jobs:
 
   docker:
     name: Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Lint, audit and test are listed here because `build` no longer waits on
     # them: this is the gate between a failing check and a published image.
@@ -1068,7 +1109,7 @@ jobs:
   # {service, environment, tag} and goes over SSH.
   notify-deploy-testnet:
     name: Notify Deploy (testnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: github.ref == 'refs/heads/testnet'
@@ -1078,9 +1119,31 @@ jobs:
     # scope it has no use for.
     permissions: {}
     steps:
+      # `run: ./scripts/...` needs the script to be ON DISK, and a job starts
+      # with an empty workspace. Between 2026-10-30 (3c21900, which moved this
+      # dispatch out of inline YAML into a file) and this commit, this job's
+      # only step exited 127 - `No such file or directory` - on every single
+      # push to testnet. Builds were green, the image was pushed to GHCR, and
+      # the one job whose entire purpose is telling the box to pull it never
+      # ran a line. testnet served a 2026-10-26 image for a week.
+      #
+      # Sparse, and `persist-credentials: false`: this job deliberately runs
+      # `permissions: {}` because it holds RCS_DISPATCH_PAT and has no use for
+      # the repository token. Checking out with a credential left in
+      # .git/config would hand it back the scope the empty `permissions:` is
+      # there to deny.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
       # Guard self-test lives in the lint job (it needs no secrets and no
       # docker output, so it runs on every PR rather than only on testnet
-      # pushes) - see scripts/dispatch-deploy-testnet.test.sh.
+      # pushes) - see scripts/dispatch-deploy-testnet.test.sh. That self-test
+      # now also asserts THIS job checks out, because a guard that exercises
+      # the script in a job that can reach it proves nothing about the job
+      # that actually runs it.
       - name: Trigger deploy
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
@@ -1094,7 +1157,7 @@ jobs:
   # such directory.
   notify-deploy:
     name: Notify Deploy (mainnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -1128,15 +1191,37 @@ jobs:
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
         run: |
-          set -e
-          # Same guards the testnet dispatch already carries: a missing token or
-          # a silent HTTP failure must not read as a successful deploy.
+          set -uo pipefail
+          # This step claimed to carry "the same guards the testnet dispatch
+          # already carries". It carried neither.
+          #
+          #   1. It posted to `randomcash/central-infrastructure`. That owner
+          #      was renamed to agent8-cash; the old path now answers 307, and
+          #      `curl --fail-with-body` without `-L` exits 0 on a 3xx because
+          #      a redirect is not an HTTP error by curl's -f definition. So a
+          #      release tag would have reported a successful mainnet dispatch
+          #      having sent nothing. This is the exact failure that cost
+          #      testnet a week, left live in the path that moves real funds.
+          #   2. Checking the status code ourselves is what makes a redirect,
+          #      a 404 or a 401 fail the step. `--fail-with-body` does not.
+          #
+          # Converging this onto scripts/dispatch-deploy-testnet.sh belongs with
+          # the work that first proves a mainnet deploy end to end - that script
+          # hardcodes the deploy-testnet event and payload shape, and mainnet
+          # sends {service, environment, sha, tag}. Until then the guards are
+          # duplicated here deliberately rather than left absent.
           [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          curl -sS --fail-with-body -X POST \
+          RESPONSE="$(curl -sS --max-time 20 -w '\n%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d '{"event_type": "deploy", "client_payload": {"service": "ethpayserver", "environment": "${{ steps.resolve.outputs.environment }}", "sha": "${{ github.sha }}", "tag": "${{ steps.resolve.outputs.tag }}"}}'
+            https://api.github.com/repos/agent8-cash/central-infrastructure/dispatches \
+            -d '{"event_type": "deploy", "client_payload": {"service": "ethpayserver", "environment": "${{ steps.resolve.outputs.environment }}", "sha": "${{ github.sha }}", "tag": "${{ steps.resolve.outputs.tag }}"}}')"
+          HTTP_CODE="${RESPONSE##*$'\n'}"
+          BODY="${RESPONSE%$'\n'*}"
+          case "$HTTP_CODE" in
+            2??) ;;
+            *) echo "::error::mainnet dispatch got HTTP $HTTP_CODE, not 2xx (a redirect and an error both land here): $BODY"; exit 1 ;;
+          esac
           echo "dispatched mainnet deploy ${{ steps.resolve.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
 
   # The dispatch above is fire-and-forget: a 202 from GitHub's API means the
@@ -1147,7 +1232,7 @@ jobs:
   # been in the tree unreferenced. This is the reference.
   deploy-verify-testnet:
     name: Verify testnet deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [notify-deploy-testnet]
     if: github.ref == 'refs/heads/testnet'
@@ -1185,7 +1270,7 @@ jobs:
   # anywhere was red for the deploy. This job is.
   testnet-deploy-status:
     name: Testnet deploy status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [lint, test, audit, build, docker, notify-deploy-testnet, deploy-verify-testnet]
     if: always() && github.ref == 'refs/heads/testnet'
@@ -1236,7 +1321,7 @@ jobs:
   # `gh issue list` long after a run has scrolled out of view.
   e2e-status:
     name: E2E status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [e2e]
     # `failure` specifically, not `!= success`. When an upstream job breaks,
@@ -1330,7 +1415,13 @@ jobs:
   # a fresh random hostname per run, which is what this job wants.
   e2e-postmerge-testnet:
     name: E2E payment flow (post-merge, testnet)
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as `e2e` above and `browser` in
+    # e2e-scheduled.yml: this job runs `playwright install`, and
+    # `ubuntu-latest` is now 26.04, which @playwright/test 1.59.1 has no
+    # chromium build for. This job has not been reached since 2026-10-26
+    # anyway - it needs `deploy-verify-testnet`, and the deploy dispatch was
+    # broken - so it would have started failing the moment deploys came back.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [deploy-verify-testnet]
     if: github.ref == 'refs/heads/testnet'
