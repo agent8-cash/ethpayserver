@@ -268,6 +268,17 @@ jobs:
       - name: Testnet deploy dispatch guard self-test
         run: ./scripts/dispatch-deploy-testnet.test.sh
 
+      # The runner image of a browser job decides whether that job can run at
+      # all, so it is ours to choose, not GitHub's. This caught nothing when it
+      # mattered because it did not exist: `e2e` was pinned against this exact
+      # drift while two other browser jobs floated, and the scheduled E2E died
+      # in `playwright install` for six days with nothing comparing them.
+      - name: Browser jobs name their runner image
+        run: ./scripts/check-playwright-runner-pin.sh
+
+      - name: Browser-runner-pin guard self-test
+        run: ./scripts/check-playwright-runner-pin-selftest.sh
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -1374,7 +1385,13 @@ jobs:
   # a fresh random hostname per run, which is what this job wants.
   e2e-postmerge-testnet:
     name: E2E payment flow (post-merge, testnet)
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as `e2e` above and `browser` in
+    # e2e-scheduled.yml: this job runs `playwright install`, and
+    # `ubuntu-latest` is now 26.04, which @playwright/test 1.59.1 has no
+    # chromium build for. This job has not been reached since 2026-10-26
+    # anyway - it needs `deploy-verify-testnet`, and the deploy dispatch was
+    # broken - so it would have started failing the moment deploys came back.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [deploy-verify-testnet]
     if: github.ref == 'refs/heads/testnet'

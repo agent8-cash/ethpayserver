@@ -84,7 +84,28 @@ jobs:
 
   browser:
     name: Playwright vs testnet
-    runs-on: ubuntu-latest
+    # PINNED, and the pin is the fix for a 6-day silent outage.
+    #
+    # `ubuntu-latest` moved to Ubuntu 26.04 and the pinned @playwright/test
+    # 1.59.1 publishes no chromium build for it, so from 2026-10-28 every run
+    # of this job died in `playwright install` with
+    #
+    #   ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    #
+    # before a single test executed. ci.yml's `e2e` job was already pinned to
+    # ubuntu-24.04 for the same class of drift; this one and `e2e-postmerge-
+    # testnet` were left floating, so the repository carried the fix and the
+    # bug side by side.
+    #
+    # A floating runner image is the same defect as a floating toolchain: the
+    # thing that decides whether the job can run at all is chosen by somebody
+    # else, at a time nobody picked. Pin it.
+    #
+    # EXIT CONDITION: bump @playwright/test to a release that supports 26.04
+    # (1.64.1 is current) and move both jobs forward together. Until then the
+    # runner is the pinned half, because bumping Playwright changes what the
+    # tests DO and this change must only change where they run.
+    runs-on: ubuntu-24.04
     needs: server-not-empty
     timeout-minutes: 30
     steps:
