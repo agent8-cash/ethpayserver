@@ -2,7 +2,7 @@
 
 //! Review finding, fixed: `create_api_key` is the endpoint that accepts and
 //! returns the permission list, and every piece of it was tested alone -
-//! `validate_requested_permissions` and `requested_scope` as pure functions,
+//! `validate_requested_permissions` as a pure function,
 //! `create_api_key_with_permissions` against a database - while nothing drove
 //! the handler itself. Separately covered halves do not join themselves: a
 //! regression that validated one value and persisted another, or that echoed
@@ -105,7 +105,7 @@ async fn an_explicitly_scoped_key_is_persisted_with_exactly_that_scope() {
         State(state),
         axum::Json(api_types::CreateApiKeyPayload {
             name: "scoped key".to_string(),
-            permissions: requested.clone(),
+            permissions: Some(requested.clone()),
             expires_at: None,
         }),
     )
@@ -152,7 +152,8 @@ async fn an_absent_scope_is_persisted_as_inherit_rather_than_as_an_empty_scope()
         State(state),
         axum::Json(api_types::CreateApiKeyPayload {
             name: "inheriting key".to_string(),
-            permissions: Vec::new(),
+            // No `permissions` key at all - `None`, not an empty list.
+            permissions: None,
             expires_at: None,
         }),
     )
@@ -176,5 +177,56 @@ async fn an_absent_scope_is_persisted_as_inherit_rather_than_as_an_empty_scope()
         persisted.permissions, None,
         "an absent scope must be stored as inherit-the-role, not as an empty list: \
          an empty list is a scope that grants nothing, which is the opposite meaning"
+    );
+}
+
+/// The case the old wire type could not express. `permissions: []` is a
+/// request for a key with NO permissions - it must authenticate and be refused
+/// every scoped action. Previously `#[serde(default)]` made this
+/// indistinguishable from an absent field, so a caller asking for the
+/// narrowest possible key was handed one with the owner's full role.
+///
+/// This is the test that would have caught that, and it is only writable now
+/// that the field is an `Option`.
+#[tokio::test]
+#[ignore]
+async fn an_explicitly_empty_scope_is_persisted_as_an_empty_scope_not_as_inherit() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+
+    let pg = Arc::new(pg);
+    let state = app_state(pg.clone());
+
+    let (_status, axum::Json(response)) = create_api_key(
+        AuthenticatedUser(user_info(owner)),
+        State(state),
+        axum::Json(api_types::CreateApiKeyPayload {
+            name: "powerless key".to_string(),
+            permissions: Some(Vec::new()),
+            expires_at: None,
+        }),
+    )
+    .await
+    .expect("an empty scope is a legal request, just a maximally narrow one");
+
+    assert_eq!(
+        response.permissions,
+        Some(Vec::new()),
+        "the response must echo the empty scope that was asked for. Reporting `None` here \
+         would tell the caller their key inherits the owner's role, which is the opposite \
+         of what they requested"
+    );
+
+    let persisted = pg
+        .get_api_key_auth_info_by_id(response.id)
+        .await
+        .expect("look up the created key")
+        .expect("the created key must exist");
+    assert_eq!(
+        persisted.permissions,
+        Some(Vec::new()),
+        "an explicitly empty scope must be stored as an empty scope. Stored as NULL it would \
+         mean inherit-the-owner's-role - a key asked for with no permissions that can do \
+         everything its owner can, which is the exact failure this change exists to stop"
     );
 }
