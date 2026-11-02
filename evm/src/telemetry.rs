@@ -88,12 +88,38 @@ fn rules() -> &'static [(Regex, &'static str)] {
                 build(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
                 "[redacted-email]",
             ),
-            // `key: value` / `key=value` for sensitive keys, plus `Bearer <tok>`.
+            // `key: value` / `key=value` for every key the shared crate calls
+            // sensitive, in ONE rule because the shared crate scans for all of
+            // them in a single left-to-right pass and this table must produce
+            // byte-identical output (`parity_with_shared_scrubber`).
+            //
+            // Two tiers, because the separator requirement differs by key:
+            //
+            //   First alternation - the shared crate's `BARE_VALUE_KEYS`. A
+            //   bare space is enough to introduce the value, because that is
+            //   how these appear in the wild (`Bearer abc`, `token abc`), and
+            //   none of them is also an ordinary English word, so a bare space
+            //   cannot swallow a sentence.
+            //
+            //   Second alternation - the rest of the set, which an EXPLICIT
+            //   `:` or `=` must introduce. These six ARE ordinary English
+            //   words: "auth failed for user", "session expired", "signature
+            //   mismatch" are log lines, not leaks, and allowing a bare space
+            //   would redact the message instead of a secret and cost us the
+            //   alert. The separator is the whole distinction between
+            //   `dsn=https://k@h/1` and `dsn unreachable`.
+            //
+            // Splitting this into two sequential rules instead looks
+            // equivalent and is not: on `auth=Bearer abc123` a separate
+            // bare-value pass redacts `abc123` BEFORE the explicit pass
+            // reaches `auth`, giving `auth=[redacted] [redacted]` where the
+            // shared crate's single pass gives `auth=[redacted] abc123`. Both
+            // bury the secret; only one is parity.
             (
                 build(
-                    r#"(?i)\b(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b(\s*[:=]\s*|\s+)("?)[^\s,;"']+"#,
+                    r#"(?i)\b(?:(api[_-]?key|secret|password|passwd|token|mnemonic|seed|private[_-]?key|authorization|bearer)\b(\s*[:=]\s*|\s+)|(auth|dsn|credential|session|cookie|signature)\b(\s*[:=]\s*))("?)[^\s,;"']+"#,
                 ),
-                "$1$2$3[redacted]",
+                "${1}${2}${3}${4}${5}[redacted]",
             ),
         ]
     })
@@ -158,11 +184,13 @@ fn is_sensitive_key(key: &str) -> bool {
         "private_key",
         "private-key",
         "authorization",
+        "bearer",
         "auth",
         "dsn",
         "credential",
         "session",
         "cookie",
+        "signature",
     ];
     let key = key.to_ascii_lowercase();
     SENSITIVE.iter().any(|needle| key.contains(needle))

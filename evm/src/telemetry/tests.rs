@@ -709,3 +709,67 @@ fn client_options_carry_the_sample_rate_and_the_scrubbing_transport() {
         "scrub_event must be wired in, or error events ship unscrubbed"
     );
 }
+
+/// The six keys that are also ordinary English words must need an explicit
+/// `:` or `=` before they redact anything. Without that requirement the rule
+/// eats the log line instead of a secret — "auth failed for user" becomes
+/// "auth [redacted]" and the alert that told us which user stops saying so.
+#[test]
+fn everyday_key_words_need_an_explicit_separator() {
+    for sentence in [
+        "auth failed for user",
+        "session expired",
+        "signature mismatch on block 42",
+        "cookie jar empty",
+        "credential store unreachable",
+        "dsn unreachable, reporting disabled",
+    ] {
+        assert_eq!(redact_secrets(sentence), sentence, "over-redacted: {sentence}");
+    }
+
+    // The same words WITH a separator do introduce a value, and it goes.
+    assert_eq!(redact_secrets("dsn: https://k@h/1"), "dsn: [redacted]");
+    assert_eq!(redact_secrets("dsn=https://k@h/1"), "dsn=[redacted]");
+}
+
+/// Every key the shared crate treats as sensitive must be sensitive here too,
+/// in BOTH directions: `is_sensitive_key` for structured attributes, and the
+/// free-text table for a key interpolated into a panic message. The two lists
+/// drifted apart once already — `dsn`, `credential`, `session`, `cookie` and
+/// `signature` reached the shared crate and only some of them reached this
+/// mirror, so a Sentry DSN written into free-text server prose shipped in the
+/// clear while the browser redacted it. `parity_with_shared_scrubber` did not
+/// catch that, because its corpus held no case for any of the five.
+#[test]
+fn every_sensitive_key_is_redacted_with_an_explicit_separator() {
+    for key in [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "api-key",
+        "mnemonic",
+        "seed",
+        "privatekey",
+        "private_key",
+        "private-key",
+        "authorization",
+        "bearer",
+        "auth",
+        "dsn",
+        "credential",
+        "session",
+        "cookie",
+        "signature",
+    ] {
+        assert!(
+            is_sensitive_key(&key.to_uppercase()),
+            "{key} is sensitive in the shared crate but not here"
+        );
+        let out = redact_secrets(&format!("{key}=hunter2value"));
+        assert!(!out.contains("hunter2value"), "{key} not redacted: {out}");
+    }
+    assert!(!is_sensitive_key("merchant_name"));
+}
