@@ -37,7 +37,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -268,6 +268,17 @@ jobs:
       - name: Testnet deploy dispatch guard self-test
         run: ./scripts/dispatch-deploy-testnet.test.sh
 
+      # The runner image of a browser job decides whether that job can run at
+      # all, so it is ours to choose, not GitHub's. This caught nothing when it
+      # mattered because it did not exist: `e2e` was pinned against this exact
+      # drift while two other browser jobs floated, and the scheduled E2E died
+      # in `playwright install` for six days with nothing comparing them.
+      - name: Every job names its runner image
+        run: ./scripts/check-runner-pin.sh
+
+      - name: Runner-pin guard self-test
+        run: ./scripts/check-runner-pin-selftest.sh
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -284,7 +295,7 @@ jobs:
   # visible without holding anything up.
   client-pin-drift:
     name: Client pin drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -323,7 +334,7 @@ jobs:
   # Sepolia to find out.
   e2e-static-checks:
     name: E2E static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -345,7 +356,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     needs: [lint]
     services:
@@ -456,7 +467,7 @@ jobs:
   # objected could not run on a PR.
   audit:
     name: Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [lint]
     env:
@@ -503,7 +514,7 @@ jobs:
   security-gate:
     name: Security gate
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [lint]
     permissions:
@@ -956,7 +967,7 @@ jobs:
 
   docker:
     name: Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Lint, audit and test are listed here because `build` no longer waits on
     # them: this is the gate between a failing check and a published image.
@@ -1068,7 +1079,7 @@ jobs:
   # {service, environment, tag} and goes over SSH.
   notify-deploy-testnet:
     name: Notify Deploy (testnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: github.ref == 'refs/heads/testnet'
@@ -1078,9 +1089,31 @@ jobs:
     # scope it has no use for.
     permissions: {}
     steps:
+      # `run: ./scripts/...` needs the script to be ON DISK, and a job starts
+      # with an empty workspace. Between 2026-10-30 (3c21900, which moved this
+      # dispatch out of inline YAML into a file) and this commit, this job's
+      # only step exited 127 - `No such file or directory` - on every single
+      # push to testnet. Builds were green, the image was pushed to GHCR, and
+      # the one job whose entire purpose is telling the box to pull it never
+      # ran a line. testnet served a 2026-10-26 image for a week.
+      #
+      # Sparse, and `persist-credentials: false`: this job deliberately runs
+      # `permissions: {}` because it holds RCS_DISPATCH_PAT and has no use for
+      # the repository token. Checking out with a credential left in
+      # .git/config would hand it back the scope the empty `permissions:` is
+      # there to deny.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
       # Guard self-test lives in the lint job (it needs no secrets and no
       # docker output, so it runs on every PR rather than only on testnet
-      # pushes) - see scripts/dispatch-deploy-testnet.test.sh.
+      # pushes) - see scripts/dispatch-deploy-testnet.test.sh. That self-test
+      # now also asserts THIS job checks out, because a guard that exercises
+      # the script in a job that can reach it proves nothing about the job
+      # that actually runs it.
       - name: Trigger deploy
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
@@ -1094,7 +1127,7 @@ jobs:
   # such directory.
   notify-deploy:
     name: Notify Deploy (mainnet)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [docker]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -1128,15 +1161,37 @@ jobs:
         env:
           RCS_DISPATCH_PAT: ${{ secrets.RCS_DISPATCH_PAT }}
         run: |
-          set -e
-          # Same guards the testnet dispatch already carries: a missing token or
-          # a silent HTTP failure must not read as a successful deploy.
+          set -uo pipefail
+          # This step claimed to carry "the same guards the testnet dispatch
+          # already carries". It carried neither.
+          #
+          #   1. It posted to `randomcash/central-infrastructure`. That owner
+          #      was renamed to agent8-cash; the old path now answers 307, and
+          #      `curl --fail-with-body` without `-L` exits 0 on a 3xx because
+          #      a redirect is not an HTTP error by curl's -f definition. So a
+          #      release tag would have reported a successful mainnet dispatch
+          #      having sent nothing. This is the exact failure that cost
+          #      testnet a week, left live in the path that moves real funds.
+          #   2. Checking the status code ourselves is what makes a redirect,
+          #      a 404 or a 401 fail the step. `--fail-with-body` does not.
+          #
+          # Converging this onto scripts/dispatch-deploy-testnet.sh belongs with
+          # the work that first proves a mainnet deploy end to end - that script
+          # hardcodes the deploy-testnet event and payload shape, and mainnet
+          # sends {service, environment, sha, tag}. Until then the guards are
+          # duplicated here deliberately rather than left absent.
           [ -n "$RCS_DISPATCH_PAT" ] || { echo "::error::RCS_DISPATCH_PAT is not set; images were pushed but nothing will deploy"; exit 1; }
-          curl -sS --fail-with-body -X POST \
+          RESPONSE="$(curl -sS --max-time 20 -w '\n%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $RCS_DISPATCH_PAT" \
-            https://api.github.com/repos/randomcash/central-infrastructure/dispatches \
-            -d '{"event_type": "deploy", "client_payload": {"service": "ethpayserver", "environment": "${{ steps.resolve.outputs.environment }}", "sha": "${{ github.sha }}", "tag": "${{ steps.resolve.outputs.tag }}"}}'
+            https://api.github.com/repos/agent8-cash/central-infrastructure/dispatches \
+            -d '{"event_type": "deploy", "client_payload": {"service": "ethpayserver", "environment": "${{ steps.resolve.outputs.environment }}", "sha": "${{ github.sha }}", "tag": "${{ steps.resolve.outputs.tag }}"}}')"
+          HTTP_CODE="${RESPONSE##*$'\n'}"
+          BODY="${RESPONSE%$'\n'*}"
+          case "$HTTP_CODE" in
+            2??) ;;
+            *) echo "::error::mainnet dispatch got HTTP $HTTP_CODE, not 2xx (a redirect and an error both land here): $BODY"; exit 1 ;;
+          esac
           echo "dispatched mainnet deploy ${{ steps.resolve.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
 
   # The dispatch above is fire-and-forget: a 202 from GitHub's API means the
@@ -1147,7 +1202,7 @@ jobs:
   # been in the tree unreferenced. This is the reference.
   deploy-verify-testnet:
     name: Verify testnet deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [notify-deploy-testnet]
     if: github.ref == 'refs/heads/testnet'
@@ -1185,7 +1240,7 @@ jobs:
   # anywhere was red for the deploy. This job is.
   testnet-deploy-status:
     name: Testnet deploy status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [lint, test, audit, build, docker, notify-deploy-testnet, deploy-verify-testnet]
     if: always() && github.ref == 'refs/heads/testnet'
@@ -1236,7 +1291,7 @@ jobs:
   # `gh issue list` long after a run has scrolled out of view.
   e2e-status:
     name: E2E status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [e2e]
     # `failure` specifically, not `!= success`. When an upstream job breaks,
@@ -1330,7 +1385,13 @@ jobs:
   # a fresh random hostname per run, which is what this job wants.
   e2e-postmerge-testnet:
     name: E2E payment flow (post-merge, testnet)
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as `e2e` above and `browser` in
+    # e2e-scheduled.yml: this job runs `playwright install`, and
+    # `ubuntu-latest` is now 26.04, which @playwright/test 1.59.1 has no
+    # chromium build for. This job has not been reached since 2026-10-26
+    # anyway - it needs `deploy-verify-testnet`, and the deploy dispatch was
+    # broken - so it would have started failing the moment deploys came back.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [deploy-verify-testnet]
     if: github.ref == 'refs/heads/testnet'

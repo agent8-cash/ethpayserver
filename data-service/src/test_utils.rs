@@ -907,23 +907,6 @@ impl WatchedAddressReader for InMemoryDataService {
             .cloned())
     }
 
-    async fn get_active(
-        &self,
-    ) -> RepositoryResult<Vec<(String, PaymentOptionId, types::ChainId, Option<String>)>> {
-        let addresses = self.addresses.read().unwrap();
-        Ok(addresses
-            .iter()
-            .map(|((addr, chain_id, token_addr), po_id)| {
-                (
-                    addr.clone(),
-                    po_id.clone(),
-                    chain_id.clone(),
-                    token_addr.clone(),
-                )
-            })
-            .collect())
-    }
-
     async fn get_pending(&self) -> RepositoryResult<Vec<PendingWatchInfo>> {
         let addresses = self.addresses.read().unwrap();
         let options = self.payment_options.read().unwrap();
