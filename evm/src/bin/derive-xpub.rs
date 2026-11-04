@@ -47,6 +47,7 @@ fn print_usage() {
         "usage: derive-xpub <generate|from-existing>\n\n\
          generate       creates a brand new mnemonic and prints its account xpub.\n\
          from-existing  reads a mnemonic from stdin and prints its account xpub.\n\n\
+         Pass --json after either subcommand for machine-readable output.\n\n\
          Makes no network connections either way."
     );
 }
