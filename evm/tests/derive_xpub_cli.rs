@@ -373,3 +373,22 @@ fn from_existing_json_refuses_an_xprv() {
         "expected an error on stderr, got:\n{stderr}"
     );
 }
+
+/// Running the binary with no subcommand must fail and tell the user that
+/// `--json` exists, since that is the only place a script author will look
+/// when they first meet the tool.
+#[test]
+fn usage_text_on_missing_subcommand_mentions_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_derive-xpub"))
+        .output()
+        .expect("run derive-xpub with no args");
+    assert!(
+        !output.status.success(),
+        "derive-xpub with no args should exit non-zero"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--json"),
+        "usage text should document --json, got:\n{stderr}"
+    );
+}
