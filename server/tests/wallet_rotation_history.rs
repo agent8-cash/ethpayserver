@@ -5,7 +5,8 @@
 //! `GET /users/me/stores/{id}/wallet-rotations` is read by its owner, refused
 //! to anyone else, and never returns a full xpub. `POST /stores/{id}/wallet/rotate`
 //! raises the not-fresh alert when the caller is not a freshly signed-in
-//! session (an API key never is), and stays silent for a fresh session.
+//! session (an API key never is), and stays silent for a fresh session. More
+//! than three rotations in a day raise the rate alert.
 //!
 //! Needs `DATABASE_URL` and fails, naming it, when it is unset; runs in CI's
 //! `--run-ignored` step.
@@ -336,5 +337,54 @@ async fn a_rotation_from_a_fresh_session_raises_no_not_fresh_alert() {
     assert!(
         !rendered.contains("reason=\"not_fresh\""),
         "a fresh session must not alert; got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_fourth_rotation_in_a_day_raises_the_rate_alert() {
+    let pg = Arc::new(pg_service().await);
+    let (owner, _) = seed_user(pg.pool()).await;
+    // One rotation is already in the history, so the window holds 1 event.
+    let (store, _, _) = store_with_one_rotation(&pg, owner).await;
+    let session = seed_session(pg.pool(), owner, Utc::now()).await;
+    let bearer = session.to_string();
+
+    // A fresh session, so only the rate reason can fire here.
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+    let app = app(&pg);
+
+    // Routed rotations 2 and 3 bring the window to 3 events, which is not
+    // over the threshold.
+    for n in 2..=3 {
+        let (status, body) = rotate(&app, store, &bearer).await;
+        assert_eq!(status, StatusCode::OK, "rotation {n} succeeds: {body}");
+        assert_eq!(
+            body["methods_rotated"], 1,
+            "rotation {n} rotated the method"
+        );
+    }
+    let rendered = handle.render();
+    assert!(
+        !rendered.contains("reason=\"rate\""),
+        "three events in the window is at the threshold, not over it; got:\n{rendered}"
+    );
+
+    // Routed rotation 4 brings the window to 4 events, which is over it.
+    let (status, body) = rotate(&app, store, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "rotation 4 succeeds: {body}");
+    assert_eq!(body["methods_rotated"], 1, "rotation 4 rotated the method");
+    let rendered = handle.render();
+    assert!(
+        rendered
+            .lines()
+            .any(|l| l.starts_with("ethpayserver_wallet_rotation_alerts_total{reason=\"rate\"} 1")),
+        "a fourth rotation in a day must raise the rate alert; got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("reason=\"not_fresh\""),
+        "a fresh session must not add a not_fresh alert; got:\n{rendered}"
     );
 }
