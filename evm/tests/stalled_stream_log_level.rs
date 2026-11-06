@@ -85,10 +85,18 @@ async fn stalled_block_stream_resubscribe_logs_warn_not_error() {
 
     let subscribes_before_stall = test_source.subscribe_count();
     test_source.set_block_number(130);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
 
+    // Polls rather than sleeping a fixed budget: the confirmation tick that
+    // drives the resubscribe can land just before the stream has been silent
+    // for `stall_timeout`, so a fixed sleep flakes under load.
+    let resubscribed = tokio::time::timeout(Duration::from_secs(10), async {
+        while test_source.subscribe_count() <= subscribes_before_stall {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
     assert!(
-        test_source.subscribe_count() > subscribes_before_stall,
+        resubscribed.is_ok(),
         "a silent stream must trigger a resubscribe"
     );
 
