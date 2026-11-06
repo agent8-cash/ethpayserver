@@ -200,6 +200,13 @@ jobs:
         if: always()
         run: ./scripts/check-migrations.test.sh
 
+      # docs/backend-schema.md is generated from the migrations. This runs the
+      # generator for real and diffs its output, so a migration merged without
+      # regenerating the doc fails here.
+      - name: Backend schema doc is current
+        if: always()
+        run: ./scripts/gen-backend-schema.test.sh
+
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
       # with CI green. Every .rs file the change touches is checked (a Cites-Tests
