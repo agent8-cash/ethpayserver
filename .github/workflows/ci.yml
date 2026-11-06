@@ -192,6 +192,10 @@ jobs:
         if: always()
         run: ./scripts/check-file-size.test.sh
 
+      - name: Cargo job count reporter self-test
+        if: always()
+        run: ./scripts/cargo-jobs.test.sh
+
       - name: Migration versions are distinct
         if: always()
         run: ./scripts/check-migrations.sh
