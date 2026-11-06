@@ -15,6 +15,7 @@ use crate::network::ChainConfig;
 use alloy::primitives::{Address, B256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::debug;
@@ -58,6 +59,9 @@ pub struct ChainMonitor<S: BlockSource> {
     /// restart is far behind while receiving blocks perfectly well; a
     /// half-open WebSocket is exactly level and receiving nothing.
     last_block_at: RwLock<Instant>,
+    /// Stall resubscribes since the stream last delivered a block. A resubscribe
+    /// that restores delivery resets this; one that does not is what escalates.
+    resubscribes_without_block: AtomicU32,
     /// When the `start` event loop last completed a `select!` iteration.
     ///
     /// Unlike `last_block_at`, this moves on *every* completed iteration -
@@ -91,6 +95,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
             watched: RwLock::new(HashMap::new()),
             pending: RwLock::new(HashMap::new()),
             last_block_at: RwLock::new(Instant::now()),
+            resubscribes_without_block: AtomicU32::new(0),
             loop_alive_at: RwLock::new(Instant::now()),
             last_block: RwLock::new(None),
             last_block_hash: RwLock::new(None),

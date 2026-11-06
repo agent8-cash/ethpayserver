@@ -5,9 +5,15 @@ use crate::error::{EvmError, EvmResult};
 use crate::monitor::events::MonitorEvent;
 use crate::monitor::source::{BlockSource, BlockStream, ChainHealth, SourceStatus};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
+
+/// Consecutive stall resubscribes with no block delivered before the stall is
+/// treated as sustained and logged at ERROR, which pages. One resubscribe that
+/// restores delivery is ordinary self-healing and stays a warning.
+const SUSTAINED_STALL_RESUBSCRIBES: u32 = 2;
 
 impl<S: BlockSource + 'static> ChainMonitor<S> {
     /// Get health information for this chain.
@@ -100,6 +106,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
                             // process still proves the subscription is alive,
                             // and resubscribing would not fix it.
                             *self.last_block_at.write().await = Instant::now();
+                            self.resubscribes_without_block.store(0, Ordering::Relaxed);
 
                             if let Err(e) = self.process_block(&block).await {
                                 error!(chain_id, error = %e, "error processing block");
@@ -199,15 +206,32 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
             return Ok(());
         }
 
-        error!(
-            chain_id = self.chain_id(),
-            status = ?health.status,
-            current_block = ?health.current_block,
-            last_processed_block = ?health.last_processed_block,
-            silent_for_secs = silent_for.as_secs(),
-            reason = if disconnected { "disconnected" } else { "no blocks received" },
-            "block stream is not delivering; resubscribing"
-        );
+        let resubscribes = self
+            .resubscribes_without_block
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        if resubscribes >= SUSTAINED_STALL_RESUBSCRIBES {
+            error!(
+                chain_id = self.chain_id(),
+                status = ?health.status,
+                current_block = ?health.current_block,
+                last_processed_block = ?health.last_processed_block,
+                silent_for_secs = silent_for.as_secs(),
+                resubscribes,
+                reason = if disconnected { "disconnected" } else { "no blocks received" },
+                "block stream still not delivering after repeated resubscribes"
+            );
+        } else {
+            warn!(
+                chain_id = self.chain_id(),
+                status = ?health.status,
+                current_block = ?health.current_block,
+                last_processed_block = ?health.last_processed_block,
+                silent_for_secs = silent_for.as_secs(),
+                reason = if disconnected { "disconnected" } else { "no blocks received" },
+                "block stream is not delivering; resubscribing"
+            );
+        }
 
         *block_stream = self.source.subscribe_blocks().await?;
         *self.last_block_at.write().await = Instant::now();
