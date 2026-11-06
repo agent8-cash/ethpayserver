@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints the cargo job count this run will use and where it came from, e.g.
-#   cargo jobs: 1 (/home/me/.cargo/config.toml)
+#   cargo jobs: 1 (<dir>/.cargo/config.toml)
 # Mirrors cargo's precedence: CARGO_BUILD_JOBS, then the nearest [build] jobs
 # walking up from the start directory, then CARGO_HOME, then the core count.
 # A slow build on a capped host should read as slow, not as hung.
