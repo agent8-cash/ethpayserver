@@ -58,6 +58,9 @@ run() {
     fi
 }
 
+# First, so a slow run shows its job count before the slow part starts.
+./scripts/cargo-jobs.sh
+echo
 echo "== repository checks =="
 # Each of these exists because something got through once. Losing one of them
 # from this list is how that thing gets through again.
