@@ -4,8 +4,10 @@
 //! proves the real `alloy_pubsub` retry loop never escalates on its own
 //! against a flapping connection. Neither exercises `resubscribe_if_stalled`
 //! itself: this drives a real stall through a real `ChainMonitor` and checks
-//! what its own `error!` - emitted by the macro, not typed into a test - is
-//! actually resolved to by the real filter. That closes the gap a doc
+//! what its own sustained-stall `error!` - emitted by the macro, not typed
+//! into a test - is actually resolved to by the real filter. A single stall
+//! that self-heals is only a `warn!`; a connection whose resubscribe does not
+//! restore delivery is the one that must page. That closes the gap a doc
 //! comment can only assert: a connection `alloy_transport_ws` never
 //! recovers from still pages, even though every breadcrumb it logs along
 //! the way does not.
@@ -91,7 +93,7 @@ async fn a_sustained_stall_still_pages_through_the_real_sentry_filter() {
     // that drives `resubscribe_if_stalled` runs on its own clock, and a
     // fixed sleep would race it under load rather than actually prove
     // anything about what the filter resolves the event to.
-    let lifecycle_event = tokio::time::timeout(Duration::from_secs(5), async {
+    let lifecycle_event = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if let Some(found) = capture
                 .0
@@ -107,7 +109,7 @@ async fn a_sustained_stall_still_pages_through_the_real_sentry_filter() {
         }
     })
     .await
-    .expect("resubscribe_if_stalled must log an error within a few stall-timeout cycles");
+    .expect("a sustained stall must log an error within a few stall-timeout cycles");
 
     assert!(
         lifecycle_event
