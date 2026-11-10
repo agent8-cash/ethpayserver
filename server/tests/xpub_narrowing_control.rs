@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Control test for AG8-1018: address derivation works through the invoice route.
+//! Control test: address derivation works through the invoice route after xpub narrowing.
 //!
 //! Two invoices on one store must derive different addresses. The xpub is
 //! narrowed (selected only where derivation happens), but derivation itself
