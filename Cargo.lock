@@ -826,7 +826,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "api-types"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "chrono",
  "hex",
@@ -1247,7 +1247,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "auth"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "alloy-primitives 0.8.26",
  "async-trait",
@@ -2250,7 +2250,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "crypto"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "aes",
  "argon2",
@@ -4791,19 +4791,21 @@ checksum = "c5a797f0e07bdf071d15742978fc3128ec6c22891c31a3a931513263904c982a"
 [[package]]
 name = "payserver-plugin-api"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "chrono",
  "semver 1.0.28",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml",
+ "utoipa",
 ]
 
 [[package]]
 name = "payserver-plugin-host"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "async-trait",
  "hex",
@@ -5349,7 +5351,7 @@ dependencies = [
 [[package]]
 name = "rates"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5975,7 +5977,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "scrub"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 
 [[package]]
 name = "seahash"
@@ -7506,7 +7508,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "types"
 version = "0.1.0"
-source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=6382134022d6761cf2be877730b42aa67a1de39e#6382134022d6761cf2be877730b42aa67a1de39e"
+source = "git+https://github.com/agent8-cash/payserver-commons.git?rev=1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1#1e0ca09a30ecaf886b2ca058a0898e2f7f5041e1"
 dependencies = [
  "async-trait",
  "chrono",

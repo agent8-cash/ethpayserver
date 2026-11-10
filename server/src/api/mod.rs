@@ -269,7 +269,10 @@ where
         // What the client puts in its navigation. Declared in each plugin's
         // manifest, so building a menu runs no plugin code.
         .route("/", get(plugins::list_plugin_pages::<A>))
-        .route("/{id}/pages/{*path}", get(plugins::get_page::<A>))
+        .route(
+            "/{id}/pages/{*path}",
+            get(plugins::get_page::<A>).post(plugins::handle_page_action::<A>),
+        )
         // Core, not a plugin's: the standing gates invoice creation, so it is
         // stored by the host and lands whether or not any plugin is loaded.
         .route("/entitlements", entitlements::route::<A>())

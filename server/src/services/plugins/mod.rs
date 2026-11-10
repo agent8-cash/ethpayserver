@@ -102,7 +102,10 @@ pub use merchant_volume::{
     AccountVolume, BulkMerchantVolumeReader, MAX_ACCOUNTS_PER_BULK_READ, MAX_WINDOW_DAYS,
     MerchantVolume, MerchantVolumeReader, PluginMerchantVolume,
 };
-pub use page_renderer::{RENDER_PAGE, WasmPageRenderer};
+pub use page_renderer::{
+    HANDLE_ACTION, PageActionError, PageActionRequest, RENDER_PAGE, WasmPageActionHandler,
+    WasmPageRenderer,
+};
 pub use payment_observer::{
     OwnStorePayment, OwnStorePaymentObserver, OwnStorePaymentReader, PaymentObserverError,
     is_own_store, notify_own_store_payment,

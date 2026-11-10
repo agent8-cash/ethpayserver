@@ -60,11 +60,14 @@ use axum::{
     middleware::{self, Next},
     response::Response,
 };
-use payserver_plugin_api::{Manifest, PluginId};
+use payserver_plugin_api::{Manifest, PageAction, PageActionResponse, PluginId};
 
 use super::ApiErr;
 use super::extractors::AuthenticatedUser;
-use crate::services::plugins::{PageElement, PageError, PageRequest, PluginRegistry, Viewer};
+use crate::services::plugins::{
+    PageActionRequest, PageElement, PageError, PageRequest, PluginRegistry, Viewer,
+    WasmPageActionHandler,
+};
 use crate::state::PgAppState;
 
 /// Builds the `/plugins` mount.
@@ -375,6 +378,66 @@ where
 
     let page = state.plugin_pages.render(&plugin_id, &request).await?;
     Ok(Json(page))
+}
+
+/// Handle an action triggered on a plugin page.
+///
+/// The action comes from a form submission on a plugin's page. The host
+/// validates the session (AuthenticatedUser extractor re-checks it), resolves
+/// the identity and role from that session (never from the request), and
+/// passes both to the plugin along with the action id and form data.
+/// Viewer and account_id are determined by the host, not claimed by the client.
+#[utoipa::path(
+    post,
+    path = "/plugins/{id}/pages/{path}",
+    responses((status = 200, body = PageActionResponse)),
+    tag = "plugins"
+)]
+pub async fn handle_page_action<A>(
+    State(state): State<PgAppState<A>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path((plugin_ref, path)): Path<(String, String)>,
+    Json(action): Json<PageAction>,
+) -> Result<Json<PageActionResponse>, ApiErr>
+where
+    A: SessionService + 'static,
+{
+    // Resolve plugin by slug or id, same as GET path
+    let plugin_id = match resolve_plugin(&state, &plugin_ref).await {
+        Some(id) => id,
+        None => PluginId::new(plugin_ref)
+            .map_err(|e| ApiErr::from((StatusCode::NOT_FOUND, e.to_string())))?,
+    };
+
+    // Build the action request. Identity and role come from the authenticated
+    // session, not from the request - a plugin that could name its own viewer
+    // could request admin permissions, and one that could name an account could
+    // trigger actions on another merchant's data.
+    let request = PageActionRequest {
+        path,
+        action,
+        viewer: viewer_for(user.role),
+        account_id: Some(user.id.0.to_string()),
+    };
+
+    // Get the action handler. The plugin must be loaded for this to work.
+    let host = state.plugin_host.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin host not available".to_string(),
+        )
+    })?;
+
+    let handler = WasmPageActionHandler::new(std::sync::Arc::clone(host), plugin_id);
+
+    // Dispatch to the plugin. If the plugin doesn't implement handle_action,
+    // run_query will return an error and we'll get a 502.
+    let response = handler
+        .handle_action(&request)
+        .await
+        .map_err(|e| ApiErr::from((StatusCode::BAD_GATEWAY, format!("action failed: {}", e))))?;
+
+    Ok(Json(response))
 }
 
 #[cfg(test)]
