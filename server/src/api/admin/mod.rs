@@ -957,6 +957,23 @@ mod tests {
 
     /// Ownership is its own property, independent of whether the store can
     /// be invoiced on.
+    /// The xpub is never returned in its full form to any admin response,
+    /// only the literal string "xpub" to signal that one exists. This test
+    /// pins that choice — breaking it requires a conscious revision of what
+    /// data reaches administrators.
+    #[test]
+    fn admin_masking_returns_literal_xpub_not_the_value() {
+        let w = Some(uuid::Uuid::new_v4());
+        let m = method(w);
+
+        // The struct's xpub field is set to the masked literal
+        assert_eq!(m.xpub, Some("xpub".to_string()));
+
+        // Verify it is the literal string, not a derived value
+        assert_ne!(m.xpub, Some("xpub661MyMwAqRbcFt...".to_string()));
+        assert_ne!(m.xpub, w.map(|_| "real key".to_string()));
+    }
+
     #[test]
     fn a_store_not_owned_by_the_operator_is_refused() {
         let operator = UserId::new();

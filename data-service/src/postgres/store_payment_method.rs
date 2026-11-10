@@ -11,16 +11,12 @@ use crate::{RepositoryError, RepositoryResult, sqlx_to_repo_error};
 use types::{DerivationAllocation, StorePaymentMethod};
 use types::{StorePaymentMethodReader, StorePaymentMethodWriter};
 
-/// The projection every read uses.
-///
-/// `wallet_id`, `xpub` and `derivation_index` are the *resolved* wallet's, not
-/// the method's: the method holds at most a pin, and the key it
-/// actually derives from is found by walking pin, store override, account
-/// primary. Reading through that walk is what stops a caller rendering one key
-/// while payments are collected on another.
+/// The projection every read uses. `wallet_id` and `derivation_index` are the
+/// *resolved* wallet's. `xpub` is not selected — only `allocate_derivation`
+/// needs it, and returns it via RETURNING. Non-deriving reads get NULL (Option::None).
 const METHOD_COLUMNS: &str = "pm.id, pm.store_id, pm.chain_id, pm.token_address, \
-     pm.asset_symbol, pm.decimals, w.id AS wallet_id, w.xpub, w.derivation_index, \
-     pm.enabled, pm.created_at";
+     pm.asset_symbol, pm.decimals, w.id AS wallet_id, NULL::text AS xpub, \
+     w.derivation_index, pm.enabled, pm.created_at";
 
 /// The wallet a payment method aliased `pm` derives from: its pin, else its
 /// store's override for the method's family, else the account primary for that
