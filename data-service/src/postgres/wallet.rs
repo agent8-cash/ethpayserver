@@ -10,13 +10,15 @@ use crate::{
 };
 
 /// Every column of `wallets`, in the order `row_to_wallet` reads them.
+/// xpub is not selected — only derivation (in store_payment_method.rs) needs it.
+/// Non-derivation reads get NULL (Option::None).
 const WALLET_COLUMNS: &str =
-    "id, user_id, namespace, xpub, derivation_index, name, is_primary, created_at";
+    "id, user_id, namespace, NULL::text AS xpub, derivation_index, name, is_primary, created_at";
 
 /// The same list, aliased. `stores` also has an `id`, so an unqualified list
 /// in a query that joins the two is ambiguous and Postgres rejects it.
-const WALLET_COLUMNS_W: &str = "w.id, w.user_id, w.namespace, w.xpub, w.derivation_index, \
-     w.name, w.is_primary, w.created_at";
+const WALLET_COLUMNS_W: &str = "w.id, w.user_id, w.namespace, NULL::text AS xpub, \
+     w.derivation_index, w.name, w.is_primary, w.created_at";
 
 /// The chain family of a payment method aliased `pm`, as SQL.
 ///
