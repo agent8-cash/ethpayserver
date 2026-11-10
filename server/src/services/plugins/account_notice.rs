@@ -216,7 +216,11 @@ mod tests {
 
     #[async_trait]
     impl EmailSender for RecordingEmailSender {
-        async fn send_receipt(&self, _to: &str, _data: &ReceiptData) -> Result<(), EmailError> {
+        async fn send_receipt(
+            &self,
+            _to: &str,
+            _data: &ReceiptData,
+        ) -> Result<data_service::ReceiptDeliveryStatus, EmailError> {
             unimplemented!("not exercised by notify_account")
         }
 

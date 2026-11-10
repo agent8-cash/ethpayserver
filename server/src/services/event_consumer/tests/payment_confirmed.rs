@@ -857,3 +857,101 @@ async fn two_transfers_to_one_invoice_in_one_transaction_are_both_confirmed() {
          alone re-confirms the first row and leaves the second unconfirmed forever"
     );
 }
+
+#[tokio::test]
+async fn test_receipt_delivery_is_recorded_when_invoice_paid() {
+    use data_service::ReceiptDeliveryReader;
+
+    let ds = Arc::new(InMemoryDataService::new());
+    let bridge = Arc::new(MemoryBridge::new());
+    let email_sender = Arc::new(MockEmailSender::new());
+
+    let consumer = crate::services::event_consumer::EventConsumer::<
+        InMemoryDataService,
+        MockEVMMonitor,
+        InMemoryDataService,
+    >::new(bridge, ds.clone(), None, None, None, email_sender.clone());
+
+    let invoice_id = InvoiceId::new();
+    let store_id = StoreId::new();
+    let customer_email = "customer@example.com";
+
+    // Create invoice with customer email
+    let invoice = InvoiceData {
+        id: invoice_id.clone(),
+        store_id,
+        currency: "ETH".to_string(),
+        status: InvoiceStatus::Processing,
+        amount: "1000000000000000000".to_string(), // 1 ETH
+        amount_received: "1000000000000000000".to_string(), // 1 ETH received
+        created_at: Utc::now(),
+        expires_at: Utc::now() + chrono::Duration::hours(1),
+        metadata: None,
+        customer_email: Some(customer_email.to_string()),
+        extra: None,
+    };
+    InvoiceWriter::upsert(&*ds, &invoice).await.unwrap();
+
+    // Create a payment record
+    let tx_hash = B256::repeat_byte(0xef);
+    let payment = PaymentData {
+        id: Uuid::new_v4(),
+        invoice_id: invoice_id.clone(),
+        payment_option_id: None,
+        chain_id: ChainId::parse("eip155:1").unwrap(),
+        asset_type: types::AssetType::Native,
+        amount: "1000000000000000000".to_string(),
+        asset_symbol: "ETH".to_string(),
+        token_address: None,
+        tx_hash: format!("{:#x}", tx_hash),
+        block_number: Some(12345678),
+        detected_at: Utc::now(),
+        confirmed_at: None,
+        from_address: Some("0xabababababababababababababababababababab".to_string()),
+        reorged: false,
+        extra: None,
+        credited_amount: Some("1".to_string()),
+        rate_used: None,
+        rate_applied_at: None,
+    };
+    PaymentWriter::upsert(&*ds, &payment).await.unwrap();
+
+    // Create PaymentConfirmed event
+    let event = PaymentConfirmed {
+        tx_index: 0,
+        chain_id: 1,
+        invoice_id: uuid::Uuid::parse_str(invoice_id.as_str()).unwrap(),
+        payment_address: Address::ZERO,
+        amount: U256::from(1000000000000000000u64),
+        tx_hash,
+        block_number: 12345678,
+        confirmations: 12,
+        confirmed_at: Utc::now(),
+    };
+
+    // Handle the event
+    consumer.handle_payment_confirmed(event).await.unwrap();
+
+    // Verify invoice was marked as paid
+    let invoice = InvoiceReader::get(&*ds, &invoice_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invoice.status, InvoiceStatus::Paid);
+
+    // Verify receipt delivery was recorded
+    let last_delivery = ReceiptDeliveryReader::get_last_delivery(&*ds, &invoice_id)
+        .await
+        .expect("delivery lookup failed")
+        .expect("no delivery recorded");
+
+    assert_eq!(last_delivery.recipient_email, customer_email);
+    assert_eq!(
+        last_delivery.status,
+        data_service::ReceiptDeliveryStatus::Sent
+    );
+    assert_eq!(last_delivery.error_message, None);
+
+    // Verify email was actually sent
+    assert_eq!(email_sender.call_count(), 1);
+}

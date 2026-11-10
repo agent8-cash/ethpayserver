@@ -56,8 +56,12 @@ impl Outbox {
 
 #[async_trait]
 impl EmailSender for Outbox {
-    async fn send_receipt(&self, _: &str, _: &ReceiptData) -> Result<(), EmailError> {
-        Ok(())
+    async fn send_receipt(
+        &self,
+        _: &str,
+        _: &ReceiptData,
+    ) -> Result<data_service::ReceiptDeliveryStatus, EmailError> {
+        Ok(data_service::ReceiptDeliveryStatus::Sent)
     }
     async fn send_email_change_verification(
         &self,

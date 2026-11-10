@@ -3,7 +3,10 @@
 use auth::StoreRepository;
 use bigdecimal::BigDecimal;
 use chrono::Utc;
-use data_service::{PaymentTxIndexReader, SettlementToleranceReader, SettlementToleranceWriter};
+use data_service::{
+    PaymentTxIndexReader, ReceiptDeliveryStatus, ReceiptDeliveryWriter, SettlementToleranceReader,
+    SettlementToleranceWriter, UpsertReceiptDeliveryParams,
+};
 use evm::get_any_chain_config;
 use evm::monitor::events::PaymentConfirmed;
 use types::{
@@ -337,9 +340,38 @@ impl<
         }
     }
 
+    /// Record a receipt delivery attempt to the database.
+    async fn record_receipt_delivery(
+        &self,
+        invoice_id: &str,
+        email: &str,
+        status: ReceiptDeliveryStatus,
+        error_msg: Option<String>,
+    ) {
+        if let Err(e) = ReceiptDeliveryWriter::upsert_delivery(
+            &*self.data_service,
+            UpsertReceiptDeliveryParams {
+                invoice_id: invoice_id.to_string(),
+                recipient_email: email.to_string(),
+                status,
+                error_message: error_msg,
+            },
+        )
+        .await
+        {
+            tracing::error!(
+                invoice_id = %invoice_id,
+                customer_email = %email,
+                error = %e,
+                "Failed to record receipt delivery"
+            );
+        }
+    }
+
     /// Send a payment receipt email to the customer (best-effort).
     ///
     /// Checks: customer_email in metadata, store's customer_receipts_enabled toggle.
+    /// Records delivery attempts in the database for visibility.
     /// Errors are logged but never propagated — email must not block the payment flow.
     pub(super) async fn send_customer_receipt(
         &self,
@@ -379,19 +411,33 @@ impl<
             merchant_name,
         };
 
-        if let Err(e) = self.email_sender.send_receipt(email, &receipt).await {
-            tracing::warn!(
-                invoice_id = %invoice.id.as_str(),
-                customer_email = %email,
-                error = %e,
-                "Failed to send customer receipt email"
-            );
-        } else {
-            tracing::info!(
-                invoice_id = %invoice.id.as_str(),
-                customer_email = %email,
-                "Customer receipt email sent"
-            );
+        match self.email_sender.send_receipt(email, &receipt).await {
+            Ok(status) => {
+                self.record_receipt_delivery(invoice.id.as_str(), email, status, None)
+                    .await;
+                tracing::info!(
+                    invoice_id = %invoice.id.as_str(),
+                    customer_email = %email,
+                    status = %status,
+                    "Customer receipt email sent"
+                );
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                self.record_receipt_delivery(
+                    invoice.id.as_str(),
+                    email,
+                    ReceiptDeliveryStatus::Failed,
+                    Some(error_msg.clone()),
+                )
+                .await;
+                tracing::warn!(
+                    invoice_id = %invoice.id.as_str(),
+                    customer_email = %email,
+                    error = %error_msg,
+                    "Failed to send customer receipt email"
+                );
+            }
         }
     }
 

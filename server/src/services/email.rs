@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use data_service::ReceiptDeliveryStatus;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -18,6 +19,8 @@ pub struct SmtpConfig {
     pub username: String,
     pub password: String,
     pub from: String,
+    /// Optional SES configuration set name for tracking bounce/complaint events.
+    pub ses_configuration_set: Option<String>,
 }
 
 impl SmtpConfig {
@@ -32,12 +35,14 @@ impl SmtpConfig {
         let username = std::env::var("SMTP_USERNAME").ok()?;
         let password = std::env::var("SMTP_PASSWORD").ok()?;
         let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| format!("noreply@{host}"));
+        let ses_configuration_set = std::env::var("SES_CONFIGURATION_SET").ok();
         Some(Self {
             host,
             port,
             username,
             password,
             from,
+            ses_configuration_set,
         })
     }
 }
@@ -76,6 +81,7 @@ pub struct AccountNotice {
 pub struct EmailService {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: String,
+    ses_configuration_set: Option<String>,
 }
 
 impl EmailService {
@@ -89,11 +95,17 @@ impl EmailService {
         Ok(Self {
             transport,
             from: config.from.clone(),
+            ses_configuration_set: config.ses_configuration_set.clone(),
         })
     }
 
     /// Send a payment receipt to the customer.
-    pub async fn send_receipt(&self, to: &str, data: &ReceiptData) -> Result<(), EmailError> {
+    /// Returns the delivery status for logging purposes.
+    pub async fn send_receipt(
+        &self,
+        to: &str,
+        data: &ReceiptData,
+    ) -> Result<ReceiptDeliveryStatus, EmailError> {
         let subject = format!(
             "Payment receipt — {} {} ({})",
             data.amount, data.currency, data.invoice_id
@@ -134,7 +146,7 @@ impl EmailService {
             .await
             .map_err(|e| EmailError::Send(e.to_string()))?;
 
-        Ok(())
+        Ok(ReceiptDeliveryStatus::Sent)
     }
 
     /// Send a notice to an account holder. The caller supplies `to` itself -
@@ -217,7 +229,12 @@ pub enum EmailError {
 /// Trait abstracting email sending for testability.
 #[async_trait::async_trait]
 pub trait EmailSender: Send + Sync {
-    async fn send_receipt(&self, to: &str, data: &ReceiptData) -> Result<(), EmailError>;
+    /// Send a receipt and return the delivery status for tracking.
+    async fn send_receipt(
+        &self,
+        to: &str,
+        data: &ReceiptData,
+    ) -> Result<ReceiptDeliveryStatus, EmailError>;
 
     async fn send_email_change_verification(
         &self,
@@ -247,7 +264,11 @@ pub trait EmailSender: Send + Sync {
 
 #[async_trait::async_trait]
 impl EmailSender for EmailService {
-    async fn send_receipt(&self, to: &str, data: &ReceiptData) -> Result<(), EmailError> {
+    async fn send_receipt(
+        &self,
+        to: &str,
+        data: &ReceiptData,
+    ) -> Result<ReceiptDeliveryStatus, EmailError> {
         self.send_receipt(to, data).await
     }
 
@@ -277,8 +298,15 @@ pub struct NoopEmailSender;
 
 #[async_trait::async_trait]
 impl EmailSender for NoopEmailSender {
-    async fn send_receipt(&self, _to: &str, _data: &ReceiptData) -> Result<(), EmailError> {
-        Ok(())
+    async fn send_receipt(
+        &self,
+        _to: &str,
+        _data: &ReceiptData,
+    ) -> Result<ReceiptDeliveryStatus, EmailError> {
+        // A receipt is best-effort - nobody's payment fails because a customer
+        // email quietly did not send - so this succeeds (returns pending status).
+        // This status indicates no attempt was made.
+        Ok(ReceiptDeliveryStatus::Pending)
     }
 
     async fn send_email_change_verification(
@@ -362,6 +390,7 @@ mod tests {
             username: "user".to_string(),
             password: "pass".to_string(),
             from: "noreply@example.com".to_string(),
+            ses_configuration_set: None,
         };
         // Building the transport only assembles config - it never connects,
         // so this cannot fail for a reason the test needs to handle.

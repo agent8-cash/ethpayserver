@@ -19,6 +19,7 @@ mod merchant_directory;
 mod payment;
 mod payment_option;
 mod payout;
+mod receipt_delivery;
 mod refund;
 mod settlement_tolerance;
 pub(crate) mod store_creation;

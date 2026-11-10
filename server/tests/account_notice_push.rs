@@ -38,7 +38,11 @@ struct FailingSender;
 
 #[async_trait]
 impl EmailSender for FailingSender {
-    async fn send_receipt(&self, _to: &str, _data: &ReceiptData) -> Result<(), EmailError> {
+    async fn send_receipt(
+        &self,
+        _to: &str,
+        _data: &ReceiptData,
+    ) -> Result<data_service::ReceiptDeliveryStatus, EmailError> {
         unimplemented!("not exercised by this route")
     }
     async fn send_email_change_verification(
@@ -69,7 +73,11 @@ struct RecordingSender {
 
 #[async_trait]
 impl EmailSender for RecordingSender {
-    async fn send_receipt(&self, _to: &str, _data: &ReceiptData) -> Result<(), EmailError> {
+    async fn send_receipt(
+        &self,
+        _to: &str,
+        _data: &ReceiptData,
+    ) -> Result<data_service::ReceiptDeliveryStatus, EmailError> {
         unimplemented!("not exercised by this route")
     }
     async fn send_email_change_verification(

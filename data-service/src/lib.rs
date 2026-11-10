@@ -27,6 +27,7 @@ pub mod invoice_creation;
 pub mod merchant_directory;
 pub mod payment_tx_index;
 pub mod payout_claims;
+pub mod receipt_delivery;
 pub mod reorg;
 pub mod settlement_tolerance;
 pub mod store_creation;
@@ -51,6 +52,10 @@ pub use invoice_creation::InvoiceCreationWriter;
 pub use merchant_directory::{MerchantAccount, MerchantDirectoryReader, MerchantStore};
 pub use payment_tx_index::{PaymentTxIndexReader, PaymentTxIndexWriter};
 pub use payout_claims::PayoutClaimReader;
+pub use receipt_delivery::{
+    ReceiptDeliveryReader, ReceiptDeliveryRecord, ReceiptDeliveryStatus, ReceiptDeliveryWriter,
+    UpsertReceiptDeliveryParams,
+};
 pub use reorg::{ReorgCandidateReader, ReorgWriter};
 pub use settlement_tolerance::{
     DEFAULT_TOLERANCE_PERCENT, MAX_TOLERANCE_PERCENT, SettlementAllowance,
