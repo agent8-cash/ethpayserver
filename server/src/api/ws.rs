@@ -38,7 +38,7 @@ use futures::{SinkExt, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use auth::{SessionService, repository::UserStoreRepository};
+use auth::{SessionService, repository::{StoreRepository, UserStoreRepository}};
 use types::{InvoiceId, InvoiceReader, StoreId};
 
 use super::invoices::{StoreScope, verify_store_access_for_query};
@@ -309,7 +309,7 @@ pub(crate) async fn entitlement_of<D>(
     user: &auth::UserInfo,
 ) -> Option<Entitlement>
 where
-    D: UserStoreRepository + ?Sized,
+    D: StoreRepository + UserStoreRepository + ?Sized,
 {
     let topics = match verify_store_access_for_query(data_service, user, None).await {
         Ok(StoreScope::All) => [Topic::Admin].into_iter().collect(),
@@ -948,6 +948,48 @@ mod tests {
     /// Membership stub: `Memberships(stores)` belongs to exactly `stores`.
     /// Only the membership listing is exercised by `entitlement_of`.
     struct Memberships(Vec<StoreId>);
+
+    #[async_trait::async_trait]
+    impl auth::repository::StoreRepository for Memberships {
+        async fn create_store(&self, _: &auth::Store) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+
+        async fn get_store(&self, _: StoreId) -> auth::Result<Option<auth::Store>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+
+        async fn get_stores_for_user(&self, user_id: auth::UserId) -> auth::Result<Vec<auth::Store>> {
+            Ok(self
+                .0
+                .iter()
+                .map(|s| auth::Store {
+                    id: *s,
+                    name: format!("store-{}", s.0),
+                    website: None,
+                    owner_id: user_id,
+                    archived: false,
+                    created_at: chrono::Utc::now(),
+                })
+                .collect())
+        }
+
+        async fn get_stores_owned_by(&self, _: auth::UserId) -> auth::Result<Vec<auth::Store>> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+
+        async fn update_store(&self, _: &auth::Store) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+
+        async fn archive_store(&self, _: StoreId) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+
+        async fn delete_store(&self, _: StoreId) -> auth::Result<()> {
+            unimplemented!("not exercised by entitlement_of")
+        }
+    }
 
     #[async_trait::async_trait]
     impl UserStoreRepository for Memberships {

@@ -15,17 +15,59 @@
 use super::super::{StoreScope, verify_store_access_for_query};
 use ::types::StoreId;
 use async_trait::async_trait;
-use auth::store::{UserStore, UserStoreInfo};
-use auth::{Result, Role, UserId, UserInfo, repository::UserStoreRepository};
+use auth::store::{UserStore, UserStoreInfo, Store};
+use auth::{Result, Role, UserId, UserInfo, repository::{StoreRepository, UserStoreRepository}};
 use axum::http::StatusCode;
 use chrono::Utc;
 use uuid::Uuid;
 
-/// Membership repository stub. `member_of` is every store the user belongs to;
+/// Store repository stub. `member_of` is every store the user belongs to;
 /// anything else returns "not a member". Both `get_user_store` (single-store
-/// gate) and `get_user_stores` (membership scoping) are exercised.
+/// gate) and `get_stores_for_user` (membership scoping) are exercised.
 struct StubStores {
     member_of: Vec<Uuid>,
+}
+
+#[async_trait]
+impl StoreRepository for StubStores {
+    async fn create_store(&self, _: &Store) -> Result<()> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
+
+    async fn get_store(&self, _: StoreId) -> Result<Option<Store>> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
+
+    async fn get_stores_for_user(&self, user_id: UserId) -> Result<Vec<Store>> {
+        Ok(self
+            .member_of
+            .iter()
+            .map(|id| Store {
+                id: StoreId(*id),
+                name: format!("store-{}", id),
+                website: None,
+                owner_id: user_id,
+                archived: false,
+                created_at: Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_stores_owned_by(&self, _: UserId) -> Result<Vec<Store>> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
+
+    async fn update_store(&self, _: &Store) -> Result<()> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
+
+    async fn archive_store(&self, _: StoreId) -> Result<()> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
+
+    async fn delete_store(&self, _: StoreId) -> Result<()> {
+        unimplemented!("not exercised by the store-scope gate")
+    }
 }
 
 #[async_trait]
