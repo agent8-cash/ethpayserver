@@ -162,10 +162,10 @@ async fn an_absent_scope_is_persisted_as_inherit_rather_than_as_an_empty_scope()
 
     assert_eq!(
         response.permissions, None,
-        "an inherited key must be reported as inherited, the same way list and rotate report it. \
-         Echoing back the empty list that was sent would tell a caller who asked for a \
-         least-privilege key that it can do nothing, while handing them one that can do \
-         everything its owner can - the response saying the opposite of what was stored"
+        "an absent scope must be reported as absent, the same way list and rotate report it. \
+         None means the key inherits the owner's role; Some([]) means it grants nothing - opposite answers \
+         at the point of authorization. Reporting Some([]) for a key stored as inherit would tell the caller \
+         their least-privilege key can do nothing while handing them one that can do everything its owner can"
     );
 
     let persisted = pg
