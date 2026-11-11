@@ -409,6 +409,16 @@ where
             .map_err(|e| ApiErr::from((StatusCode::NOT_FOUND, e.to_string())))?,
     };
 
+    // Validate the action_id is not empty - a malformed request must be refused
+    // before dispatch to the plugin
+    if action.action_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "action_id cannot be empty".to_string(),
+        )
+            .into());
+    }
+
     // Build the action request. Identity and role come from the authenticated
     // session, not from the request - a plugin that could name its own viewer
     // could request admin permissions, and one that could name an account could

@@ -97,7 +97,7 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
     let user_id = seed_user(pg.pool()).await;
     let cookie = seed_session_cookie(pg.pool(), user_id).await;
 
-    let mut app = app(&pg);
+    let app = app(&pg);
 
     // POST an action - with no plugins loaded, the host is unavailable
     let body = serde_json::to_vec(&json!({
@@ -192,4 +192,32 @@ async fn action_to_nonexistent_plugin_returns_not_found() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Tests that an empty action_id is rejected.
+#[tokio::test]
+#[ignore]
+async fn empty_action_id_returns_bad_request() {
+    let pg = Arc::new(pg_service().await);
+    let user_id = seed_user(pg.pool()).await;
+    let cookie = seed_session_cookie(pg.pool(), user_id).await;
+
+    let app = app(&pg);
+
+    let body = serde_json::to_vec(&json!({
+        "action_id": "",
+        "data": {"key": "value"}
+    }))
+    .unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/plugins/test-plugin/pages/test-page/actions")
+        .header("Cookie", &cookie)
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
