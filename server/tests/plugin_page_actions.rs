@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Plugin page action submission tests.
 //!
-//! Tests POST /plugins/{id}/pages/{*path}/actions through the production
+//! Tests POST /plugins/{id}/page-actions/{*path} through the production
 //! router with a real session against a real Postgres.
 //!
 //! Verifies that:
@@ -9,6 +9,7 @@
 //! - Identity (viewer/account_id) comes from the authenticated session
 //! - Responses from the plugin propagate correctly to the client
 //! - Plugin errors are distinguished from wire-level errors
+//! - Role-based access control is enforced by the host
 //! - Comprehensive logging occurs on failure
 
 use std::sync::Arc;
@@ -108,7 +109,7 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/pages/test-page/actions")
+        .uri("/plugins/test-plugin/page-actions/test-page")
         .header("Cookie", &cookie)
         .header("content-type", "application/json")
         .body(Body::from(body))
@@ -135,7 +136,7 @@ async fn unauthenticated_page_action_returns_unauthorized() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/pages/test-page/actions")
+        .uri("/plugins/test-plugin/page-actions/test-page")
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -156,7 +157,7 @@ async fn malformed_page_action_request_returns_bad_request() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/pages/test-page/actions")
+        .uri("/plugins/test-plugin/page-actions/test-page")
         .header("Cookie", &cookie)
         .header("content-type", "application/json")
         .body(Body::from("not valid json"))
@@ -184,7 +185,7 @@ async fn action_to_nonexistent_plugin_returns_not_found() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/nonexistent-plugin-xyz/pages/test-page/actions")
+        .uri("/plugins/nonexistent-plugin-xyz/page-actions/test-page")
         .header("Cookie", &cookie)
         .header("content-type", "application/json")
         .body(Body::from(body))
@@ -212,7 +213,7 @@ async fn empty_action_id_returns_bad_request() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/pages/test-page/actions")
+        .uri("/plugins/test-plugin/page-actions/test-page")
         .header("Cookie", &cookie)
         .header("content-type", "application/json")
         .body(Body::from(body))
