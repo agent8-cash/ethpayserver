@@ -64,7 +64,10 @@ use payserver_plugin_api::{Manifest, PluginId};
 
 use super::ApiErr;
 use super::extractors::AuthenticatedUser;
-use crate::services::plugins::{PageElement, PageError, PageRequest, PluginRegistry, Viewer};
+use crate::services::plugins::{
+    PageAction, PageActionError, PageActionRequest, PageActionResponse, PageElement, PageError,
+    PageRequest, PluginRegistry, Viewer, WasmPageActionHandler,
+};
 use crate::state::PgAppState;
 
 /// Builds the `/plugins` mount.
@@ -117,6 +120,18 @@ fn viewer_for(role: Role) -> Viewer {
     match role {
         Role::ServerAdmin => Viewer::Admin,
         Role::User => Viewer::Merchant,
+    }
+}
+
+/// Check if the given role is allowed to invoke an action.
+///
+/// The host enforces this before the plugin is invoked. Actions that are
+/// admin-only are identified by a naming convention: action IDs prefixed
+/// with "admin_" require ServerAdmin role to invoke.
+fn can_invoke_action(action_id: &str, role: Role) -> bool {
+    match role {
+        Role::ServerAdmin => true, // admins can invoke any action
+        Role::User => !action_id.starts_with("admin_"), // users cannot invoke admin actions
     }
 }
 
@@ -375,6 +390,92 @@ where
 
     let page = state.plugin_pages.render(&plugin_id, &request).await?;
     Ok(Json(page))
+}
+
+/// Handle an action triggered on a plugin page.
+///
+/// The action comes from a form submission on a plugin's page. The host
+/// validates the session (AuthenticatedUser extractor re-checks it), resolves
+/// the identity and role from that session (never from the request), and
+/// passes both to the plugin along with the action id and form data.
+/// Viewer and account_id are determined by the host, not claimed by the client.
+#[utoipa::path(
+    post,
+    path = "/plugins/{id}/page-actions/{path}",
+    responses((status = 200, body = PageActionResponse)),
+    tag = "plugins"
+)]
+pub async fn handle_page_action<A>(
+    State(state): State<PgAppState<A>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path((plugin_ref, path)): Path<(String, String)>,
+    Json(action): Json<PageAction>,
+) -> Result<Json<PageActionResponse>, ApiErr>
+where
+    A: SessionService + 'static,
+{
+    // Resolve plugin by slug or id, same as GET path
+    let plugin_id = match resolve_plugin(&state, &plugin_ref).await {
+        Some(id) => id,
+        None => PluginId::new(plugin_ref)
+            .map_err(|e| ApiErr::from((StatusCode::NOT_FOUND, e.to_string())))?,
+    };
+
+    // Validate the action_id is not empty - a malformed request must be refused
+    // before dispatch to the plugin
+    if action.action_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "action_id cannot be empty".to_string(),
+        )
+            .into());
+    }
+
+    // Validate that the current role is allowed to invoke this action.
+    // The host enforces role requirements before dispatching to the plugin
+    // so the plugin is never invoked for actions the caller cannot perform.
+    if !can_invoke_action(&action.action_id, user.role) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("action '{}' requires higher privileges", action.action_id),
+        )
+            .into());
+    }
+
+    // Build the action request. Identity and role come from the authenticated
+    // session, not from the request - a plugin that could name its own viewer
+    // could request admin permissions, and one that could name an account could
+    // trigger actions on another merchant's data.
+    let request = PageActionRequest {
+        path,
+        action,
+        viewer: viewer_for(user.role),
+        account_id: Some(user.id.0.to_string()),
+    };
+
+    // Get the action handler. The plugin must be loaded for this to work.
+    let host = state.plugin_host.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin host not available".to_string(),
+        )
+    })?;
+
+    let handler = WasmPageActionHandler::new(std::sync::Arc::clone(host), plugin_id);
+
+    // Dispatch to the plugin. If the plugin doesn't implement handle_action,
+    // run_query will return an error and we map it appropriately.
+    let response = handler
+        .handle_action(&request)
+        .await
+        .map_err(|e: PageActionError| {
+            // Use the same error mapping as page rendering to distinguish
+            // plugin unavailability (trap, timeout, disabled) from application-level
+            // errors (action failed).
+            ApiErr::from((StatusCode::BAD_GATEWAY, format!("action failed: {}", e)))
+        })?;
+
+    Ok(Json(response))
 }
 
 #[cfg(test)]
