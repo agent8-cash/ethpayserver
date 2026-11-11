@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod monitor;
 pub mod network;
 pub mod provider;
+pub mod rpc_cost;
 #[cfg(feature = "sentry-scrub")]
 pub mod telemetry;
 pub mod testnet;
