@@ -77,6 +77,7 @@ run "backend schema doc current" ./scripts/gen-backend-schema.test.sh
 run "db tests never skip"       ./scripts/check-test-db-skips.sh
 run "commons pin matches lock"  ./scripts/check-commons-pin.sh
 run "file sizes (report only)"   ./scripts/check-file-size.sh
+run "security checks wired"     ./scripts/check-security.test.sh
 
 echo "== compiler =="
 run "cargo fmt"                 cargo fmt --all -- --check
