@@ -18,8 +18,8 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 # pathspec, git itself erroring, ...). Those must not be conflated: swallowing
 # every nonzero exit into "clean" would reproduce, one layer up, the exact
 # false-clean-scan failure this check exists to catch.
-matches="$(git grep -nIE 'RCS-[0-9]+|linear\.app' -- . \
-  ':!CLAUDE.md' ':!AGENTS.md' ':!docs')"
+matches="$(git grep -nIE 'RCS-[0-9]+|AG8-[0-9]+|linear\.app' -- . \
+  ':!CLAUDE.md' ':!AGENTS.md' ':!docs' ':!scripts/check-no-ticket-refs.test.sh')"
 status=$?
 
 if [ "$status" -gt 1 ]; then
