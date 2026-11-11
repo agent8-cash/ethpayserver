@@ -16,10 +16,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use data_service::PgDataService;
-use data_service::test_support::pg_service;
+use data_service::{PgDataService, test_support::pg_service};
 use rates::NoOpRateProvider;
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -125,7 +124,7 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
 async fn unauthenticated_page_action_returns_unauthorized() {
     let pg = Arc::new(pg_service().await);
 
-    let mut app = app(&pg);
+    let app = app(&pg);
 
     // POST an action without authentication
     let body = serde_json::to_vec(&json!({
@@ -153,7 +152,7 @@ async fn malformed_page_action_request_returns_bad_request() {
     let user_id = seed_user(pg.pool()).await;
     let cookie = seed_session_cookie(pg.pool(), user_id).await;
 
-    let mut app = app(&pg);
+    let app = app(&pg);
 
     let request = Request::builder()
         .method("POST")
@@ -175,7 +174,7 @@ async fn action_to_nonexistent_plugin_returns_not_found() {
     let user_id = seed_user(pg.pool()).await;
     let cookie = seed_session_cookie(pg.pool(), user_id).await;
 
-    let mut app = app(&pg);
+    let app = app(&pg);
 
     let body = serde_json::to_vec(&json!({
         "action_id": "test_action",
