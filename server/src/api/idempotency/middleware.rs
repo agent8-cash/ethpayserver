@@ -11,10 +11,37 @@ use axum::{
 };
 
 use super::IdempotencyState;
-use super::cache::{CacheLookup, acquire_lock, cache_lookup, handle_and_cache};
+use super::cache::{CacheLookup, LockAcquisition, acquire_lock, cache_lookup, handle_and_cache};
 use super::config::{CACHE_PREFIX, LOCK_PREFIX, MAX_REQUEST_BODY};
 use super::key::{compute_hash, extract_scope, validate_key};
-use super::response::{conflict_response, in_flight_response, invalid_key_response};
+use super::response::{
+    conflict_response, in_flight_response, invalid_key_response, redis_unavailable_response,
+};
+
+/// Handle the lock acquisition and proceed with request processing.
+#[allow(clippy::too_many_arguments)]
+async fn process_with_lock(
+    mut conn: redis::aio::MultiplexedConnection,
+    parts: axum::http::request::Parts,
+    body_bytes: axum::body::Bytes,
+    cache_key: String,
+    lock_key: String,
+    request_hash: String,
+    ttl_secs: u64,
+    next: Next,
+) -> Response {
+    match acquire_lock(&mut conn, &lock_key).await {
+        LockAcquisition::Acquired => {
+            let req = Request::from_parts(parts, Body::from(body_bytes));
+            handle_and_cache(conn, cache_key, lock_key, request_hash, ttl_secs, req, next).await
+        }
+        LockAcquisition::InFlight => in_flight_response(),
+        LockAcquisition::Error(e) => {
+            tracing::error!(error = %e, "Redis error during idempotency lock acquisition");
+            redis_unavailable_response()
+        }
+    }
+}
 
 /// Idempotency middleware.
 ///
@@ -65,24 +92,19 @@ pub async fn middleware(
         CacheLookup::Conflict => return conflict_response(),
         CacheLookup::Miss => {}
         CacheLookup::Error(e) => {
-            tracing::warn!(error = %e, "Redis GET failed for idempotency cache, falling through");
-            let req = Request::from_parts(parts, Body::from(body_bytes));
-            return next.run(req).await;
+            tracing::error!(error = %e, "Redis GET failed for idempotency cache");
+            return redis_unavailable_response();
         }
     }
 
-    if !acquire_lock(&mut conn, &lock_key).await {
-        return in_flight_response();
-    }
-
-    let req = Request::from_parts(parts, Body::from(body_bytes));
-    handle_and_cache(
+    process_with_lock(
         conn,
+        parts,
+        body_bytes,
         cache_key,
         lock_key,
         request_hash,
         state.ttl_secs,
-        req,
         next,
     )
     .await

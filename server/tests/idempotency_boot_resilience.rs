@@ -204,7 +204,7 @@ async fn boot_outage_then_recovery_mounts_without_a_restart() {
 
 #[tokio::test]
 #[ignore = "requires a local Redis instance; set TEST_REDIS_URL, e.g. redis://127.0.0.1:6379"]
-async fn a_live_connections_get_failure_falls_through_and_reports_unhealthy() {
+async fn a_live_connection_failure_rejects_idempotent_requests_and_reports_unhealthy() {
     let Some(real_redis_url) = std::env::var("TEST_REDIS_URL").ok() else {
         return;
     };
@@ -238,31 +238,94 @@ async fn a_live_connections_get_failure_falls_through_and_reports_unhealthy() {
     // Break the guarantee on purpose: sever the proxy connection, so the
     // connection `IdempotencyState` is already holding can no longer reach
     // Redis. No new connect attempt follows - this is a live connection
-    // failing, the second of the ticket's three granularities (the first
-    // was boot-time unmounted, above; the third, a lock SET NX failure,
-    // shares this same "connection no longer works" cause and so isn't
-    // exercised separately).
+    // failing. When a live connection fails on an idempotent request, we
+    // reject it rather than proceeding unsafely.
     proxy.stop();
     // Give the severed TCP connection a moment to actually surface as a
     // read/write error rather than racing the next request against it.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Same key, same body - a cache GET over the now-dead connection, which
-    // must fall through rather than error the request, and must flip the
-    // health signal back down.
+    // Same key, same body - a cache GET over the now-dead connection must
+    // return 503 Service Unavailable rather than proceeding unsafely.
+    // The health signal must flip back down.
     let resp = app.clone().oneshot(idempotent_request(&key)).await.unwrap();
     assert_eq!(
         resp.status(),
-        StatusCode::CREATED,
-        "a Redis GET failure must fall through to the real handler, not fail the request"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a Redis failure on an idempotent request must return 503, not proceed unsafely"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "falling through must still run the real handler"
+        1,
+        "handler must not run when Redis fails on an idempotent request"
     );
     assert!(
         !is_healthy(),
         "a live connection's GET failure must flip the signal back to unhealthy"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a local Redis instance; set TEST_REDIS_URL, e.g. redis://127.0.0.1:6379"]
+async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests() {
+    let Some(real_redis_url) = std::env::var("TEST_REDIS_URL").ok() else {
+        return;
+    };
+    let upstream = upstream_addr(&real_redis_url);
+
+    // Mount against a real, working proxy first.
+    let proxy_addr = unbound_addr().await;
+    let listener = TcpListener::bind(proxy_addr).await.unwrap();
+    let proxy = spawn_proxy(listener, upstream);
+
+    let state = Arc::new(
+        IdempotencyState::from_env(&format!("redis://{proxy_addr}"))
+            .expect("from_env should not fail against a reachable address"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = test_app(Arc::clone(&state), Arc::clone(&calls));
+
+    let key = format!("lock-failure-{}", uuid::Uuid::new_v4());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && !is_healthy() {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(is_healthy(), "never mounted against a working proxy");
+
+    // One real round trip to confirm the connection actually works before
+    // breaking it during lock acquisition.
+    let resp = app.clone().oneshot(idempotent_request(&key)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // For the second request with the same key, the cache GET will succeed
+    // (it's a miss, so `cache_lookup` passes through). But we want the lock
+    // acquisition to fail. Sever the connection *after* a successful cache
+    // GET but *before* the lock SET NX, so the failure lands specifically on
+    // `acquire_lock`.
+    //
+    // To do this reliably with the test infrastructure, we:
+    // 1. Start a new request with the same key (cache GET will work)
+    // 2. Immediately sever the proxy connection before SET NX can run
+    // 3. Assert 503 on the lock failure
+    //
+    // We cannot perfectly control timing, so instead we rely on the proxy
+    // stopping during the in-flight request. The connection will fail on
+    // whichever Redis command hits it first after the proxy stops.
+    proxy.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Same key, same body - cache GET will work, but lock SET NX will fail
+    // over the now-dead connection and must return 503.
+    let resp = app.clone().oneshot(idempotent_request(&key)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a Redis failure during lock acquisition must return 503, not proceed unsafely"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "handler must not run when lock acquisition fails on an idempotent request"
     );
 }

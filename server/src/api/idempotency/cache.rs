@@ -66,12 +66,23 @@ pub(super) async fn cache_lookup(
     }
 }
 
-/// Try to acquire the in-flight lock via `SET NX EX`. Redis errors do not
-/// block the request — idempotency is best-effort when Redis is unavailable.
+/// Outcome of a lock acquisition attempt.
+pub(super) enum LockAcquisition {
+    /// Lock acquired successfully — proceed with request.
+    Acquired,
+    /// Another request is in-flight with the same idempotency key.
+    InFlight,
+    /// Redis operation failed — cannot proceed safely with idempotent request.
+    Error(redis::RedisError),
+}
+
+/// Try to acquire the in-flight lock via `SET NX EX`. On Redis errors,
+/// returns `LockAcquisition::Error` rather than allowing the request to
+/// proceed unsafely — invoices must be protected by strict idempotency.
 pub(super) async fn acquire_lock(
     conn: &mut redis::aio::MultiplexedConnection,
     lock_key: &str,
-) -> bool {
+) -> LockAcquisition {
     match redis::cmd("SET")
         .arg(lock_key)
         .arg("1")
@@ -83,16 +94,16 @@ pub(super) async fn acquire_lock(
     {
         Ok(Some(_)) => {
             super::record_health(true);
-            true
+            LockAcquisition::Acquired
         }
         Ok(None) => {
             super::record_health(true);
-            false
+            LockAcquisition::InFlight
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Redis SET NX failed for idempotency lock, falling through");
+            tracing::warn!(error = %e, "Redis SET NX failed for idempotency lock");
             super::record_health(false);
-            true
+            LockAcquisition::Error(e)
         }
     }
 }
