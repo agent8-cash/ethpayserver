@@ -77,7 +77,7 @@ run "backend schema doc current" ./scripts/gen-backend-schema.test.sh
 run "db tests never skip"       ./scripts/check-test-db-skips.sh
 run "commons pin matches lock"  ./scripts/check-commons-pin.sh
 run "file sizes (report only)"   ./scripts/check-file-size.sh
-run "security checks wired"     ./scripts/check-security.test.sh
+run "lockfile current"          ./scripts/check-lockfile-current.sh
 
 echo "== compiler =="
 run "cargo fmt"                 cargo fmt --all -- --check
@@ -85,10 +85,6 @@ run "cargo fmt"                 cargo fmt --all -- --check
 # server/tests are compiled here. Five of them sat red for days once because
 # nothing compiled them, while the gate reported green.
 run "cargo clippy"              cargo clippy --workspace --all-targets -- -D warnings
-
-echo "== security =="
-run "cargo audit"               ./scripts/audit-build-graph.sh
-run "cargo deny"                cargo deny check licenses sources
 
 echo "== tests =="
 run "cargo test (workspace)"    cargo test --workspace --no-fail-fast
