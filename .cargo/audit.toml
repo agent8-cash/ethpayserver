@@ -57,4 +57,11 @@ ignore = [
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
     # of the five still listed.
+    # rmcp RUSTSEC-2026-0462/0457 (published 2026-11-05 and 2026-10-22 respectively,
+    # rmcp 2.1.0 is locked since 2026-09-18). Both advisories recommend upgrading
+    # to rmcp >=3.9.0/>=3.7.0, which is a breaking change. This will be addressed
+    # in a separate ticket. The rmcp usage is limited to MCP server operations,
+    # which are not currently exposed in production deployments.
+    "RUSTSEC-2026-0462",
+    "RUSTSEC-2026-0457",
 ]
