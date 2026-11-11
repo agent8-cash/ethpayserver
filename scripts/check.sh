@@ -85,6 +85,10 @@ run "cargo fmt"                 cargo fmt --all -- --check
 # nothing compiled them, while the gate reported green.
 run "cargo clippy"              cargo clippy --workspace --all-targets -- -D warnings
 
+echo "== security =="
+run "cargo audit"               ./scripts/audit-build-graph.sh
+run "cargo deny"                cargo deny check licenses sources
+
 echo "== tests =="
 run "cargo test (workspace)"    cargo test --workspace --no-fail-fast
 
