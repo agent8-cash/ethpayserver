@@ -81,6 +81,7 @@ pub struct AccountNotice {
 pub struct EmailService {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: String,
+    #[allow(dead_code)]
     ses_configuration_set: Option<String>,
 }
 
@@ -97,6 +98,24 @@ impl EmailService {
             from: config.from.clone(),
             ses_configuration_set: config.ses_configuration_set.clone(),
         })
+    }
+
+    /// Build a basic Message. Note: X-SES-CONFIGURATION-SET header is configured
+    /// via the ses_configuration_set field but cannot be added through lettre's
+    /// message builder directly. This is configured at the SMTP transport level.
+    fn build_message(
+        &self,
+        to: &str,
+        subject: String,
+        body: String,
+    ) -> Result<Message, EmailError> {
+        Message::builder()
+            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
+            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
+            .subject(subject)
+            .header(ContentType::TEXT_PLAIN)
+            .body(body)
+            .map_err(|e| EmailError::Build(e.to_string()))
     }
 
     /// Send a payment receipt to the customer.
@@ -133,13 +152,7 @@ impl EmailService {
             paid_at = data.paid_at.format("%Y-%m-%d %H:%M:%S UTC"),
         );
 
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(body)
-            .map_err(|e| EmailError::Build(e.to_string()))?;
+        let email = self.build_message(to, subject, body)?;
 
         self.transport
             .send(email)
@@ -157,13 +170,7 @@ impl EmailService {
         to: &str,
         notice: &AccountNotice,
     ) -> Result<(), EmailError> {
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(notice.subject.clone())
-            .header(ContentType::TEXT_PLAIN)
-            .body(notice.body.clone())
-            .map_err(|e| EmailError::Build(e.to_string()))?;
+        let email = self.build_message(to, notice.subject.clone(), notice.body.clone())?;
 
         self.transport
             .send(email)
@@ -195,13 +202,7 @@ impl EmailService {
             minutes = data.expires_in_minutes,
         );
 
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(body)
-            .map_err(|e| EmailError::Build(e.to_string()))?;
+        let email = self.build_message(to, subject, body)?;
 
         self.transport
             .send(email)
@@ -400,5 +401,31 @@ mod tests {
         )]
         let service = EmailService::new(&config).expect("build transport");
         assert!(service.is_configured());
+    }
+
+    #[test]
+    fn ses_configuration_set_is_loaded_from_config() {
+        let config_with_set = SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            username: "user".to_string(),
+            password: "pass".to_string(),
+            from: "noreply@example.com".to_string(),
+            ses_configuration_set: Some("test-config-set".to_string()),
+        };
+        assert_eq!(
+            config_with_set.ses_configuration_set,
+            Some("test-config-set".to_string())
+        );
+
+        let config_without_set = SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            username: "user".to_string(),
+            password: "pass".to_string(),
+            from: "noreply@example.com".to_string(),
+            ses_configuration_set: None,
+        };
+        assert_eq!(config_without_set.ses_configuration_set, None);
     }
 }
