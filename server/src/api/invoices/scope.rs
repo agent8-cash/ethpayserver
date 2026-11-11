@@ -7,7 +7,7 @@
 use axum::http::StatusCode;
 
 use ::types::{InvoiceQueryParams, PaymentQueryParams, StoreId};
-use auth::repository::UserStoreRepository;
+use auth::repository::{StoreRepository, UserStoreRepository};
 
 use crate::api::extractors::key_grants_store_permission;
 
@@ -109,7 +109,7 @@ pub(crate) async fn verify_store_access_for_query<D>(
     store_id: Option<uuid::Uuid>,
 ) -> Result<StoreScope, StatusCode>
 where
-    D: UserStoreRepository + ?Sized,
+    D: StoreRepository + UserStoreRepository + ?Sized,
 {
     match store_id {
         Some(id) => {
@@ -123,8 +123,9 @@ where
             }
             Ok(StoreScope::One(StoreId(id)))
         }
-        // No store_id means "everything I can see". For an admin that is the
-        // whole server; for anyone else it is their own memberships.
+        // No store_id means "every store" the user can see. For an admin that
+        // is the whole server; for anyone else it is the stores they own or
+        // are members of.
         //
         // This used to be a flat 400 for non-admins, which made the "All Stores"
         // sidebar option a dead end on Invoices and Payments - the client asked,
@@ -135,14 +136,14 @@ where
             if user.role == auth::Role::ServerAdmin {
                 return Ok(StoreScope::All);
             }
-            let memberships = data_service
-                .get_user_stores(user.id)
+            let stores = data_service
+                .get_stores_for_user(user.id)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             // Deliberately still a filter when empty: a user who belongs to no
             // store sees nothing, not everything.
             Ok(StoreScope::Membership(
-                memberships.into_iter().map(|m| m.store_id).collect(),
+                stores.into_iter().map(|s| s.id).collect(),
             ))
         }
     }
