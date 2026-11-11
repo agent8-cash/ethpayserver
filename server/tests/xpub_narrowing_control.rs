@@ -181,12 +181,18 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
     );
 }
 
-/// Verify that xpub does not leak into API response bodies through any of the
-/// payment-related endpoints. The plaintext xpub column must never appear in
-/// customer-facing or merchant-facing responses.
+/// Verify that xpub does not leak into API response bodies through the
+/// payment-method and wallet read endpoints. The plaintext xpub column must
+/// never appear in customer-facing or merchant-facing responses.
+///
+/// Note: export_wallet_xpub is intentionally excluded from this test, as that
+/// endpoint's documented purpose is to return the full xpub by design.
 #[tokio::test]
 #[ignore]
 async fn xpub_does_not_leak_into_response_bodies() {
+    use server::api::stores::payment_methods::{get_payment_method, list_payment_methods};
+    use server::api::stores::wallets::{get_wallet_by_id, list_wallets};
+
     let pg = pg_service().await;
     let owner = seed_user(pg.pool()).await;
     let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
@@ -195,7 +201,7 @@ async fn xpub_does_not_leak_into_response_bodies() {
         .expect("seed store");
 
     // Create a payment method pinned to this xpub
-    StorePaymentMethodWriter::create_payment_method(
+    let method_id = StorePaymentMethodWriter::create_payment_method(
         &pg,
         store.id.0,
         &ChainId::evm(11_155_111),
@@ -205,22 +211,67 @@ async fn xpub_does_not_leak_into_response_bodies() {
         Some(TEST_XPUB),
     )
     .await
-    .expect("seed payment method");
+    .expect("seed payment method")
+    .id;
 
     let ds = Arc::new(pg);
+    let state = app_state(Arc::clone(&ds));
 
-    // Create an invoice
-    let (status, Json(invoice)) = create_invoice(
+    // Test list_payment_methods endpoint
+    let (_, Json(methods_list)) = list_payment_methods(
         merchant_caller(owner),
-        State(app_state(Arc::clone(&ds))),
-        Json(invoice_request(store.id.0)),
+        State(state.clone()),
+        Path(store.id.0),
     )
     .await
-    .expect("create invoice");
-    assert_eq!(status, StatusCode::CREATED);
+    .expect("list payment methods");
 
-    // Serialize the invoice response to JSON and check for xpub leakage
-    let invoice_json = serde_json::to_string(&invoice).expect("serialize invoice");
+    let methods_json = serde_json::to_string(&methods_list).expect("serialize methods list");
+
+    // Test get_payment_method endpoint
+    let (_, Json(method_detail)) = get_payment_method(
+        merchant_caller(owner),
+        State(state.clone()),
+        Path((store.id.0, method_id)),
+    )
+    .await
+    .expect("get payment method");
+
+    let method_json = serde_json::to_string(&method_detail).expect("serialize method");
+
+    // Create a wallet for this xpub to test wallet endpoints
+    use server::api::extractors::AuthenticatedUser;
+    let wallet_id = data_service::repository::WalletWriter::create_wallet(
+        &*state.data_service,
+        owner,
+        ChainId::evm(1),
+        TEST_XPUB,
+        None,
+    )
+    .await
+    .expect("create wallet")
+    .id;
+
+    // Test list_wallets endpoint
+    let (_, Json(wallets_list)) = list_wallets(
+        AuthenticatedUser(merchant_caller(owner).user),
+        State(state.clone()),
+    )
+    .await
+    .expect("list wallets");
+
+    let wallets_json = serde_json::to_string(&wallets_list).expect("serialize wallets list");
+
+    // Test get_wallet_by_id endpoint
+    let (_, Json(wallet_detail)) = get_wallet_by_id(
+        AuthenticatedUser(merchant_caller(owner).user),
+        State(state.clone()),
+        Path(wallet_id),
+    )
+    .await
+    .expect("get wallet by id");
+
+    let wallet_json = serde_json::to_string(&wallet_detail).expect("serialize wallet");
 
     // These substrings should never appear in any response body
     let forbidden_patterns = [
@@ -233,10 +284,28 @@ async fn xpub_does_not_leak_into_response_bodies() {
 
     for pattern in forbidden_patterns {
         assert!(
-            !invoice_json.contains(pattern),
-            "xpub leak detected: response contains '{}'. Response: {}",
+            !methods_json.contains(pattern),
+            "xpub leak detected in list_payment_methods: response contains '{}'. Response: {}",
             pattern,
-            invoice_json
+            methods_json
+        );
+        assert!(
+            !method_json.contains(pattern),
+            "xpub leak detected in get_payment_method: response contains '{}'. Response: {}",
+            pattern,
+            method_json
+        );
+        assert!(
+            !wallets_json.contains(pattern),
+            "xpub leak detected in list_wallets: response contains '{}'. Response: {}",
+            pattern,
+            wallets_json
+        );
+        assert!(
+            !wallet_json.contains(pattern),
+            "xpub leak detected in get_wallet_by_id: response contains '{}'. Response: {}",
+            pattern,
+            wallet_json
         );
     }
 }

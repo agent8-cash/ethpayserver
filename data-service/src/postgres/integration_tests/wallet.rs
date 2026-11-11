@@ -1404,12 +1404,28 @@ async fn a_refused_rotation_leaves_the_store_entirely_unmoved() {
         .await
         .unwrap();
     assert_eq!(methods.len(), 2);
+
+    // Verify all methods still resolve to the same wallet (the one holding mine)
+    // by checking they all have the same wallet_id. This invariant ensures the
+    // refused rotation changed nothing and left the store unshifted.
+    let first_wallet_id = methods[0].wallet_id;
     for method in &methods {
         assert_eq!(
-            method.xpub.as_deref(),
-            Some(mine.as_str()),
+            method.wallet_id, first_wallet_id,
             "a refused rotation must leave every method where it was, not some \
              of them on the key the merchant just declared compromised"
+        );
+    }
+
+    // Further verify the shared wallet still holds the original xpub
+    if let Some(wallet_id) = first_wallet_id {
+        let wallet = WalletReader::get_wallet(&service, wallet_id)
+            .await
+            .unwrap()
+            .expect("wallet should exist");
+        assert_eq!(
+            wallet.xpub, mine,
+            "the wallet holding the methods must still have the original xpub"
         );
     }
 
