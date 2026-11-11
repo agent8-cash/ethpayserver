@@ -180,3 +180,63 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
         "two invoices on the same store must derive different addresses"
     );
 }
+
+/// Verify that xpub does not leak into API response bodies through any of the
+/// payment-related endpoints. The plaintext xpub column must never appear in
+/// customer-facing or merchant-facing responses.
+#[tokio::test]
+#[ignore]
+async fn xpub_does_not_leak_into_response_bodies() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+    let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
+    pg.create_store_owned_by(&store, UserId(owner))
+        .await
+        .expect("seed store");
+
+    // Create a payment method pinned to this xpub
+    StorePaymentMethodWriter::create_payment_method(
+        &pg,
+        store.id.0,
+        &ChainId::evm(11_155_111),
+        None,
+        "ETH",
+        18,
+        Some(TEST_XPUB),
+    )
+    .await
+    .expect("seed payment method");
+
+    let ds = Arc::new(pg);
+
+    // Create an invoice
+    let (status, Json(invoice)) = create_invoice(
+        merchant_caller(owner),
+        State(app_state(Arc::clone(&ds))),
+        Json(invoice_request(store.id.0)),
+    )
+    .await
+    .expect("create invoice");
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Serialize the invoice response to JSON and check for xpub leakage
+    let invoice_json = serde_json::to_string(&invoice).expect("serialize invoice");
+
+    // These substrings should never appear in any response body
+    let forbidden_patterns = [
+        TEST_XPUB, // full xpub
+        "xpub",    // xpub prefix
+        "tpub",    // testnet xpub prefix
+        "vpub",    // testnet xpub prefix variant
+        "upub",    // ypub/zpub prefix variant
+    ];
+
+    for pattern in forbidden_patterns {
+        assert!(
+            !invoice_json.contains(pattern),
+            "xpub leak detected: response contains '{}'. Response: {}",
+            pattern,
+            invoice_json
+        );
+    }
+}

@@ -704,12 +704,14 @@ async fn setting_a_store_override_changes_where_derivation_happens() {
     );
 
     // And the read path must agree with what derivation just did.
+    // (The invariant is about the wallet_id, not the xpub - xpub is only
+    // returned from derivation, not from non-deriving reads.)
     let reread = StorePaymentMethodReader::get_payment_method(&service, method.id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(reread.wallet_id, Some(other.id));
-    assert_eq!(reread.xpub.as_deref(), Some(xpub_b.as_str()));
+    assert_eq!(reread.xpub, None, "non-deriving reads must not return xpub");
 
     // Clearing it falls back to the account primary, which is still &xpub_a.
     WalletWriter::clear_store_wallet(&service, store, EVM)
