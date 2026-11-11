@@ -129,5 +129,29 @@ ignore = [
 EOF
 check "month-boundary dates" 1 "2026-11-15"  # exact match on one date
 
+# Two IDs under the same comment block: both should be expiry-checked, not just the first.
+# This is the critical case: a comment block applies to multiple consecutive IDs.
+# If only the first is checked, the second silently escapes the expiry gate.
+cat > audit.toml << 'EOF'
+[advisories]
+ignore = [
+    # EXPIRES 2026-11-01
+    "RUSTSEC-2024-0001",
+    "RUSTSEC-2024-0002",
+]
+EOF
+check "two IDs under one EXPIRES - past date should fail both" 1 "2026-11-15"
+
+# Same case but with future expiry: both should pass.
+cat > audit.toml << 'EOF'
+[advisories]
+ignore = [
+    # EXPIRES 2026-12-31
+    "RUSTSEC-2024-0001",
+    "RUSTSEC-2024-0002",
+]
+EOF
+check "two IDs under one EXPIRES - future date should pass" 0 "2026-11-15"
+
 [ "$fail" -eq 0 ] && echo "check-advisory-expires.sh behaves as documented"
 exit "$fail"

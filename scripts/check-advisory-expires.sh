@@ -76,8 +76,7 @@ while IFS= read -r line; do
           echo "::error::invalid EXPIRES date format in .cargo/audit.toml for $id: $expiry (expected YYYY-MM-DD)" >&2
           status=1
           expired_count=$((expired_count + 1))
-          # Clear and continue rather than failing hard, to report all errors at once
-          comment_block=""
+          # Continue rather than failing hard, to report all errors at once
           continue
         fi
 
@@ -88,8 +87,11 @@ while IFS= read -r line; do
           expired_count=$((expired_count + 1))
         fi
       fi
+      # Do NOT clear comment_block here - consecutive IDs under the same block share the EXPIRES
+    else
+      # Non-comment, non-ID line: clear the block for the next section
+      comment_block=""
     fi
-    comment_block=""
   fi
 done < "$AUDIT"
 
