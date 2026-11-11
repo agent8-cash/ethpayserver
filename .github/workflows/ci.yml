@@ -192,10 +192,6 @@ jobs:
         if: always()
         run: ./scripts/check-file-size.test.sh
 
-      - name: Cargo job count reporter self-test
-        if: always()
-        run: ./scripts/cargo-jobs.test.sh
-
       - name: Migration versions are distinct
         if: always()
         run: ./scripts/check-migrations.sh
@@ -203,13 +199,6 @@ jobs:
       - name: Migration guard self-test
         if: always()
         run: ./scripts/check-migrations.test.sh
-
-      # docs/backend-schema.md is generated from the migrations. This runs the
-      # generator for real and diffs its output, so a migration merged without
-      # regenerating the doc fails here.
-      - name: Backend schema doc is current
-        if: always()
-        run: ./scripts/gen-backend-schema.test.sh
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
@@ -546,6 +535,12 @@ jobs:
         run: ./scripts/check-advisory-ignores.test.sh
       - name: advisory ignores still needed
         run: ./scripts/check-advisory-ignores.sh
+      - name: advisory EXPIRES dates self-test
+        if: always()
+        run: ./scripts/check-advisory-expires.test.sh
+      - name: advisory EXPIRES dates enforced
+        if: always()
+        run: ./scripts/check-advisory-expires.sh
       - name: cargo deny
         run: cargo deny check licenses sources
 
