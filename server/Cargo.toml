@@ -22,7 +22,7 @@ evm = { path = "../evm", features = ["api", "redis", "sentry-scrub"] }
 rates = { workspace = true }
 api-types = { workspace = true, features = ["openapi"] }
 types = { workspace = true, features = ["openapi"] }
-payserver-plugin-api = { workspace = true, features = ["openapi"] }
+payserver-plugin-api = { workspace = true }
 payserver-plugin-host = { workspace = true }
 
 # Web framework

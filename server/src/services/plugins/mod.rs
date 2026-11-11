@@ -103,8 +103,8 @@ pub use merchant_volume::{
     MerchantVolume, MerchantVolumeReader, PluginMerchantVolume,
 };
 pub use page_renderer::{
-    HANDLE_ACTION, PageActionError, PageActionRequest, RENDER_PAGE, WasmPageActionHandler,
-    WasmPageRenderer,
+    Effect, HANDLE_ACTION, PageAction, PageActionError, PageActionRequest, PageActionResponse,
+    RENDER_PAGE, WasmPageActionHandler, WasmPageRenderer,
 };
 pub use payment_observer::{
     OwnStorePayment, OwnStorePaymentObserver, OwnStorePaymentReader, PaymentObserverError,

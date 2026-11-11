@@ -60,13 +60,13 @@ use axum::{
     middleware::{self, Next},
     response::Response,
 };
-use payserver_plugin_api::{Manifest, PageAction, PageActionResponse, PluginId};
+use payserver_plugin_api::{Manifest, PluginId};
 
 use super::ApiErr;
 use super::extractors::AuthenticatedUser;
 use crate::services::plugins::{
-    PageActionRequest, PageElement, PageError, PageRequest, PluginRegistry, Viewer,
-    WasmPageActionHandler,
+    PageAction, PageActionRequest, PageActionResponse, PageElement, PageError, PageRequest,
+    PluginRegistry, Viewer, WasmPageActionHandler,
 };
 use crate::state::PgAppState;
 
@@ -389,7 +389,7 @@ where
 /// Viewer and account_id are determined by the host, not claimed by the client.
 #[utoipa::path(
     post,
-    path = "/plugins/{id}/pages/{path}",
+    path = "/plugins/{id}/pages/{path}/actions",
     responses((status = 200, body = PageActionResponse)),
     tag = "plugins"
 )]

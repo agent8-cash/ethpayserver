@@ -35,12 +35,59 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use payserver_plugin_api::PluginId;
-use payserver_plugin_api::page::{PageAction, PageActionResponse, PageElement, Viewer};
-use payserver_plugin_host::{PageRenderError, PageRenderer, PageRequest, PluginHost};
+use payserver_plugin_host::{
+    PageElement, PageRenderError, PageRenderer, PageRequest, PluginHost, Viewer,
+};
 use serde::{Deserialize, Serialize};
 
 /// The export asked to draw a page.
 pub const RENDER_PAGE: &str = "render_page";
+
+/// A page action triggered by a merchant on a plugin-rendered page.
+///
+/// The action_id and data come from a form submission on the client.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PageAction {
+    /// The action identifier chosen by the plugin
+    pub action_id: String,
+    /// Form field values collected by the client, optional
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// An effect the plugin requests after handling an action.
+///
+/// Shipped now for forward compatibility; validation is deferred to a follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Effect {
+    /// Show a transient message to the user
+    Toast { message: String },
+    /// Navigate to a different page
+    Navigate { url: String },
+    /// Refresh the current page
+    Refresh,
+}
+
+/// A plugin's response after handling a page action.
+///
+/// The plugin reports whether the action succeeded, and optionally a
+/// user-facing message and a reason code for failures. Optionally includes
+/// an effect to request from the host.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PageActionResponse {
+    /// Whether the action succeeded
+    pub success: bool,
+    /// Optional user-facing message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Optional technical reason for failure
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Optional effect requested by the plugin
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
+}
 
 #[derive(Debug, Serialize)]
 struct WirePageRequest<'a> {
@@ -437,8 +484,24 @@ mod tests {
             success: true,
             message: None,
             reason: None,
+            effect: None,
         };
         let json = serde_json::to_string(&response).unwrap();
         assert_eq!(json, r#"{"success":true}"#);
+    }
+
+    /// An action response with an effect serializes correctly.
+    #[test]
+    fn page_action_response_with_effect_serializes() {
+        let response = PageActionResponse {
+            success: true,
+            message: Some("Payment processed".to_string()),
+            reason: None,
+            effect: Some(Effect::Refresh),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""success":true"#));
+        assert!(json.contains(r#""message":"Payment processed""#));
+        assert!(json.contains(r#""type":"refresh""#));
     }
 }
