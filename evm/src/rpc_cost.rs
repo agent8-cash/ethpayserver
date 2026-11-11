@@ -6,22 +6,14 @@
 //!
 //! ## Supported Providers
 //!
-//! - **Alchemy**: Prices on compute units (CU), free tier 100M CU/month
-//! - **QuickNode**: Prices on request count (typical on-demand, no free tier)
+//! - **Alchemy**: Prices on compute units (CU), free tier 30M CU/month, then $0.52 per million
+//! - **QuickNode**: Prices on request count at $0.00003/request, $49/month base fee
 //!
-//! ## Pricing Assumptions
+//! ## Pricing Source
 //!
-//! These are representative pricing models as of the ticket creation date.
-//! Actual pricing may vary and should be verified with each provider.
-//!
-//! **Alchemy (per-CU model):**
-//! - Free tier: 100M CU/month
-//! - Overage: $0.03 per million CU
-//! - Compute unit weights: eth_getLogs (25), eth_blockNumber (10), eth_getBalance (10), etc.
-//!
-//! **QuickNode (per-request model):**
-//! - No free tier (typical on-demand)
-//! - Price: $0.00003 per request (example rate)
+//! Per AG8-952, these are the published rates from:
+//! - Alchemy: https://www.alchemy.com/pricing (30M free tier, overage $0.52/1M CU)
+//! - QuickNode: https://www.quicknode.com/pricing (base $49/month + per-request overage)
 
 use std::collections::HashMap;
 
@@ -32,37 +24,44 @@ pub struct ProviderPricing {
     pub free_tier_quota: u64,
     /// Cost per unit above free tier ($).
     pub cost_per_unit: f64,
+    /// Monthly base fee ($), if any.
+    pub base_fee: f64,
     /// Type of unit (requests, compute units, etc).
     pub unit_name: &'static str,
 }
 
 impl ProviderPricing {
-    /// Alchemy pricing model.
+    /// Alchemy pricing model: 30M CU/month free, then $0.52/1M CU overage, no base fee.
     pub fn alchemy() -> Self {
         Self {
-            free_tier_quota: 100_000_000,      // 100M CU/month
-            cost_per_unit: 0.03 / 1_000_000.0, // $0.03 per million CU
+            free_tier_quota: 30_000_000,       // 30M CU/month free
+            cost_per_unit: 0.52 / 1_000_000.0, // $0.52 per million CU overage
+            base_fee: 0.0,
             unit_name: "compute_units",
         }
     }
 
-    /// QuickNode pricing model.
+    /// QuickNode pricing model: $49/month base fee + $0.00003/request overage.
     pub fn quicknode() -> Self {
         Self {
-            free_tier_quota: 0,     // No free tier
+            free_tier_quota: 0,     // No included requests
             cost_per_unit: 0.00003, // $0.00003 per request
+            base_fee: 49.0,         // $49/month base fee
             unit_name: "requests",
         }
     }
 
     /// Calculate monthly cost given monthly usage.
+    ///
+    /// Cost = base_fee + max(0, (usage - free_tier) * cost_per_unit)
     pub fn monthly_cost(&self, monthly_usage: u64) -> f64 {
-        if monthly_usage <= self.free_tier_quota {
+        let overage_cost = if monthly_usage <= self.free_tier_quota {
             0.0
         } else {
             let overage = (monthly_usage - self.free_tier_quota) as f64;
             overage * self.cost_per_unit
-        }
+        };
+        self.base_fee + overage_cost
     }
 }
 
@@ -103,7 +102,8 @@ impl RpcVolume {
         }
     }
 
-    /// Total compute units (Alchemy model) - scale to monthly if needed.
+    /// Total compute units (Alchemy model, **unscaled sample sum**).
+    /// Note: This is the raw sample; multiply by 30 for a monthly projection.
     pub fn total_compute_units(&self) -> u64 {
         self.method_counts
             .iter()
@@ -111,19 +111,32 @@ impl RpcVolume {
             .sum()
     }
 
+    /// Total compute units scaled to monthly estimate (sample * 30).
+    pub fn total_compute_units_monthly(&self) -> u64 {
+        self.total_compute_units().saturating_mul(30)
+    }
+
+    /// Total requests scaled to monthly estimate (sample * 30).
+    pub fn total_requests_monthly(&self) -> u64 {
+        self.total_requests.saturating_mul(30)
+    }
+
     /// Cost on Alchemy for monthly usage based on this sample.
     pub fn alchemy_cost_monthly(&self) -> f64 {
-        ProviderPricing::alchemy().monthly_cost(self.total_compute_units())
+        ProviderPricing::alchemy().monthly_cost(self.total_compute_units_monthly())
     }
 
     /// Cost on QuickNode for monthly usage based on this sample.
     pub fn quicknode_cost_monthly(&self) -> f64 {
-        ProviderPricing::quicknode().monthly_cost(self.total_requests)
+        ProviderPricing::quicknode().monthly_cost(self.total_requests_monthly())
     }
 
     /// Identify the cheaper provider.
+    /// At zero volume, returns Alchemy (it is cheaper or equal).
     pub fn cheaper_provider(&self) -> &'static str {
-        if self.alchemy_cost_monthly() < self.quicknode_cost_monthly() {
+        let alchemy = self.alchemy_cost_monthly();
+        let quicknode = self.quicknode_cost_monthly();
+        if alchemy <= quicknode {
             "Alchemy"
         } else {
             "QuickNode"
@@ -143,24 +156,31 @@ mod tests {
     #[test]
     fn test_alchemy_pricing() {
         let alchemy = ProviderPricing::alchemy();
-        assert_eq!(alchemy.free_tier_quota, 100_000_000);
+        assert_eq!(alchemy.free_tier_quota, 30_000_000); // 30M CU free
+        assert!((alchemy.cost_per_unit - 0.52 / 1_000_000.0).abs() < 0.0001);
+        assert_eq!(alchemy.base_fee, 0.0);
 
-        // Within free tier
-        assert_eq!(alchemy.monthly_cost(50_000_000), 0.0);
+        // Within free tier: cost is 0
+        assert_eq!(alchemy.monthly_cost(30_000_000), 0.0);
 
-        // 1 million CU over free tier = $0.03
-        let cost = alchemy.monthly_cost(101_000_000);
-        assert!((cost - 0.03).abs() < 0.001);
+        // 1 million CU over free tier = $0.52
+        let cost = alchemy.monthly_cost(31_000_000);
+        assert!((cost - 0.52).abs() < 0.001);
     }
 
     #[test]
     fn test_quicknode_pricing() {
         let quicknode = ProviderPricing::quicknode();
         assert_eq!(quicknode.free_tier_quota, 0);
+        assert_eq!(quicknode.base_fee, 49.0);
 
-        // 1M requests * $0.00003 = $30
+        // At zero requests, QuickNode costs $49 (base fee only)
+        let cost_zero = quicknode.monthly_cost(0);
+        assert!((cost_zero - 49.0).abs() < 0.001);
+
+        // 1M requests + $49 base = $49 + $30 = $79
         let cost = quicknode.monthly_cost(1_000_000);
-        assert!((cost - 30.0).abs() < 0.01);
+        assert!((cost - 79.0).abs() < 0.01);
     }
 
     #[test]
@@ -187,23 +207,31 @@ mod tests {
     #[test]
     fn test_cheaper_provider_selection() {
         let mut methods = HashMap::new();
-        // Heavy get_logs usage favors QuickNode
+        // Sample of 100k get_logs (raw sample, will be scaled to monthly by * 30)
         methods.insert("get_logs".to_string(), 100_000u64);
 
         let volume = RpcVolume::new(methods);
+
+        // Scaled to monthly: 100k * 30 = 3M requests
+        // Alchemy: 100k * 25 CU/call * 30 = 75M CU (below 30M free tier, but wait - we scale to monthly)
+        // Actually: 100k * 25 = 2.5M CU in sample, * 30 = 75M CU monthly
+        // Alchemy: 75M - 30M free = 45M over, at $0.52/M = $23.40
+        // QuickNode: 3M requests * $0.00003 + $49 base = $90 + $49 = $139
+
         let alchemy_cost = volume.alchemy_cost_monthly();
         let quicknode_cost = volume.quicknode_cost_monthly();
 
         println!(
-            "100k get_logs - Alchemy: ${:.2}, QuickNode: ${:.2}",
+            "100k get_logs sample (scaled to monthly) - Alchemy: ${:.2}, QuickNode: ${:.2}",
             alchemy_cost, quicknode_cost
         );
 
-        // In this case QuickNode should be cheaper (less CU than requests)
-        if volume.cheaper_provider() == "QuickNode" {
-            assert!(quicknode_cost < alchemy_cost);
-        } else {
+        // Verify that cheaper_provider() returns the actual cheaper one
+        let cheaper = volume.cheaper_provider();
+        if cheaper == "Alchemy" {
             assert!(alchemy_cost <= quicknode_cost);
+        } else {
+            assert!(quicknode_cost < alchemy_cost);
         }
     }
 }

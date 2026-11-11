@@ -31,14 +31,15 @@ Output shows:
 - Recommended provider based on cost
 - Monthly savings
 
-Example output:
+Example output (from 1-address, 10-block sample scaled to monthly):
 ```
 RPC Volume Sample (1 address, 10 blocks):
-  Total requests: 11
+  Total requests (sample): 11
+  Total requests (monthly estimate): 330
   Methods: {"get_logs": 1, "find_native_transfers_to": 10}
   Monthly estimate (Alchemy): 400 CU
   Monthly cost (Alchemy): $0.00
-  Monthly cost (QuickNode): $0.00
+  Monthly cost (QuickNode): $49.00
   Cheaper: Alchemy
 ```
 
@@ -83,14 +84,14 @@ Default compute unit weights for common RPC methods:
 
 ### Alchemy (Compute Unit Model)
 
-- **Free Tier**: 100M CU/month
-- **Overage**: $0.03 per million CU
+- **Free Tier**: 30M CU/month
+- **Overage**: $0.52 per million CU
 - **Unit**: Compute units weighted by method complexity
 
 ### QuickNode (Request Count Model)
 
-- **Free Tier**: None
-- **Price**: $0.00003 per request (on-demand)
+- **Base Fee**: $49/month
+- **Overage**: $0.00003 per request
 - **Unit**: Total RPC requests
 
 ## Usage Patterns
@@ -159,10 +160,10 @@ The benchmarking results from testnet can be scaled to mainnet by:
 
 ## Notes
 
-- Pricing models reflect rates as of ticket creation. Verify current pricing with providers.
+- Pricing models per AG8-952 ticket (Alchemy: 30M CU free tier + $0.52/M; QuickNode: $49/month + $0.00003/request). Verify current pricing with providers.
 - This benchmarking focuses on RPC call volume; other costs (storage, bandwidth) are not included.
-- QuickNode pricing is representative; actual costs may vary by plan tier.
-- Alchemy free tier may change; current model assumes 100M CU/month.
+- The monthly scaling (sample × 30) assumes a constant volume pattern; real usage may vary by time of day.
+- Costs scale linearly with address count (O(1) monitoring overhead per block).
 
 ## Testing Methodology
 

@@ -16,6 +16,7 @@ use chrono::Utc;
 use evm::monitor::{
     ChainMonitor, ChainMonitorConfig, MockBlockSource, MonitorEvent, WatchedAddress, make_block,
 };
+use evm::rpc_cost::RpcVolume;
 use evm::{Address, U256};
 
 const TEST_CHAIN_ID: u64 = 11155111; // Sepolia
@@ -37,81 +38,8 @@ fn test_monitor_config() -> ChainMonitorConfig {
     }
 }
 
-/// RPC volume metrics collected during a sampling period.
-#[derive(Debug, Clone)]
-struct RpcVolumeSample {
-    /// Requests grouped by RPC method.
-    pub method_counts: std::collections::HashMap<String, u64>,
-    /// Total requests across all methods.
-    pub total_requests: u64,
-}
-
-/// Provider pricing models.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PricingModel {
-    Alchemy,
-    QuickNode,
-}
-
-impl RpcVolumeSample {
-    /// Calculate estimated monthly compute units based on method weights.
-    ///
-    /// Alchemy pricing (as of the ticket):
-    /// - eth_getLogs: 25 CU per request
-    /// - eth_blockNumber: 10 CU per request
-    /// - eth_getBalance: 10 CU per request
-    /// - eth_call: 20 CU per request
-    /// - Other methods: typically 10 CU per request
-    fn compute_units_per_month(&self) -> u64 {
-        let mut total = 0u64;
-        for (method, count) in &self.method_counts {
-            let cu_per_call = match method.as_str() {
-                "get_logs" => 25,
-                "get_block_number" => 10,
-                "get_balance" => 10,
-                "eth_call" => 20,
-                "get_block" => 15,
-                "get_block_with_txs" => 25,
-                _ => 10,
-            };
-            total = total.saturating_add(count.saturating_mul(cu_per_call));
-        }
-        // Scale to monthly (30 days) from sample
-        total.saturating_mul(30)
-    }
-
-    /// Project cost on Alchemy: $0.03 per million compute units.
-    fn alchemy_cost_monthly(&self) -> f64 {
-        let cu = self.compute_units_per_month() as f64;
-        // Alchemy free tier: 100M CU/month, then $0.03 per million
-        let free_tier = 100_000_000.0;
-        if cu <= free_tier {
-            0.0
-        } else {
-            (cu - free_tier) / 1_000_000.0 * 0.03
-        }
-    }
-
-    /// Project cost on QuickNode: $0.00003 per request (typical on-demand pricing).
-    fn quicknode_cost_monthly(&self) -> f64 {
-        let requests = self.total_requests as f64;
-        // Scale to monthly (30 days)
-        let monthly_requests = requests * 30.0;
-        monthly_requests * 0.00003
-    }
-
-    /// Select the cheaper provider for this volume.
-    fn cheaper_provider(&self) -> PricingModel {
-        if self.alchemy_cost_monthly() < self.quicknode_cost_monthly() {
-            PricingModel::Alchemy
-        } else {
-            PricingModel::QuickNode
-        }
-    }
-}
-
 /// Run monitor for a specified number of blocks, collecting RPC metrics.
-async fn collect_rpc_volume(num_blocks: usize, num_addresses: usize) -> RpcVolumeSample {
+async fn collect_rpc_volume(num_blocks: usize, num_addresses: usize) -> RpcVolume {
     let source = MockBlockSource::new(TEST_CHAIN_ID);
     let probe = source.clone();
 
@@ -197,14 +125,9 @@ async fn collect_rpc_volume(num_blocks: usize, num_addresses: usize) -> RpcVolum
     );
     method_counts.insert("get_block".to_string(), probe.call_count("get_block"));
 
-    let total_requests: u64 = method_counts.values().sum();
-
     handle.abort();
 
-    RpcVolumeSample {
-        method_counts,
-        total_requests,
-    }
+    RpcVolume::new(method_counts)
 }
 
 /// Volume sample with 1 address watching 10 blocks on Sepolia.
@@ -213,11 +136,15 @@ async fn measure_rpc_volume_one_address() {
     let sample = collect_rpc_volume(10, 1).await;
 
     println!("RPC Volume Sample (1 address, 10 blocks):");
-    println!("  Total requests: {}", sample.total_requests);
+    println!("  Total requests (sample): {}", sample.total_requests);
+    println!(
+        "  Total requests (monthly estimate): {}",
+        sample.total_requests_monthly()
+    );
     println!("  Methods: {:?}", sample.method_counts);
     println!(
-        "  Monthly estimate (Alchemy): {:.2} CU",
-        sample.compute_units_per_month()
+        "  Monthly estimate (Alchemy): {:.0} CU",
+        sample.total_compute_units_monthly()
     );
     println!(
         "  Monthly cost (Alchemy): ${:.2}",
@@ -227,7 +154,7 @@ async fn measure_rpc_volume_one_address() {
         "  Monthly cost (QuickNode): ${:.2}",
         sample.quicknode_cost_monthly()
     );
-    println!("  Cheaper: {:?}", sample.cheaper_provider());
+    println!("  Cheaper: {}", sample.cheaper_provider());
 
     // At least native detection should make RPC calls
     assert!(sample.total_requests > 0, "should have recorded RPC calls");
@@ -275,11 +202,11 @@ async fn project_cost_for_representative_testnet_volume() {
         }
     }
 
-    let monthly_cu = sample.compute_units_per_month();
+    let monthly_cu = sample.total_compute_units_monthly();
     let alchemy_cost = sample.alchemy_cost_monthly();
     let quicknode_cost = sample.quicknode_cost_monthly();
 
-    println!("\nMonthly projections:");
+    println!("\nMonthly projections (scaled * 30):");
     println!("  Estimated compute units: {}", monthly_cu);
     println!("  Alchemy cost: ${:.2}", alchemy_cost);
     println!("  QuickNode cost: ${:.2}", quicknode_cost);
@@ -287,7 +214,7 @@ async fn project_cost_for_representative_testnet_volume() {
     let cheaper = sample.cheaper_provider();
     let savings = (alchemy_cost - quicknode_cost).abs();
     println!(
-        "  Cheaper provider: {:?} (saves ${:.2}/month)",
+        "  Cheaper provider: {} (saves ${:.2}/month)",
         cheaper, savings
     );
 
@@ -315,6 +242,6 @@ async fn show_rpc_method_breakdown() {
     }
 
     println!("\nThis breakdown shows which methods drive the largest cost on each provider:");
-    println!("  - High get_logs: favors QuickNode (requests-based)");
-    println!("  - Mixed method weights: Alchemy's CU model may be more accurate");
+    println!("  - High get_logs (25 CU) vs other methods: Alchemy's CU model weights methods");
+    println!("  - QuickNode: counts all requests equally at $0.00003 per request");
 }
