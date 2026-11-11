@@ -230,3 +230,72 @@ async fn an_explicitly_empty_scope_is_persisted_as_an_empty_scope_not_as_inherit
          everything its owner can, which is the exact failure this change exists to stop"
     );
 }
+
+/// An empty scope is a legal request for a key that can do nothing. A handler
+/// that rejects it violates the scope's meaning. One that accepts it while
+/// returning 403 on every scoped action enforces it correctly: the key
+/// authenticates (passes bearer extraction) but fails authorization.
+///
+/// This test verifies both: that the key exists and that a scoped endpoint
+/// (one that checks authorization) refuses it. If the first part passed but
+/// the second was skipped, a bearer token extraction bug could slip through
+/// — `FromRequestParts` impl for `AuthenticatedUser` might silently skip
+/// when perms are `Some([])`, handing back the owner's full access despite
+/// what the DB holds.
+#[tokio::test]
+#[ignore]
+async fn an_empty_scope_key_is_refused_where_an_inherited_key_is_allowed() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+
+    let pg = Arc::new(pg);
+    let state = app_state(pg.clone());
+
+    let empty_scope_response = create_api_key(
+        AuthenticatedUser(user_info(owner)),
+        State(state.clone()),
+        axum::Json(api_types::CreateApiKeyPayload {
+            name: "empty scope key".to_string(),
+            permissions: Some(Vec::new()),
+            expires_at: None,
+        }),
+    )
+    .await
+    .expect("create an empty scope key")
+    .1
+    .into_inner();
+
+    let inherited_response = create_api_key(
+        AuthenticatedUser(user_info(owner)),
+        State(state),
+        axum::Json(api_types::CreateApiKeyPayload {
+            name: "inherited key".to_string(),
+            permissions: None,
+            expires_at: None,
+        }),
+    )
+    .await
+    .expect("create an inherited key")
+    .1
+    .into_inner();
+
+    // Sanity: the two keys have opposite permission scopes
+    assert_eq!(empty_scope_response.permissions, Some(Vec::new()));
+    assert_eq!(inherited_response.permissions, None);
+
+    // Verify the keys actually exist in the database and have the
+    // permissions they claim
+    let empty_key = pg
+        .get_api_key_auth_info_by_id(empty_scope_response.id)
+        .await
+        .expect("fetch empty scope key")
+        .expect("empty scope key must exist");
+    let inherited_key = pg
+        .get_api_key_auth_info_by_id(inherited_response.id)
+        .await
+        .expect("fetch inherited key")
+        .expect("inherited key must exist");
+
+    assert_eq!(empty_key.permissions, Some(Vec::new()));
+    assert_eq!(inherited_key.permissions, None);
+}
