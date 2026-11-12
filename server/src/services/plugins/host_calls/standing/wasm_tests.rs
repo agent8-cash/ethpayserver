@@ -168,25 +168,29 @@ fn a_plugin_reading_a_stale_standing_surfaces_the_fail_open() {
         .instantiate_with_calls(&module, Arc::new(calls))
         .unwrap();
 
+    // Host calls run on a thread of their own (the plugin host's wall-clock
+    // bound), and thread-local capture does not follow them there. The
+    // subscriber and recorder are therefore installed process-wide. Every test
+    // is its own process under nextest, the same arrangement the metrics tests
+    // rely on for `set_global_recorder`.
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
+    metrics::set_global_recorder(recorder).expect("no other recorder in this process");
     let buf = Buf::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::ERROR)
         .with_ansi(false)
         .with_writer(buf.clone())
         .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        metrics::with_local_recorder(&recorder, || {
-            instance
-                .call_raw(
-                    "call",
-                    format!(r#"{{"account_id":"{account}"}}"#).as_bytes(),
-                    10_000_000,
-                )
-                .unwrap()
-        })
-    });
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("no other subscriber in this process");
+    instance
+        .call_raw(
+            "call",
+            format!(r#"{{"account_id":"{account}"}}"#).as_bytes(),
+            10_000_000,
+        )
+        .unwrap();
 
     let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     assert!(
