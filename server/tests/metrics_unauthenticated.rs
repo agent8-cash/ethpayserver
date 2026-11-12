@@ -1,159 +1,138 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Integration test for unauthenticated /metrics endpoint on loopback.
+//! Metrics exposure, driven through the shipped routers against a real Postgres.
 //!
-//! Acceptance criteria:
-//! 1. Request to metrics listener's /metrics (no auth) from loopback → 200 with Prometheus output
-//! 2. Metrics listener is bound to loopback only (127.0.0.1:9102 by default)
-//! 3. Existing admin /metrics endpoint is unchanged (behind AdminAuth)
+//! - `loopback_metrics_listener_serves_without_credentials`: the loopback
+//!   listener (`api::metrics_router`, the same function `server.rs` serves on
+//!   `METRICS_HOST:METRICS_PORT`) answers a real TCP request with no
+//!   `Authorization` header: 200 and Prometheus text.
+//! - `public_router_metrics_still_requires_admin`: the public router
+//!   (`api::router`) still gates `/metrics` behind `AdminAuth`. Without that
+//!   gate, business counts would be published to anyone who reaches the API.
+//!
+//! Needs `DATABASE_URL`; runs in CI's `--run-ignored` step.
 
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use auth::{AuthConfig, AuthService};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use data_service::test_support::pg_service;
 use rates::NoOpRateProvider;
+use server::state::PgAppState;
 use server::{AppState, api};
 use tokio::net::TcpListener;
 use tokio::time::sleep;
+use tower::ServiceExt;
 
-#[tokio::test]
-#[ignore]
-async fn metrics_listener_on_loopback() {
-    // Start metrics listener
-    let metrics_listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind metrics listener");
-    let metrics_addr = metrics_listener
-        .local_addr()
-        .expect("failed to get local address");
+/// `init_metrics` installs a process-global recorder and refuses to run
+/// without a Sentry client bound, so both tests share one init. Each
+/// integration file is its own process, so this cannot clash with other files.
+fn ensure_metrics_initialised() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Keep the guard alive for the process; dropping it would unbind the client.
+        std::mem::forget(sentry::init(sentry::ClientOptions::default()));
+        server::metrics::init_metrics().expect("init_metrics");
+    });
+}
 
-    // Create minimal app state for metrics listener
+async fn app_state() -> PgAppState<AuthService<data_service::PgDataService>> {
     let pg = Arc::new(pg_service().await);
     let auth_service = Arc::new(AuthService::with_config(
         Arc::clone(&pg),
         AuthConfig::default(),
     ));
-    let state = AppState::new(
+    AppState::new(
         pg,
         auth_service,
         None, // no EVM monitor
         Arc::new(NoOpRateProvider),
         Arc::new(server::services::email::NoopEmailSender),
-    );
-
-    // Create metrics router (unauthenticated)
-    let metrics_router = axum::Router::new()
-        .route(
-            "/metrics",
-            axum::routing::get(server::api::health::prometheus_metrics_unauthenticated),
-        )
-        .with_state(state);
-
-    let metrics_router = api::with_sentry_performance_tracing(metrics_router);
-
-    // Spawn metrics listener in background
-    let listener_handle = {
-        let listener = metrics_listener;
-        tokio::spawn(async move {
-            let _ = axum::serve(
-                listener,
-                metrics_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await;
-        })
-    };
-
-    // Give the server a moment to start
-    sleep(Duration::from_millis(100)).await;
-
-    // Test 1: Request to metrics listener from loopback should return 200
-    let response = reqwest::Client::new()
-        .get(format!("http://{}/metrics", metrics_addr))
-        .send()
-        .await
-        .expect("failed to make request to metrics listener");
-
-    assert_eq!(
-        response.status(),
-        200,
-        "metrics listener should return 200 for /metrics from loopback"
-    );
-
-    let body = response.text().await.expect("failed to read response body");
-
-    // Should contain Prometheus format metrics
-    assert!(
-        body.contains("# HELP") || body.contains("# TYPE"),
-        "metrics response should contain Prometheus format headers"
-    );
-
-    // Clean up
-    drop(listener_handle);
+    )
 }
 
 #[tokio::test]
 #[ignore]
-async fn metrics_endpoint_is_public_via_loopback() {
-    // This test verifies the metrics endpoint is accessible without authentication
-    // when accessed from loopback.
+async fn loopback_metrics_listener_serves_without_credentials() {
+    ensure_metrics_initialised();
+    let state = app_state().await;
 
-    let metrics_listener = TcpListener::bind("127.0.0.1:0")
+    let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("failed to bind metrics listener");
-    let metrics_addr = metrics_listener
-        .local_addr()
-        .expect("failed to get local address");
+        .expect("bind loopback metrics listener");
+    let addr = listener.local_addr().expect("local addr");
+    assert!(addr.ip().is_loopback(), "metrics listener must be loopback");
 
-    // Create minimal app state
-    let pg = Arc::new(pg_service().await);
-    let auth_service = Arc::new(AuthService::with_config(
-        Arc::clone(&pg),
-        AuthConfig::default(),
-    ));
-    let state = AppState::new(
-        pg,
-        auth_service,
-        None, // no EVM monitor
-        Arc::new(NoOpRateProvider),
-        Arc::new(server::services::email::NoopEmailSender),
-    );
-
-    // Create metrics router without auth requirements
-    let metrics_router = axum::Router::new()
-        .route(
-            "/metrics",
-            axum::routing::get(server::api::health::prometheus_metrics_unauthenticated),
+    let router = api::metrics_router(state);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_state(state);
-
-    let metrics_router = api::with_sentry_performance_tracing(metrics_router);
-
-    // Spawn metrics listener
-    let listener_handle = {
-        let listener = metrics_listener;
-        tokio::spawn(async move {
-            let _ = axum::serve(
-                listener,
-                metrics_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await;
-        })
-    };
-
+        .await;
+    });
     sleep(Duration::from_millis(100)).await;
 
-    // Test: Make request without any auth headers - should still succeed
     let response = reqwest::Client::new()
-        .get(format!("http://{}/metrics", metrics_addr))
+        .get(format!("http://{addr}/metrics"))
         .send()
         .await
-        .expect("failed to make request");
+        .expect("request to loopback metrics listener");
+
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = response.text().await.expect("read body");
+    server.abort();
 
     assert_eq!(
-        response.status(),
-        200,
-        "metrics endpoint should not require authentication from loopback"
+        status,
+        StatusCode::OK,
+        "no-credential GET must succeed: {body}"
     );
+    assert!(
+        content_type.starts_with("text/plain; version=0.0.4"),
+        "unexpected content-type: {content_type}"
+    );
+    assert!(
+        body.contains("# TYPE ethpayserver_registered_users"),
+        "body is not Prometheus exposition: {body}"
+    );
+}
 
-    drop(listener_handle);
+#[tokio::test]
+#[ignore]
+async fn public_router_metrics_still_requires_admin() {
+    ensure_metrics_initialised();
+    let state = app_state().await;
+
+    let response = api::router(state, false, None, None, None)
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body = String::from_utf8_lossy(&bytes);
+
+    assert!(
+        matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+        "public /metrics without admin auth must be 401/403, got {status}"
+    );
+    assert!(
+        !body.contains("ethpayserver_"),
+        "public /metrics leaked metric output without auth"
+    );
 }

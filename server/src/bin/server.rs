@@ -575,14 +575,7 @@ async fn main() -> Result<()> {
     let metrics_listener = TcpListener::bind(&metrics_bind_addr).await?;
     tracing::info!("Metrics listener bound to http://{}", metrics_bind_addr);
 
-    let metrics_router = api::with_sentry_performance_tracing(
-        axum::Router::new()
-            .route(
-                "/metrics",
-                axum::routing::get(api::health::prometheus_metrics_unauthenticated),
-            )
-            .with_state(state),
-    );
+    let metrics_router = api::metrics_router(state);
 
     // Spawn metrics listener in background
     let metrics_handle = tokio::spawn(async move {
