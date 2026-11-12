@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use regex::Regex;
+use scrub::is_sensitive_key;
 use sentry::protocol::{Context, Event, Log, Map, Value};
 
 /// Ordered `(pattern, replacement)` redaction rules applied to every free-text
@@ -166,34 +167,6 @@ fn redact_map<'a>(entries: impl IntoIterator<Item = (&'a String, &'a mut Value)>
             redact_value(value);
         }
     }
-}
-
-/// Whether a structured-data key names something whose value is a secret.
-fn is_sensitive_key(key: &str) -> bool {
-    const SENSITIVE: &[&str] = &[
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "apikey",
-        "api_key",
-        "api-key",
-        "mnemonic",
-        "seed",
-        "privatekey",
-        "private_key",
-        "private-key",
-        "authorization",
-        "bearer",
-        "auth",
-        "dsn",
-        "credential",
-        "session",
-        "cookie",
-        "signature",
-    ];
-    let key = key.to_ascii_lowercase();
-    SENSITIVE.iter().any(|needle| key.contains(needle))
 }
 
 /// Redact the open-ended parts of a `contexts` map (present on both
