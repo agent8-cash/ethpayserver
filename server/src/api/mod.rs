@@ -509,6 +509,24 @@ where
 /// layer inserted between the two call sites in `main` would have regressed
 /// route-pattern naming with nothing to catch it. There is now only one call
 /// site for the full stack, in `main` and in the test alike.
+/// The loopback metrics listener's router: unauthenticated `/metrics` and
+/// nothing else. `server.rs` serves this on `METRICS_HOST:METRICS_PORT`, and
+/// the integration test serves the same function, so the test cannot drift
+/// from the shipped wiring.
+pub fn metrics_router<A>(state: PgAppState<A>) -> Router
+where
+    A: Send + Sync + 'static,
+{
+    with_sentry_performance_tracing(
+        Router::new()
+            .route(
+                "/metrics",
+                axum::routing::get(health::prometheus_metrics_unauthenticated::<A>),
+            )
+            .with_state(state),
+    )
+}
+
 pub fn with_sentry_performance_tracing(router: Router) -> Router {
     let router = router
         .layer(tower_http::trace::TraceLayer::new_for_http())
