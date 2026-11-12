@@ -90,7 +90,7 @@ pub fn keys() {
 EOF
 expect red "restated key array"
 
-# Ablation 2b: a typed const literal restates the list (the shape billing used).
+# Ablation 2b: a typed const literal restates the list (a common shape for it).
 cat > "$consumer/evm/src/restated.rs" <<'EOF'
 pub fn keys() {
     const KEYS: [&str; 2] = [
