@@ -17,7 +17,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 manifest="$repo_root/Cargo.toml"
 config="$repo_root/.cargo/config.toml"
-url="https://github.com/agent8-cash/payserver-commons.git"
+# The commons URL is read from the manifest too, so it cannot drift from the
+# pin. Hardcoding it is how this script went dead after the repository moved:
+# the crate grep below keys off this value and came back empty. Empty here is
+# not an error by itself; the crate check below reports it.
+url="$(grep -m1 -oP 'git = "\K[^"]*payserver-commons\.git' "$manifest" || true)"
 # Every commons crate this workspace pins, read from the manifest rather than
 # listed here.
 #
@@ -98,10 +102,14 @@ case "${1:-status}" in
   status)
     rev="$(current_rev)"
     echo "pinned rev : ${rev:-<none found>}"
-    if [ -f "$config" ]; then
+    if [ -f "$config" ] && grep -qF "[patch.\"$url\"]" "$config"; then
       linked_path="$(grep -m1 -oP 'path = "\K[^"]+' "$config" || true)"
       echo "local link : ACTIVE → $(dirname "$linked_path")"
       echo "             builds here do NOT use the pin above"
+    elif [ -f "$config" ]; then
+      # A patch table for some other URL patches nothing in this manifest.
+      echo "local link : STALE - $config patches a URL the manifest does not use"
+      echo "             builds here use the pin above; run 'unlink' to clear it"
     else
       echo "local link : none"
     fi
