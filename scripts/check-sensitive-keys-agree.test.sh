@@ -90,6 +90,19 @@ pub fn keys() {
 EOF
 expect red "restated key array"
 
+# Ablation 2b: a typed const literal restates the list (the shape billing used).
+cat > "$consumer/evm/src/restated.rs" <<'EOF'
+pub fn keys() {
+    const KEYS: [&str; 2] = [
+        "password",
+        "auth",
+    ];
+    let _ = KEYS;
+}
+EOF
+expect red "typed const array restating the list"
+rm "$consumer/evm/src/restated.rs"
+
 # Ablation 3: a restated array gains a key the shared list lacks.
 cat > "$consumer/evm/src/restated.rs" <<'EOF'
 pub fn keys() {

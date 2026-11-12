@@ -96,18 +96,26 @@ if [ -n "$all_rs" ]; then
   restated="$(printf '%s\n' "$all_rs" | xargs awk -v sharedf="$shared" '
     BEGIN { while ((getline l < sharedf) > 0) S[l] = 1 }
     {
-      if (!inarr && ($0 ~ /&\[/ || $0 ~ /\[&str/ || $0 ~ / in \[/)) { inarr = 1; start = FNR; k = 0 }
-      if (inarr) {
+      if (!inarr) {
+        if (!($0 ~ /&\[/ || $0 ~ /\[&str/ || $0 ~ / in \[/)) next
+        inarr = 1; start = FNR; k = 0
+        # Only the literal counts: `let x: [&str; 3] = [` opens at ` = [`, and
+        # a bare `[&str` in a signature opens nothing.
         s = $0
-        while (match(s, /"[^"]+"/)) {
-          tok = substr(s, RSTART + 1, RLENGTH - 2)
-          if (tok in S) k++
-          s = substr(s, RSTART + RLENGTH)
-        }
-        if ($0 ~ /\]/) {
-          inarr = 0
-          if (k >= 2) printf "%s:%d: literal array names %d shared sensitive keys\n", FILENAME, start, k
-        }
+        if (match(s, /= \[/)) s = substr(s, RSTART + 3)
+        else if (match(s, /&\[/)) s = substr(s, RSTART + 2)
+        else if (match(s, / in \[/)) s = substr(s, RSTART + 5)
+        else { inarr = 0; next }
+      } else s = $0
+      closes = (s ~ /\]/)
+      while (match(s, /"[^"]+"/)) {
+        tok = substr(s, RSTART + 1, RLENGTH - 2)
+        if (tok in S) k++
+        s = substr(s, RSTART + RLENGTH)
+      }
+      if (closes) {
+        inarr = 0
+        if (k >= 2) printf "%s:%d: literal array names %d shared sensitive keys\n", FILENAME, start, k
       }
     }' || true)"
   if [ -n "$restated" ]; then
