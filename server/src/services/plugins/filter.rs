@@ -1,4 +1,4 @@
-//! Capability 2: a filter that can refuse invoice creation, and
+//! Capability 2: a filter that can refuse invoice or store creation, and
 //! nothing else.
 //!
 //! This is how a lapsed subscription is enforced - the merchant keeps
@@ -74,6 +74,39 @@ pub async fn run_invoice_creation_filters(
 ) -> FilterVerdict {
     for filter in filters {
         if let FilterVerdict::Deny { reason } = filter.filter_invoice_creation(request).await {
+            return FilterVerdict::Deny { reason };
+        }
+    }
+    FilterVerdict::Allow
+}
+
+/// What a store-creation filter is asked: may `account_id` open one more
+/// store, given the `existing_store_count` it already owns?
+///
+/// The count is read by the host at request time, so a filter decides on
+/// the stores this host actually holds rather than on what it was told
+/// about earlier. Like [`InvoiceCreationFilterRequest`], it carries no field
+/// naming a payment, a confirmation or a credit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreCreationFilterRequest {
+    pub account_id: UserId,
+    pub existing_store_count: u32,
+}
+
+/// Something that may refuse store creation. One method, for the same reason
+/// as [`InvoiceCreationFilter`]: no way to be asked about anything else.
+#[async_trait]
+pub trait StoreCreationFilter: Send + Sync {
+    async fn filter_store_creation(&self, request: StoreCreationFilterRequest) -> FilterVerdict;
+}
+
+/// Runs every registered store-creation filter, refusing on the first denial.
+pub async fn run_store_creation_filters(
+    filters: &[Arc<dyn StoreCreationFilter>],
+    request: StoreCreationFilterRequest,
+) -> FilterVerdict {
+    for filter in filters {
+        if let FilterVerdict::Deny { reason } = filter.filter_store_creation(request).await {
             return FilterVerdict::Deny { reason };
         }
     }

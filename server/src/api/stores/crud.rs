@@ -4,10 +4,14 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::services::plugins::{
+    FilterVerdict, StoreCreationFilterRequest, run_store_creation_filters,
+};
 use auth::repository::{StoreRepository, UserStoreRepository};
 use auth::{SessionService, Store, StoreId};
 use data_service::store_creation::{StoreCreationError, StoreCreationWriter};
@@ -137,11 +141,48 @@ pub async fn create_store<A>(
     AuthenticatedUser(user): AuthenticatedUser,
     State(state): State<PgAppState<A>>,
     Json(req): Json<CreateStoreRequest>,
-) -> Result<(StatusCode, Json<StoreResponse>), StatusCode>
+) -> Result<(StatusCode, Json<StoreResponse>), Response>
 where
     A: SessionService + 'static,
 {
     let owner_id = user.id;
+
+    // Plugins that may refuse store creation are asked before anything is
+    // written. The count is the owner's own non-archived stores, read here
+    // so the filter never works from a figure it was handed earlier. With no
+    // filter installed, this read does not happen.
+    if !state.store_creation_filters.is_empty() {
+        let owned = StoreRepository::get_stores_for_user(&*state.data_service, owner_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(owner_id = %owner_id.0, error = %e, "cannot count stores for store-creation filter");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            })?;
+        let existing_store_count = owned
+            .iter()
+            .filter(|s| s.owner_id == owner_id && !s.archived)
+            .count();
+        let existing_store_count = u32::try_from(existing_store_count).unwrap_or(u32::MAX);
+
+        if let FilterVerdict::Deny { reason } = run_store_creation_filters(
+            &state.store_creation_filters,
+            StoreCreationFilterRequest {
+                account_id: owner_id,
+                existing_store_count,
+            },
+        )
+        .await
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "store_creation_blocked",
+                    "message": reason,
+                })),
+            )
+                .into_response());
+        }
+    }
 
     let mut store = Store::new(&req.name, owner_id);
     if let Some(website) = req.website {
@@ -178,7 +219,7 @@ where
                     );
                 }
             }
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         })?;
 
     metrics::record_store_created();
