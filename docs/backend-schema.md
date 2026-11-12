@@ -18,10 +18,6 @@ Values: `'browser'`, `'desktop'`, `'mobile'`, `'api_client'`, `'unknown'`
 
 Values: `'pending'`, `'processing'`, `'partially_paid'`, `'paid'`, `'expired'`, `'cancelled'`, `'refunded'`, `'late_paid'`
 
-### `receipt_delivery_status`
-
-Values: `'pending'`, `'sent'`, `'bounced'`, `'failed'`
-
 ## Domain types
 
 - `caip2`: `TEXT CHECK (VALUE ~ '^[-a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,32}$')`
@@ -439,27 +435,6 @@ Unique indexes:
 Constraints:
 
 - `plugin_events_pkey`: PRIMARY KEY (id)
-
-Unique indexes:
-
-- none
-
-### `receipt_delivery_log`
-
-| Column | Type | Nullable | Default |
-|---|---|---|---|
-| `id` | UUID | no | `uuid_generate_v4()` |
-| `invoice_id` | VARCHAR(64) | no |  |
-| `recipient_email` | VARCHAR(320) | no |  |
-| `status` | RECEIPT_DELIVERY_STATUS | no | `'pending'` |
-| `error_message` | TEXT | yes |  |
-| `attempted_at` | TIMESTAMPTZ | no | `NOW()` |
-| `updated_at` | TIMESTAMPTZ | no | `NOW()` |
-
-Constraints:
-
-- `receipt_delivery_log_invoice_id_fkey`: FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
-- `receipt_delivery_log_pkey`: PRIMARY KEY (id)
 
 Unique indexes:
 

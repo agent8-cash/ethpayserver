@@ -133,12 +133,12 @@ impl email::EmailSender for MockEmailSender {
         &self,
         to: &str,
         data: &email::ReceiptData,
-    ) -> Result<data_service::ReceiptDeliveryStatus, email::EmailError> {
+    ) -> Result<(), email::EmailError> {
         self.calls
             .lock()
             .unwrap()
             .push((to.to_string(), data.invoice_id.clone()));
-        Ok(data_service::ReceiptDeliveryStatus::Sent)
+        Ok(())
     }
 
     async fn send_email_change_verification(

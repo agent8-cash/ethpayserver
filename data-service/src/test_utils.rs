@@ -86,7 +86,6 @@ pub struct InMemoryDataService {
     fail_invoice_reads: AtomicBool,
     fail_payment_reads: AtomicBool,
     fail_payment_writes: AtomicBool,
-    receipt_deliveries: RwLock<Vec<crate::ReceiptDeliveryRecord>>,
 }
 
 impl InMemoryDataService {
@@ -1560,104 +1559,5 @@ impl PaymentAnalyticsReader for InMemoryDataService {
                 }
             })
             .collect())
-    }
-}
-
-#[async_trait]
-impl crate::ReceiptDeliveryReader for InMemoryDataService {
-    async fn get_last_delivery(
-        &self,
-        invoice_id: &types::InvoiceId,
-    ) -> Result<Option<crate::ReceiptDeliveryRecord>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        let deliveries = self.receipt_deliveries.read().unwrap();
-        Ok(deliveries
-            .iter()
-            .filter(|d| d.invoice_id == invoice_id.as_str())
-            .max_by_key(|d| d.attempted_at)
-            .cloned())
-    }
-
-    async fn get_all_deliveries(
-        &self,
-        invoice_id: &types::InvoiceId,
-    ) -> Result<Vec<crate::ReceiptDeliveryRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let deliveries = self.receipt_deliveries.read().unwrap();
-        let mut result: Vec<_> = deliveries
-            .iter()
-            .filter(|d| d.invoice_id == invoice_id.as_str())
-            .cloned()
-            .collect();
-        result.sort_by_key(|b| std::cmp::Reverse(b.attempted_at));
-        Ok(result)
-    }
-
-    async fn is_delivered(
-        &self,
-        invoice_id: &types::InvoiceId,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let deliveries = self.receipt_deliveries.read().unwrap();
-        Ok(deliveries.iter().any(|d| {
-            d.invoice_id == invoice_id.as_str() && d.status == crate::ReceiptDeliveryStatus::Sent
-        }))
-    }
-
-    async fn count_bounced_for_store(
-        &self,
-        store_id: uuid::Uuid,
-    ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
-        let deliveries = self.receipt_deliveries.read().unwrap();
-        let invoices = self.invoices.read().unwrap();
-        let count = deliveries
-            .iter()
-            .filter(|d| {
-                d.status == crate::ReceiptDeliveryStatus::Bounced
-                    && invoices
-                        .iter()
-                        .any(|(inv_id, inv)| inv_id == &d.invoice_id && inv.store_id.0 == store_id)
-            })
-            .count();
-        Ok(count as i64)
-    }
-}
-
-#[async_trait]
-impl crate::ReceiptDeliveryWriter for InMemoryDataService {
-    async fn upsert_delivery(
-        &self,
-        params: crate::UpsertReceiptDeliveryParams,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut deliveries = self.receipt_deliveries.write().unwrap();
-        let record = crate::ReceiptDeliveryRecord {
-            id: uuid::Uuid::new_v4(),
-            invoice_id: params.invoice_id,
-            recipient_email: params.recipient_email,
-            status: params.status,
-            error_message: params.error_message,
-            attempted_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        deliveries.push(record);
-        Ok(())
-    }
-
-    async fn mark_bounced(
-        &self,
-        invoice_id: &types::InvoiceId,
-        recipient_email: &str,
-        bounce_reason: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut deliveries = self.receipt_deliveries.write().unwrap();
-        for delivery in deliveries.iter_mut() {
-            if delivery.invoice_id == invoice_id.as_str()
-                && delivery.recipient_email == recipient_email
-            {
-                delivery.status = crate::ReceiptDeliveryStatus::Bounced;
-                delivery.error_message = bounce_reason.map(|s| s.to_string());
-                delivery.updated_at = chrono::Utc::now();
-                break;
-            }
-        }
-        Ok(())
     }
 }
