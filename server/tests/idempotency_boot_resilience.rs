@@ -25,6 +25,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::post;
 use server::api::idempotency::{IdempotencyState, is_healthy, middleware};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -90,6 +91,91 @@ fn spawn_proxy(listener: TcpListener, upstream: SocketAddr) -> Proxy {
         accept_task,
         forwarding_tasks,
     }
+}
+
+/// Like [`spawn_proxy`], but parses each client command and severs the
+/// connection on the first one `refuse` matches, before forwarding it. The
+/// refused command never reaches Redis, so the client sees its connection
+/// die on exactly that command.
+fn spawn_proxy_refusing(
+    listener: TcpListener,
+    upstream: SocketAddr,
+    refuse: fn(&[Vec<u8>]) -> bool,
+) -> Proxy {
+    let forwarding_tasks = Arc::new(Mutex::new(Vec::new()));
+    let tasks_for_accept_loop = Arc::clone(&forwarding_tasks);
+    let accept_task = tokio::spawn(async move {
+        loop {
+            let Ok((inbound, _)) = listener.accept().await else {
+                return;
+            };
+            let task = tokio::spawn(async move {
+                let Ok(outbound) = TcpStream::connect(upstream).await else {
+                    return;
+                };
+                let (mut in_read, mut in_write) = inbound.into_split();
+                let (mut out_read, mut out_write) = outbound.into_split();
+                let replies = tokio::spawn(async move {
+                    let _ = tokio::io::copy(&mut out_read, &mut in_write).await;
+                });
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match in_read.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    while let Some((len, args)) = parse_command(&buf) {
+                        if refuse(&args) {
+                            replies.abort();
+                            return;
+                        }
+                        if out_write.write_all(&buf[..len]).await.is_err() {
+                            return;
+                        }
+                        buf.drain(..len);
+                    }
+                }
+            });
+            tasks_for_accept_loop.lock().unwrap().push(task);
+        }
+    });
+    Proxy {
+        accept_task,
+        forwarding_tasks,
+    }
+}
+
+/// Matches a `SET` carrying the `NX` flag: the in-flight lock acquisition.
+fn is_lock_acquire(args: &[Vec<u8>]) -> bool {
+    args.first().is_some_and(|c| c.eq_ignore_ascii_case(b"SET"))
+        && args.iter().any(|a| a.eq_ignore_ascii_case(b"NX"))
+}
+
+/// Parses one complete RESP array command at the start of `buf`. Returns the
+/// number of bytes it spans and its arguments, or `None` if it is incomplete.
+fn parse_command(buf: &[u8]) -> Option<(usize, Vec<Vec<u8>>)> {
+    fn line<'a>(buf: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+        let rest = &buf[*pos..];
+        let end = rest.windows(2).position(|w| w == b"\r\n")?;
+        *pos += end + 2;
+        Some(&rest[..end])
+    }
+    fn number(bytes: &[u8]) -> Option<usize> {
+        std::str::from_utf8(bytes).ok()?.parse().ok()
+    }
+    let mut pos = 0;
+    let count = number(line(buf, &mut pos)?.strip_prefix(b"*")?)?;
+    let mut args = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = number(line(buf, &mut pos)?.strip_prefix(b"$")?)?;
+        if buf.len() < pos + len + 2 {
+            return None;
+        }
+        args.push(buf[pos..pos + len].to_vec());
+        pos += len + 2;
+    }
+    Some((pos, args))
 }
 
 /// `TEST_REDIS_URL` as the plain `host:port` a raw TCP proxy connects to.
@@ -273,10 +359,11 @@ async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests()
     };
     let upstream = upstream_addr(&real_redis_url);
 
-    // Mount against a real, working proxy first.
+    // Mount against a proxy that refuses lock acquisition: it forwards every
+    // command except `SET ... NX`, on which it severs the connection.
     let proxy_addr = unbound_addr().await;
     let listener = TcpListener::bind(proxy_addr).await.unwrap();
-    let proxy = spawn_proxy(listener, upstream);
+    let _proxy = spawn_proxy_refusing(listener, upstream, is_lock_acquire);
 
     let state = Arc::new(
         IdempotencyState::from_env(&format!("redis://{proxy_addr}"))
@@ -285,39 +372,32 @@ async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests()
     let calls = Arc::new(AtomicUsize::new(0));
     let app = test_app(Arc::clone(&state), Arc::clone(&calls));
 
-    let key = format!("lock-failure-{}", uuid::Uuid::new_v4());
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline && !is_healthy() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert!(is_healthy(), "never mounted against a working proxy");
 
-    // One real round trip to confirm the connection actually works before
-    // breaking it during lock acquisition.
-    let resp = app.clone().oneshot(idempotent_request(&key)).await.unwrap();
+    // Key A round-trips and is cached, so it is not used for the failing
+    // request below: a cache hit would replay before lock acquisition runs.
+    let key_a = format!("lock-setup-{}", uuid::Uuid::new_v4());
+    let resp = app
+        .clone()
+        .oneshot(idempotent_request(&key_a))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // For the second request with the same key, the cache GET will succeed
-    // (it's a miss, so `cache_lookup` passes through). But we want the lock
-    // acquisition to fail. Sever the connection *after* a successful cache
-    // GET but *before* the lock SET NX, so the failure lands specifically on
-    // `acquire_lock`.
-    //
-    // To do this reliably with the test infrastructure, we:
-    // 1. Start a new request with the same key (cache GET will work)
-    // 2. Immediately sever the proxy connection before SET NX can run
-    // 3. Assert 503 on the lock failure
-    //
-    // We cannot perfectly control timing, so instead we rely on the proxy
-    // stopping during the in-flight request. The connection will fail on
-    // whichever Redis command hits it first after the proxy stops.
-    proxy.stop();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Same key, same body - cache GET will work, but lock SET NX will fail
-    // over the now-dead connection and must return 503.
-    let resp = app.clone().oneshot(idempotent_request(&key)).await.unwrap();
+    // Key B is a cache miss, so its GET is forwarded and succeeds; its
+    // `SET ... NX` is the command the proxy severs. Lock acquisition is the
+    // failing step, and it must return 503 without running the handler.
+    let key_b = format!("lock-failure-{}", uuid::Uuid::new_v4());
+    let resp = app
+        .clone()
+        .oneshot(idempotent_request(&key_b))
+        .await
+        .unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::SERVICE_UNAVAILABLE,
@@ -327,5 +407,9 @@ async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests()
         calls.load(Ordering::SeqCst),
         1,
         "handler must not run when lock acquisition fails on an idempotent request"
+    );
+    assert!(
+        !is_healthy(),
+        "a failed lock acquisition must flip the signal back to unhealthy"
     );
 }
