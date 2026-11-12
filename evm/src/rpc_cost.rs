@@ -11,7 +11,7 @@
 //!
 //! ## Pricing Source
 //!
-//! Per AG8-952, these are the published rates from:
+//! These are the published rates from:
 //! - Alchemy: https://www.alchemy.com/pricing (30M free tier, overage $0.52/1M CU)
 //! - QuickNode: https://www.quicknode.com/pricing (base $49/month + per-request overage)
 

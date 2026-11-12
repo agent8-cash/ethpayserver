@@ -4,7 +4,7 @@ Measure RPC request volume on testnet to choose between providers that price on 
 
 ## Overview
 
-This document describes the RPC benchmarking infrastructure added for AG8-952. The goal is to collect real RPC usage metrics during monitor operation and project costs across mainnet chains to identify the cost-optimal provider.
+This document describes the RPC benchmarking harness. The goal is to collect real RPC usage metrics during monitor operation and project costs across mainnet chains to identify the cost-optimal provider.
 
 ## Quick Start
 
@@ -106,10 +106,12 @@ cargo test --test rpc_volume_benchmark measure_rpc_volume_one_address -- --nocap
 
 ### For Production Benchmarking
 
-To collect real RPC volume data on mainnet:
+**Status: no measured sample is included.** This change ships the harness only. The 7-day testnet sample, the per-chain and per-method counts it produces, and the provider cost projection built from it are not in this change. They need a separate ticket, run from an environment with testnet RPC access.
+
+To collect real RPC volume data:
 
 1. **Deploy monitor to production** with production RPC endpoints
-2. **Run for 7 days** to collect steady-state data
+2. **Run for 7 days** on one chain to collect steady-state data
 3. **Export metrics** from monitoring system (Prometheus/Sentry)
 4. **Analyze results** using `RpcVolume::new()` with collected method counts
 5. **Project costs** using `alchemy_cost_monthly()` and `quicknode_cost_monthly()`
@@ -160,7 +162,7 @@ The benchmarking results from testnet can be scaled to mainnet by:
 
 ## Notes
 
-- Pricing models per AG8-952 ticket (Alchemy: 30M CU free tier + $0.52/M; QuickNode: $49/month + $0.00003/request). Verify current pricing with providers.
+- Pricing models (Alchemy: 30M CU free tier + $0.52/M; QuickNode: $49/month + $0.00003/request). Verify current pricing with providers.
 - This benchmarking focuses on RPC call volume; other costs (storage, bandwidth) are not included.
 - The monthly scaling (sample × 30) assumes a constant volume pattern; real usage may vary by time of day.
 - Costs scale linearly with address count (O(1) monitoring overhead per block).
