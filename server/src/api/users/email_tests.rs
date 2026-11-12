@@ -61,6 +61,7 @@ fn status_reports_a_server_with_smtp_as_configured() {
         username: "user".to_string(),
         password: "pass".to_string(),
         from: "noreply@example.com".to_string(),
+        ses_configuration_set: None,
     };
     // Building the transport only assembles config; it never connects.
     #[allow(

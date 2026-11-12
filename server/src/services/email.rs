@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use lettre::message::header::ContentType;
+use lettre::message::header::{ContentType, Header, HeaderName, HeaderValue};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
@@ -18,6 +18,9 @@ pub struct SmtpConfig {
     pub username: String,
     pub password: String,
     pub from: String,
+    /// Optional configuration set name. When present, every outgoing message
+    /// is attributed to it so the provider reports bounce and complaint events.
+    pub ses_configuration_set: Option<String>,
 }
 
 impl SmtpConfig {
@@ -32,12 +35,14 @@ impl SmtpConfig {
         let username = std::env::var("SMTP_USERNAME").ok()?;
         let password = std::env::var("SMTP_PASSWORD").ok()?;
         let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| format!("noreply@{host}"));
+        let ses_configuration_set = std::env::var("SES_CONFIGURATION_SET").ok();
         Some(Self {
             host,
             port,
             username,
             password,
             from,
+            ses_configuration_set,
         })
     }
 }
@@ -76,6 +81,26 @@ pub struct AccountNotice {
 pub struct EmailService {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: String,
+    configuration_set: Option<String>,
+}
+
+/// The `X-SES-CONFIGURATION-SET` header. Without it the provider attributes
+/// the message to no configuration set and emits no bounce or complaint events.
+#[derive(Debug, Clone)]
+struct ConfigurationSetHeader(String);
+
+impl Header for ConfigurationSetHeader {
+    fn name() -> HeaderName {
+        HeaderName::new_from_ascii_str("X-SES-CONFIGURATION-SET")
+    }
+
+    fn parse(s: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Self(s.to_owned()))
+    }
+
+    fn display(&self) -> HeaderValue {
+        HeaderValue::new(Self::name(), self.0.clone())
+    }
 }
 
 impl EmailService {
@@ -89,11 +114,34 @@ impl EmailService {
         Ok(Self {
             transport,
             from: config.from.clone(),
+            configuration_set: config.ses_configuration_set.clone(),
         })
     }
 
-    /// Send a payment receipt to the customer.
-    pub async fn send_receipt(&self, to: &str, data: &ReceiptData) -> Result<(), EmailError> {
+    /// Assemble a message from this service's sender, attributed to the
+    /// configuration set when one is configured.
+    fn build_message(
+        &self,
+        to: &str,
+        subject: String,
+        body: String,
+    ) -> Result<Message, EmailError> {
+        let builder = Message::builder()
+            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
+            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
+            .subject(subject)
+            .header(ContentType::TEXT_PLAIN);
+        let builder = match &self.configuration_set {
+            Some(set) => builder.header(ConfigurationSetHeader(set.clone())),
+            None => builder,
+        };
+        builder
+            .body(body)
+            .map_err(|e| EmailError::Build(e.to_string()))
+    }
+
+    /// Compose the payment receipt for the customer.
+    fn receipt_message(&self, to: &str, data: &ReceiptData) -> Result<Message, EmailError> {
         let subject = format!(
             "Payment receipt — {} {} ({})",
             data.amount, data.currency, data.invoice_id
@@ -121,20 +169,27 @@ impl EmailService {
             paid_at = data.paid_at.format("%Y-%m-%d %H:%M:%S UTC"),
         );
 
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(body)
-            .map_err(|e| EmailError::Build(e.to_string()))?;
+        self.build_message(to, subject, body)
+    }
 
+    /// Send a payment receipt to the customer.
+    pub async fn send_receipt(&self, to: &str, data: &ReceiptData) -> Result<(), EmailError> {
+        let email = self.receipt_message(to, data)?;
         self.transport
             .send(email)
             .await
             .map_err(|e| EmailError::Send(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Compose a notice to an account holder.
+    fn account_notice_message(
+        &self,
+        to: &str,
+        notice: &AccountNotice,
+    ) -> Result<Message, EmailError> {
+        self.build_message(to, notice.subject.clone(), notice.body.clone())
     }
 
     /// Send a notice to an account holder. The caller supplies `to` itself -
@@ -145,14 +200,7 @@ impl EmailService {
         to: &str,
         notice: &AccountNotice,
     ) -> Result<(), EmailError> {
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(notice.subject.clone())
-            .header(ContentType::TEXT_PLAIN)
-            .body(notice.body.clone())
-            .map_err(|e| EmailError::Build(e.to_string()))?;
-
+        let email = self.account_notice_message(to, notice)?;
         self.transport
             .send(email)
             .await
@@ -161,12 +209,12 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send the verification code for a pending email-address change.
-    pub async fn send_email_change_verification(
+    /// Compose the verification code for a pending email-address change.
+    fn email_change_verification_message(
         &self,
         to: &str,
         data: &EmailChangeVerificationData,
-    ) -> Result<(), EmailError> {
+    ) -> Result<Message, EmailError> {
         let subject = "Confirm your new email address".to_string();
 
         let body = format!(
@@ -183,14 +231,16 @@ impl EmailService {
             minutes = data.expires_in_minutes,
         );
 
-        let email = Message::builder()
-            .from(self.from.parse().map_err(|_| EmailError::InvalidFrom)?)
-            .to(to.parse().map_err(|_| EmailError::InvalidRecipient)?)
-            .subject(subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(body)
-            .map_err(|e| EmailError::Build(e.to_string()))?;
+        self.build_message(to, subject, body)
+    }
 
+    /// Send the verification code for a pending email-address change.
+    pub async fn send_email_change_verification(
+        &self,
+        to: &str,
+        data: &EmailChangeVerificationData,
+    ) -> Result<(), EmailError> {
+        let email = self.email_change_verification_message(to, data)?;
         self.transport
             .send(email)
             .await
@@ -362,6 +412,7 @@ mod tests {
             username: "user".to_string(),
             password: "pass".to_string(),
             from: "noreply@example.com".to_string(),
+            ses_configuration_set: None,
         };
         // Building the transport only assembles config - it never connects,
         // so this cannot fail for a reason the test needs to handle.
@@ -371,5 +422,79 @@ mod tests {
         )]
         let service = EmailService::new(&config).expect("build transport");
         assert!(service.is_configured());
+    }
+
+    fn config_with_set(set: Option<&str>) -> SmtpConfig {
+        SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            username: "user".to_string(),
+            password: "pass".to_string(),
+            from: "noreply@example.com".to_string(),
+            ses_configuration_set: set.map(str::to_string),
+        }
+    }
+
+    fn receipt() -> ReceiptData {
+        ReceiptData {
+            invoice_id: "inv_1".to_string(),
+            amount: "1.00".to_string(),
+            currency: "EUR".to_string(),
+            tx_hash: "0xabc".to_string(),
+            explorer_url: "https://explorer.example.com/tx/0xabc".to_string(),
+            paid_at: Utc::now(),
+            merchant_name: "Merchant".to_string(),
+        }
+    }
+
+    /// Every outgoing message, built by each of the three send paths, carries
+    /// the configured set so the provider reports its bounce events.
+    #[test]
+    fn each_send_path_attributes_messages_to_the_configured_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let service = EmailService::new(&config_with_set(Some("ag8-receipts")))?;
+        let notice = AccountNotice {
+            subject: "Notice".to_string(),
+            body: "Body".to_string(),
+        };
+        let verification = EmailChangeVerificationData {
+            token: "123456".to_string(),
+            expires_in_minutes: 15,
+        };
+        let messages = [
+            service.receipt_message("buyer@example.com", &receipt())?,
+            service.account_notice_message("owner@example.com", &notice)?,
+            service.email_change_verification_message("owner@example.com", &verification)?,
+        ];
+        for message in &messages {
+            assert_eq!(
+                message.headers().get_raw("X-SES-CONFIGURATION-SET"),
+                Some("ag8-receipts")
+            );
+        }
+        Ok(())
+    }
+
+    /// Without a configured set the header is omitted, so an unconfigured host
+    /// does not attribute mail to a set it does not own.
+    #[test]
+    fn no_send_path_sets_the_header_when_no_set_is_configured()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let service = EmailService::new(&config_with_set(None))?;
+        let notice = AccountNotice {
+            subject: "Notice".to_string(),
+            body: "Body".to_string(),
+        };
+        let receipt_message = service.receipt_message("buyer@example.com", &receipt())?;
+        let notice_message = service.account_notice_message("owner@example.com", &notice)?;
+        assert_eq!(
+            receipt_message.headers().get_raw("X-SES-CONFIGURATION-SET"),
+            None
+        );
+        assert_eq!(
+            notice_message.headers().get_raw("X-SES-CONFIGURATION-SET"),
+            None
+        );
+        Ok(())
     }
 }
