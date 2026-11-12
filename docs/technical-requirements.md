@@ -1,231 +1,149 @@
-# Technical Requirements: Non-Custodial Architecture
+# Technical Requirements: Non-Custodial Verification
 
-ETHPayServer is a non-custodial EVM payment processor. This document specifies the technical architecture that enforces and maintains the non-custodial guarantee: merchants control all funds; the server never holds, derives, or broadcasts transactions using merchant spending keys.
+This document is for a merchant or auditor who needs to check the non-custodial claim. Each section states a property, the code that enforces it, and how to check it. Billing and subscriptions are out of scope.
 
-## Non-Custodial Guarantee
+Related: [Merchant API Guide](merchant-api-guide.md), [Xpub Rotation](xpub-rotation.md).
 
-The core claim: **A merchant who registers an extended public key (xpub) with ETHPayServer retains sole custody of the funds those addresses hold.** This guarantee is enforced by design, not by trust or operational discipline.
+## Claim and Summary
 
-Three properties together prove non-custody:
+ETHPayServer holds public keys only. It never receives a mnemonic or an extended private key, and its default build contains no code that signs or broadcasts a transaction. Payment addresses are derived from the merchant's account xpub using public-key derivation alone.
 
-1. **No spending key is ever held.** The server stores only public key material. The registration endpoint (`POST /wallets`) and payment method endpoints reject extended private keys (xprv) on the version-byte check, refusing them before storage.
+| Property | Enforced by | How to check |
+|----------|-------------|--------------|
+| Extended private keys are refused | Version-byte check in the xpub decoder (`evm/src/wallet/xpub_deriver.rs`) | `git grep -n an_xprv_is_never_accepted_as_an_xpub` finds the test in `evm/src/wallet/tests.rs` |
+| No signing or broadcast code in the default build | The `transaction` module is compiled only with the `hot-wallet` feature, which is off by default (`evm/Cargo.toml`, `evm/src/lib.rs`) | `git grep -n hot-wallet` returns only the feature declaration, the module gate, and the module's own documentation |
+| Address derivation uses public keys only | `XpubDeriver` holds the account xpub and nothing else (`evm/src/wallet/xpub_deriver.rs`) | Read the `XpubDeriver` struct; it has no private-key field |
 
-2. **No transaction spending merchant funds is ever broadcast.** The signing and transaction-broadcast module (`evm::transaction`) is behind a `hot-wallet` Cargo feature (off by default). No crate in this repository builds it enabled, and no CI workflow or deployment enables it. To confirm: `git grep -n hot-wallet` across every `Cargo.toml` and `.github/workflows/*.yml` returns only the feature's own declaration, the `#[cfg(...)]` gate guarding the module, and this paragraph — see `evm/README.md:66` for the module table.
+## 1. Xpub Registration
 
-3. **The server computes addresses from the merchant's public key, not a derived spending key.** Merchants authorize payment methods from their xpub, and the server derives payment addresses using only the public information in that key.
+### Endpoints
 
-Following directly: the server cannot move merchant funds, and the server cannot recover merchant keys if a private key is lost.
+| Method and path | Purpose |
+|-----------------|---------|
+| `POST /wallets` | Register an account xpub (bearer auth) |
+| `GET /wallets/{wallet_id}/xpub` | Export the stored xpub |
+| `GET /wallets/{wallet_id}/addresses` | List derived addresses with index, derivation path, and a `used` flag |
+| `PUT /stores/{store_id}/wallet` | Attach a store to a wallet |
+| `POST /stores/{store_id}/wallet/rotate` | Rotate the store's wallet to a new xpub |
+| `POST /stores/{store_id}/payment-methods` | Create a payment method for one chain |
 
-## Xpub Registration
+### Validation at Registration
 
-### API Endpoints
-
-**Register a wallet (xpub) to an account:**
-
-```
-POST /wallets
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "name": "My Payment Processor",
-  "xpub": "xpub6CUGRUm3p...",
-  "namespace": "eip155"  // optional, defaults to "eip155"
-}
-```
-
-**Register a payment method (derive and watch addresses for a specific chain):**
-
-```
-POST /stores/{store_id}/payment-methods
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "name": "Ethereum Sepolia",
-  "chain_id": "eip155:11155111",
-  "asset_symbol": "ETH",
-  "wallet_id": "<wallet-uuid>"
-}
-```
-
-### Key Validation
-
-The wallet endpoint enforces that only extended **public** keys are accepted:
-
-- Base58-decoded key material is validated against the xpub version-byte prefix (0x04880b21).
-- An xprv (private key, version bytes 0x04880483) fails validation immediately.
-- Validation happens server-side before any storage or key derivation — there is no code path that stores or uses an xprv.
+- The key is decoded as base58 against the xpub version bytes. An `xprv` is refused on its version bytes before anything is stored.
+- The key must be at account depth (`m/44'/<coin>'/<account>'`, depth 3). Shallower or deeper keys are refused with `invalid_xpub_depth`.
+- BIP-49 `ypub` and BIP-84 `zpub` keys are rewritten to the `xpub` with the same key material, so one form is stored.
+- The server returns three verification addresses (`VERIFICATION_ADDRESS_COUNT = 3`), derived from the registered key, so the merchant can compare them with their own wallet before any invoice uses the key.
 
 ### Storage
 
-- **Wallets table:** Stores one row per account xpub per namespace (e.g., "eip155" for Ethereum chains). The xpub itself and a derivation counter (initially 0) are stored in plaintext — the counter tracks the next index to derive, and the xpub is needed to compute addresses on every invoice.
+- `wallets`: owning account, `xpub` (public, stored as text), and `derivation_index`. The counter is the single derivation counter for that key.
+- `store_wallets`: one row per store, pointing at one wallet. The foreign key is `ON DELETE RESTRICT`, so a wallet that a store still uses cannot be deleted. Deleting it would otherwise silently move the store's payments to another key.
+- `wallet_rotations`: each rotation records the previous xpub, the new xpub, the previous derivation index, the payment method, an optional reason, and the time.
 
-- **Payment methods table:** References a wallet and specifies a chain (e.g., "eip155:1" for Ethereum mainnet) and asset. Each payment method has its own derivation index (deprecated, now stored on the wallet) — when a payment method is created, it starts at the index the wallet had reached.
+## 2. Client-Side Key Derivation
 
-- **Rotation history:** `wallet_rotations` table records each account's xpub rotation, capturing the previous xpub, the derivation index at rotation time, the affected payment method, optional reason, and timestamp.
+Mnemonics are handled only by an offline command-line tool that the merchant runs on their own machine. The server never receives a mnemonic.
 
-## Client-Side Key Derivation
+### The `derive-xpub` Tool
 
-Address derivation happens server-side only. The merchant holds the private key; the public key only is registered.
+- `derive-xpub generate` creates a new 24-word mnemonic. It prints the mnemonic to stderr and the account xpub, path, and verification addresses to stdout.
+- `derive-xpub from-existing` reads a mnemonic from stdin and prints the same outputs.
+- The tool's source makes no network calls. Its output is the xpub and public addresses only.
 
-### Derivation Method: BIP-32/44
+### Derivation Method
 
-- Derivation follows BIP-32 (hierarchical deterministic wallets) and BIP-44 (account hierarchies).
-- The merchant's xpub is the root for a payment method. From it, the server derives a public address at each increment of a **derivation index**.
-- **No private key material ever passes through the server.** The server calls BIP-32 public-key-only derivation (`ecdsa::derive_public_child`).
+- Account keys follow BIP-44. For Ethereum the account path is `m/44'/60'/0'`.
+- From the account xpub, the address at index `i` is the child at `0/i`, derived with public-key (non-hardened) child derivation.
+- An Ethereum address is the last 20 bytes of the Keccak-256 hash of the uncompressed public key (`evm/src/wallet/hd_wallet.rs`).
 
 ### Merchant Verification
 
-A merchant who holds the matching private key can independently verify that an address ETHPayServer claims derives from their xpub:
+1. Run `derive-xpub from-existing` with the mnemonic the merchant holds, and record the xpub and verification addresses.
+2. Compare the xpub with the one shown in the dashboard, or with `GET /wallets/{wallet_id}/xpub`.
+3. Compare the verification addresses with the ones returned at registration.
+4. For any invoice address, look up its index in `GET /wallets/{wallet_id}/addresses` and derive that index locally. The two addresses must match.
 
-1. **Export the xpub** from the same wallet as the private key (e.g., MetaMask's hardwallet account settings).
-2. **Derive the address locally** at the same index using the same BIP-32 path.
-3. **Compare** the address the server returned on the invoice with the locally derived address.
+If they match, the address was derived from the merchant's xpub alone. A mismatch means the server did not derive it from that key.
 
-If they match, the address was derived from the merchant's xpub and only that xpub. If they do not match, the server did not follow the merchant's key material.
+## 3. Server-Side Address Computation
 
-## Server-Side Address Computation
+### Index Allocation
 
-### Address Generation for Invoices
+- Creating an invoice allocates the next index with one statement: `UPDATE wallets SET derivation_index = derivation_index + 1 ... RETURNING` (`data-service/src/postgres/wallet.rs`). The row lock on the wallet serialises concurrent invoices and any payment methods that share the key.
+- Indices are never reused, so an address is issued at most once per key.
 
-1. A merchant creates an invoice for a payment method (specifying chain and asset).
-2. The server looks up the payment method's associated wallet (xpub) and current derivation index.
-3. The server increments the derivation index and derives the child public key at that index.
-4. The server computes the Ethereum address from the public key (Keccak-256 hash of the public key, truncated to 20 bytes).
-5. The address is stored on the invoice and returned to the merchant.
+### Derivation
 
-### Derivation Index Management
+- The server builds an `XpubDeriver` from the stored namespace and xpub, then calls `derive_address(index)` (`evm/src/wallet/xpub_deriver.rs`).
+- The deriver walks the external chain (`0`) and then the index, using public child derivation only.
+- Invoice creation runs this in `server/src/api/invoices/payment_options.rs`. The address is stored on the invoice and returned to the payer.
 
-- Derivation indices are **not reset during xpub rotation.** When a merchant rotates their key, the new wallet resumes at the index the old wallet had reached (or starts at 0 if that xpub is new to the account).
-- This prevents re-issuing addresses that already hold funds.
-- The wallet is shared between stores and payment methods; the index lives on the wallet, not per-method.
+### No Spending Key
+
+- The only module that can sign or broadcast a transaction is `evm::transaction`, and it compiles only with the `hot-wallet` feature (off by default; see the summary table).
+- Outside that module, the default build contains no private-key signer and no call that sends a raw transaction.
+- The server holds no mnemonic and no extended private key (`git grep -i mnemonic` in the server, data-service, and commons sources finds only test code and a comment about recovery).
 
 ### Payment Watching
 
-Once an address is generated:
+The payment monitor reads the chain for incoming transfers to the derived addresses and marks invoices paid when a transfer confirms. It does not initiate transfers.
 
-1. **Blockchain monitoring** watches the address for incoming transfers.
-2. A successful transfer (confirmed on-chain) marks the associated invoice as paid.
-3. **The server never initiates any transaction** using the payment address. It only listens for incoming transfers.
+## 4. Passkey Authentication
 
-## Passkey Authentication Flow
+Users sign in with passkeys (WebAuthn). The device holds the private key. The server stores only the public key and the credential ID. The routes below are mounted under `/auth`, and the flow is implemented in the shared auth crate.
 
-User authentication to ETHPayServer uses passkeys (WebAuthn) to secure account access and reduce reliance on passwords. The flow is public-key cryptography, where the user's device holds the private key and the server holds only public key material.
+### Routes
 
-### Registration (Adding a Passkey)
+| Step | Method and path |
+|------|-----------------|
+| New account with a passkey | `POST /auth/passkey/new-user/start`, then `POST /auth/passkey/new-user/complete` |
+| Add a passkey to a signed-in account | `POST /auth/passkey/register/start`, then `POST /auth/passkey/register/complete` |
+| Sign in | `POST /auth/passkey/login/start` (returns a `challenge_id`), then `POST /auth/passkey/login/complete` |
+| List and revoke | `GET /auth/devices`, `DELETE /auth/devices/{id}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` |
 
-1. **User initiates registration:**
-   ```
-   POST /users/devices/register-begin
-   Authorization: Bearer <session_token>
-   ```
-   Response includes a server-generated challenge (random bytes).
+### Registration
 
-2. **Browser/device prompts user:**
-   The client (browser/app) passes the challenge to the user's device (hardware security key, biometric, or platform authenticator). The device creates a cryptographic credential with:
-   - A unique credential ID (private to the device).
-   - A public key derived from device-held private key material.
-   - A signature proving possession of the private key (the response to the server's challenge).
+1. The server generates a registration challenge, stores it with the user identifier, and returns the options.
+2. The device creates a credential and signs the challenge.
+3. The server checks the registration response against the stored challenge and identifier, then stores the credential ID and public key in `passkey_credentials`. The challenge is consumed on completion.
 
-3. **Client returns the credential:**
-   ```
-   POST /users/devices/register-complete
-   Authorization: Bearer <session_token>
-   Content-Type: application/json
+### Sign-In
 
-   {
-     "name": "My YubiKey",
-     "attestation": {
-       "id": "<credential_id>",
-       "publicKey": "<public_key_bytes>",
-       "signatureCount": 0,
-       "...": "// serialized WebAuthn attestation object"
-     }
-   }
-   ```
+1. The server generates a discoverable-credential challenge with no credential list, stores it under a random `challenge_id`, and returns it.
+2. The device signs the challenge with the key for the credential the user selects.
+3. On completion the server consumes the challenge. A challenge can be used once, and one older than 10 minutes is rejected.
+4. The server looks up the passkey by credential ID, refuses locked accounts, and verifies the signature with the stored public key.
+5. On success it updates the stored signature counter and last-used time, clears failed-login counts, and issues a session tied to a device record.
 
-4. **Server validates and stores:**
-   - Verify the attestation signature matches the challenge and the public key.
-   - Store the credential (id, public key, name, created timestamp, active flag) in the `passkey_credentials` table.
-   - Record the device in the `devices` table for device enumeration and cap enforcement.
+### Signature Counter
 
-### Authentication (Signing In)
+The WebAuthn library rejects an assertion whose counter is non-zero and not greater than the stored counter, which signals a possibly cloned authenticator. Its default is to enforce this, and the auth crate does not disable it.
 
-1. **User requests a signing challenge:**
-   ```
-   GET /auth/challenge?email=user@example.com
-   ```
-   Server generates a fresh challenge and responds with:
-   - Challenge (random bytes).
-   - List of credential IDs registered to that account (if any).
+### Freshness for Sensitive Operations
 
-2. **Browser/device performs signing:**
-   The client prompts the device. The device:
-   - Matches the challenge against its stored values (to prevent replays).
-   - Signs the challenge with the private key corresponding to a credential the user selects.
-   - Returns the signature and credential ID.
+- A session is fresh for 5 minutes after it is created. The `FreshlyAuthenticatedUser` extractor (`server/src/api/extractors.rs`) requires a fresh session.
+- Adding a device (`POST /me/devices`) requires a fresh session and is refused otherwise.
+- Wallet rotation accepts a stale session but records a `not_fresh` alert in metrics. It does not refuse the request. Operators who need refusal must change the handler.
 
-3. **Client completes authentication:**
-   ```
-   POST /auth/authenticate
-   Content-Type: application/json
+### Device Limit
 
-   {
-     "email": "user@example.com",
-     "credential_id": "<bytes>",
-     "assertion": {
-       "signature": "<signed_challenge>",
-       "signatureCount": 42,
-       "...": "// serialized WebAuthn assertion object"
-     }
-   }
-   ```
+- Each account may hold up to 10 devices (`max_devices_per_user`, default 10).
+- At the cap, a login does not fail. It reuses the least recently used device.
 
-4. **Server verifies the signature:**
-   - Look up the credential by credential ID (stored in the assertion object as `cred_id`).
-   - Retrieve the public key for that credential.
-   - Verify the signature over the challenge using the public key.
-   - Verify the signature counter has incremented (to detect cloned keys).
-   - Issue a session token.
+### Recovery Material
 
-### Re-authentication (Sensitive Operations)
+The `users` table stores the client-wrapped account key (`encrypted_symmetric_key`), its key-derivation parameters (`kdf_params`), and `recovery_verification_hash`, which is `base64(SHA-256(Argon2id(recovery phrase, identifier)))`. The server stores a one-way verification hash of the recovery phrase and never the phrase itself.
 
-Some operations (e.g., rotating a payment key, deleting an account) require proof of recent authentication. The re-auth flow is identical to authentication, but the server uses a fresh challenge and verifies the timestamp is recent (within a configured window, typically seconds to minutes).
+## 5. Scope Limits of This Repository
 
-### Device Management
-
-- **Device cap:** An account can register a limited number of passkeys (e.g., 10) to prevent abuse.
-- **Device enumeration:** `GET /users/devices` lists all registered devices with names and last-used timestamps.
-- **Device deactivation:** `DELETE /users/devices/{device_id}` deactivates a passkey, preventing future authentication with that credential.
-- **Device name:** Users can rename a device for clarity (e.g., "Work YubiKey" or "Personal Biometric").
-
-### Public Key Cryptography
-
-The security of passkey authentication rests on the device never revealing its private key:
-
-- The device generates a keypair and stores the private key in tamper-resistant hardware or secure enclave.
-- The device signs challenges with the private key but never exports it.
-- The server stores and verifies only the public key.
-- An attacker who compromises the server gains the public keys and credential IDs, but cannot forge signatures without the private key.
-
-### Security Considerations
-
-- **Challenge freshness:** Each signing operation requires a fresh challenge from the server, preventing replay attacks (an attacker cannot re-use an old signature).
-- **Signature counter:** The counter in each assertion must be greater than the last assertion from that credential. A clone or rollback would cause the counter to decrease or stall, alerting the server.
-- **Session isolation:** A session token issued after successful passkey authentication is tied to that signing event and cannot be transferred to another account or device.
+- The browser or app code that collects passkeys and runs the sign-in ceremony is not in this repository. The server-side checks above are verifiable here. The client-side checks are not.
+- The `derive-xpub` tool is the only in-repository code that handles a mnemonic. Any other client that derives keys is outside this document.
 
 ## Sensitive Code Paths
 
-The following are sensitive operations and have undergone human review:
+Changes in these areas are human-reviewed before merge:
 
-- **Xpub validation and registration** (`POST /wallets`, `POST /stores/{store_id}/payment-methods`): ensures xprv rejection and proper key storage.
-- **Address derivation** (wallet service, BIP-32 child key derivation): ensures only public-key material is used.
-- **Passkey registration and authentication** (auth module in commons, passkey repository, API handlers): ensures proper challenge generation, signature verification, and counter tracking.
-- **Passkey credential storage** (`passkey_credentials` table): ensures credentials are stored with proper schema and indexing.
-
-## Related Documentation
-
-- **Merchant API Integration Guide** (`docs/merchant-api-guide.md`): How to register wallets, create invoices, and monitor payments via the public API.
-- **XPub Rotation Runbook** (`docs/xpub-rotation.md`): Procedure for rotating a payment key due to compromise or scheduled rotation.
-- **EVM Module** (`evm/README.md`): Blockchain interaction, address derivation, and payment monitoring — see the module table for the `hot-wallet` feature gating.
+- Xpub validation and registration (`POST /wallets`, `POST /stores/{store_id}/payment-methods`).
+- Address derivation (`XpubDeriver`, index allocation).
+- Passkey registration and sign-in (auth crate, passkey repository, auth routes).
+- The `hot-wallet` feature gate and the `transaction` module.
