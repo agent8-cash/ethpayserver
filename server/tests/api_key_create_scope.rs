@@ -18,17 +18,22 @@ use data_service::test_support::pg_service;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use auth::{Result as AuthResult, Role, Session, SessionId, SessionService, UserId, UserInfo};
+use auth::{
+    Result as AuthResult, Role, Session, SessionId, SessionService, Store, UserId, UserInfo,
+};
 use data_service::PgDataService;
+use data_service::store_creation::StoreCreationWriter;
 use rates::NoOpRateProvider;
-use server::api::AuthenticatedUser;
+use server::api::invoices::{ListInvoicesQuery, list_invoices};
 use server::api::users::create_api_key;
+use server::api::{AuthenticatedUser, StoreScopedUser};
 use server::services::RedisEVMMonitor;
 use server::state::PgAppState;
 
@@ -229,4 +234,96 @@ async fn an_explicitly_empty_scope_is_persisted_as_an_empty_scope_not_as_inherit
          mean inherit-the-owner's-role - a key asked for with no permissions that can do \
          everything its owner can, which is the exact failure this change exists to stop"
     );
+}
+
+/// An empty scope is a legal request for a key that can do nothing. It must
+/// authenticate and then be refused by a scoped endpoint, while the inherited
+/// key reaches the same endpoint. The scope under test is read back from the
+/// database, not from the request, so the assertion covers what the handler
+/// actually stored.
+#[tokio::test]
+#[ignore]
+async fn an_empty_scope_key_is_refused_where_an_inherited_key_is_allowed() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+    let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
+    pg.create_store_owned_by(&store, UserId(owner))
+        .await
+        .expect("seed store owned by user");
+
+    let pg = Arc::new(pg);
+    let state = app_state(pg.clone());
+
+    let (_status, axum::Json(empty_response)) = create_api_key(
+        AuthenticatedUser(user_info(owner)),
+        State(state.clone()),
+        axum::Json(api_types::CreateApiKeyPayload {
+            name: "empty scope key".to_string(),
+            permissions: Some(Vec::new()),
+            expires_at: None,
+        }),
+    )
+    .await
+    .expect("create an empty scope key");
+
+    let (_status, axum::Json(inherited_response)) = create_api_key(
+        AuthenticatedUser(user_info(owner)),
+        State(state.clone()),
+        axum::Json(api_types::CreateApiKeyPayload {
+            name: "inherited key".to_string(),
+            permissions: None,
+            expires_at: None,
+        }),
+    )
+    .await
+    .expect("create an inherited key");
+
+    let empty_scope = pg
+        .get_api_key_auth_info_by_id(empty_response.id)
+        .await
+        .expect("look up the empty scope key")
+        .expect("the empty scope key must exist")
+        .permissions;
+    let inherited_scope = pg
+        .get_api_key_auth_info_by_id(inherited_response.id)
+        .await
+        .expect("look up the inherited key")
+        .expect("the inherited key must exist")
+        .permissions;
+    assert_eq!(empty_scope, Some(Vec::new()));
+    assert_eq!(inherited_scope, None);
+
+    let refused = list_invoices(
+        StoreScopedUser(user_info(owner), empty_scope),
+        State(state.clone()),
+        Query(list_query(store.id.0)),
+    )
+    .await;
+    let Err(err) = refused else {
+        panic!("a key with an empty stored scope must be refused a scoped endpoint");
+    };
+    assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+
+    let allowed = list_invoices(
+        StoreScopedUser(user_info(owner), inherited_scope),
+        State(state),
+        Query(list_query(store.id.0)),
+    )
+    .await;
+    assert!(
+        allowed.is_ok(),
+        "a key with no stored scope inherits its owner's role and must reach the endpoint: {:?}",
+        allowed.err()
+    );
+}
+
+fn list_query(store_id: Uuid) -> ListInvoicesQuery {
+    ListInvoicesQuery {
+        store_id: Some(store_id),
+        status: None,
+        currency: None,
+        search: None,
+        limit: None,
+        offset: None,
+    }
 }
