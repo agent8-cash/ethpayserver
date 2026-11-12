@@ -25,7 +25,7 @@ pub use plugins::{
     PluginLoadError, PluginPools, PluginRegistry, PluginSchema, PluginStatusSnapshot,
     PluginStorage, PluginStorageError, PluginWasmError, Viewer, account_closed_observers,
     host_version, invoice_creation_filters, load_installed_plugins, own_store_payment_reporting,
-    payment_observers, report_boot,
+    payment_observers, report_boot, store_creation_filters,
 };
 pub use watch_reconciler::{
     WatchReconciliationCounts, WatchReconciliationError, diff_watches, reconcile_watches,

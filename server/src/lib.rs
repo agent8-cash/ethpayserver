@@ -53,6 +53,7 @@ pub use services::{
     WatchRetryService, WebhookConfig, WebhookOutboxDrainConfig, WebhookOutboxDrainService,
     WebhookService, WebhookSink, account_closed_observers, host_version, invoice_creation_filters,
     load_installed_plugins, own_store_payment_reporting, payment_observers, report_boot,
+    store_creation_filters,
 };
 pub use state::{AppDataService, AppDataServiceReader, AppState};
 

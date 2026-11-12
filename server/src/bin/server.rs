@@ -30,6 +30,7 @@ use server::{
     DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginArtifacts,
     PluginHost, PluginPools, account_closed_observers, host_version, invoice_creation_filters,
     load_installed_plugins, own_store_payment_reporting, payment_observers, report_boot,
+    store_creation_filters,
 };
 
 use server::tracing_init::init_tracing;
@@ -264,11 +265,17 @@ async fn main() -> Result<()> {
 
     // Turn the loaded plugins into the capability implementations the server
     // calls - without this, a plugin registers but nothing dispatches to it.
-    let (plugin_filters, plugin_payment_observers, plugin_account_closed_observers) = plugin_host
+    let (
+        plugin_filters,
+        plugin_store_filters,
+        plugin_payment_observers,
+        plugin_account_closed_observers,
+    ) = plugin_host
         .as_ref()
-        .map_or((Vec::new(), Vec::new(), Vec::new()), |host| {
+        .map_or((Vec::new(), Vec::new(), Vec::new(), Vec::new()), |host| {
             (
                 invoice_creation_filters(host, &loaded),
+                store_creation_filters(host, &loaded),
                 payment_observers(host, &loaded),
                 account_closed_observers(host, &loaded),
             )
@@ -450,6 +457,7 @@ async fn main() -> Result<()> {
     // installed, which is every deployment today; before this line it was
     // empty even then.
     state.invoice_creation_filters = plugin_filters;
+    state.store_creation_filters = plugin_store_filters;
     // Capability 8, empty until a plugin is installed, same as the filter list above.
     state.account_closed_observers = plugin_account_closed_observers;
     // Only drives own-store payment reporting; filter exemption is per credential.
