@@ -671,7 +671,6 @@ pub fn resolve_sentry_log_level() -> tracing::Level {
 /// Drops the `Log` flag from `filter` when `event_level` is more verbose than
 /// `min_level`. Split out from [`sentry_log_event_filter`] so the threshold
 /// logic is testable without constructing a real `tracing::Metadata`.
-#[allow(deprecated)]
 fn apply_log_level_gate(
     filter: sentry_tracing::EventFilter,
     event_level: tracing::Level,
@@ -689,7 +688,6 @@ fn apply_log_level_gate(
 /// `Log` flag for any record more verbose than `min_level` — the knob behind
 /// [`resolve_sentry_log_level`]. Breadcrumbs and error events are untouched:
 /// this only changes whether a record also becomes a Sentry structured log.
-#[allow(deprecated)]
 pub fn sentry_log_event_filter(
     min_level: tracing::Level,
 ) -> impl Fn(&tracing::Metadata<'_>) -> sentry_tracing::EventFilter + Send + Sync + 'static {
@@ -785,7 +783,6 @@ pub fn sentry_log_event_filter(
 /// "Error processing webhook job". Paging on-call for the genuinely-isolated
 /// case teaches the same lesson as the WS noise above — ignore Sentry errors
 /// — for a condition no payserver engineer can act on.
-#[allow(deprecated)]
 pub fn sentry_event_filter(
     min_level: tracing::Level,
 ) -> impl Fn(&tracing::Metadata<'_>) -> sentry_tracing::EventFilter + Send + Sync + 'static {
