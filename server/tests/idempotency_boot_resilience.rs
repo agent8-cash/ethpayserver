@@ -110,8 +110,9 @@ fn spawn_proxy_refusing(
                 return;
             };
             let task = tokio::spawn(async move {
-                let Ok(outbound) = TcpStream::connect(upstream).await else {
-                    return;
+                let outbound = match TcpStream::connect(upstream).await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
                 };
                 let (mut in_read, mut in_write) = inbound.into_split();
                 let (mut out_read, mut out_write) = outbound.into_split();
