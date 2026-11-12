@@ -16,7 +16,7 @@
 //! tests; CI's `test` job sets it and runs ignored tests.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -93,14 +93,14 @@ fn spawn_proxy(listener: TcpListener, upstream: SocketAddr) -> Proxy {
     }
 }
 
-/// Like [`spawn_proxy`], but parses each client command and severs the
-/// connection on the first one `refuse` matches, before forwarding it. The
-/// refused command never reaches Redis, so the client sees its connection
-/// die on exactly that command.
-fn spawn_proxy_refusing(
+/// Like [`spawn_proxy`], but parses each client command and, while `armed`
+/// is set, severs the connection on the first `SET ... NX` it sees, before
+/// forwarding it. That command never reaches Redis, so the client sees its
+/// connection die on exactly that command. Commands before arming pass.
+fn spawn_proxy_refusing_lock_acquire(
     listener: TcpListener,
     upstream: SocketAddr,
-    refuse: fn(&[Vec<u8>]) -> bool,
+    armed: Arc<AtomicBool>,
 ) -> Proxy {
     let forwarding_tasks = Arc::new(Mutex::new(Vec::new()));
     let tasks_for_accept_loop = Arc::clone(&forwarding_tasks);
@@ -109,6 +109,7 @@ fn spawn_proxy_refusing(
             let Ok((inbound, _)) = listener.accept().await else {
                 return;
             };
+            let armed = Arc::clone(&armed);
             let task = tokio::spawn(async move {
                 let outbound = match TcpStream::connect(upstream).await {
                     Ok(stream) => stream,
@@ -127,7 +128,7 @@ fn spawn_proxy_refusing(
                         Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     }
                     while let Some((len, args)) = parse_command(&buf) {
-                        if refuse(&args) {
+                        if armed.load(Ordering::SeqCst) && is_lock_acquire(&args) {
                             replies.abort();
                             return;
                         }
@@ -360,11 +361,12 @@ async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests()
     };
     let upstream = upstream_addr(&real_redis_url);
 
-    // Mount against a proxy that refuses lock acquisition: it forwards every
-    // command except `SET ... NX`, on which it severs the connection.
+    // Mount against a proxy that forwards everything until armed, then
+    // severs the connection on `SET ... NX`.
+    let armed = Arc::new(AtomicBool::new(false));
     let proxy_addr = unbound_addr().await;
     let listener = TcpListener::bind(proxy_addr).await.unwrap();
-    let _proxy = spawn_proxy_refusing(listener, upstream, is_lock_acquire);
+    let _proxy = spawn_proxy_refusing_lock_acquire(listener, upstream, Arc::clone(&armed));
 
     let state = Arc::new(
         IdempotencyState::from_env(&format!("redis://{proxy_addr}"))
@@ -394,6 +396,7 @@ async fn a_live_connection_failure_on_lock_acquire_rejects_idempotent_requests()
     // `SET ... NX` is the command the proxy severs. Lock acquisition is the
     // failing step, and it must return 503 without running the handler.
     let key_b = format!("lock-failure-{}", uuid::Uuid::new_v4());
+    armed.store(true, Ordering::SeqCst);
     let resp = app
         .clone()
         .oneshot(idempotent_request(&key_b))
