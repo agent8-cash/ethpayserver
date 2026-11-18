@@ -163,16 +163,16 @@ where
             // Diagnosing the real cause took a database inspection.
             match &e {
                 StoreCreationError::MissingOwnerRole => {
-                    // An operator fault with a specific fix, not a transient
-                    // database error, so it is worth saying so distinctly.
                     tracing::error!(
                         owner_id = %owner_id.0,
+                        store_name = %store.name,
                         "cannot create store: {e}"
                     );
                 }
                 StoreCreationError::Repository(inner) => {
                     tracing::error!(
                         owner_id = %owner_id.0,
+                        store_name = %store.name,
                         error = %inner,
                         "cannot create store"
                     );
