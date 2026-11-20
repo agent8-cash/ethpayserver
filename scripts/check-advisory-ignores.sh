@@ -18,6 +18,15 @@
 # upstream, or never compiled. That is a FAIL, not a warning - the entry
 # should be removed from .cargo/audit.toml.
 #
+# EXPIRES date enforcement: Advisory ignores may include an EXPIRES date
+# marking when the ignore should no longer be valid (either the advisory is
+# fixed upstream, a mainnet milestone passes, or an explicit date passes).
+# Format: EXPIRES <YYYY-MM-DD> within a comment. The date is checked
+# lexicographically; a waiver fails only when today > EXPIRES (today = EXPIRES
+# passes). Set AUDIT_TODAY to override the system date; AUDIT_TODAY_OK=1 must
+# be set to use it (see audit-build-graph.sh for why an env var alone must not
+# silently substitute).
+#
 # RUSTSEC-2026-0315/0316/0325/0326/0327 (wasmtime) and RUSTSEC-2026-0367/
 # 0368/0369 (zip) have their own guards (check-wasmtime-ignores.sh,
 # check-zip-ignores.sh) that additionally watch narrower assumptions - banned
@@ -28,13 +37,26 @@
 # replaces the un-ignored `cargo audit --json` run (requires
 # UNFILTERED_FIXTURE_OK=1 - see audit-build-graph.sh for why an env var alone
 # must not silently substitute a fixture for the real scan), AUDIT_FILE
-# replaces .cargo/audit.toml, BUILD_TARGET matches audit-build-graph.sh's.
+# replaces .cargo/audit.toml, BUILD_TARGET matches audit-build-graph.sh's,
+# AUDIT_TODAY overrides the current date (requires AUDIT_TODAY_OK=1).
 set -uo pipefail
 
 AUDIT="${AUDIT_FILE:-.cargo/audit.toml}"
 target="${BUILD_TARGET:-x86_64-unknown-linux-gnu}"
 # ids with their own dedicated guard - see header.
 SKIP_IDS=" RUSTSEC-2026-0315 RUSTSEC-2026-0316 RUSTSEC-2026-0325 RUSTSEC-2026-0326 RUSTSEC-2026-0327 RUSTSEC-2026-0367 RUSTSEC-2026-0368 RUSTSEC-2026-0369 "
+
+# Handle AUDIT_TODAY override: requires AUDIT_TODAY_OK=1 to prevent silent
+# fixture substitution (same principle as audit-build-graph.sh's fixture guard)
+if [ -n "${AUDIT_TODAY:-}" ]; then
+  if [ "${AUDIT_TODAY_OK:-}" != 1 ]; then
+    echo "ERROR: AUDIT_TODAY is set but AUDIT_TODAY_OK is not 1 - refusing to use a non-system date without explicit consent. COULD NOT RUN (not a pass)." >&2
+    exit 2
+  fi
+  today="$AUDIT_TODAY"
+else
+  today="$(date -u +%F)"
+fi
 
 report=$(mktemp); trap 'rm -f "$report"' EXIT
 
@@ -66,6 +88,68 @@ if ! jq -e '.vulnerabilities.list | type == "array"' "$report" >/dev/null 2>&1; 
 fi
 
 ids="$(grep -oE '"RUSTSEC-[0-9]+-[0-9]+"' "$AUDIT" | tr -d '"' | sort -u)"
+
+# Validate date format helper (catch typos like EXPIRES 2026-13-45)
+validate_date() {
+  local d="$1"
+  if ! printf '%s' "$d" | grep -qE '^[0-9]{4}-([0-1][0-9])-([0-3][0-9])$'; then
+    return 1
+  fi
+  local m="${d:5:2}"
+  # Month must be 01-12
+  if [ "$m" -lt 01 ] || [ "$m" -gt 12 ]; then
+    return 1
+  fi
+  # Day must be 01-31
+  local d_part="${d:8:2}"
+  if [ "$d_part" -lt 01 ] || [ "$d_part" -gt 31 ]; then
+    return 1
+  fi
+  return 0
+}
+
+# Check EXPIRES dates: walk the audit file line by line, tracking comment blocks
+# and mapping advisory IDs to their expiry dates (if present). SKIP_IDS are
+# still expiry-checked (unlike the reachability check, which skips them).
+# Consecutive IDs under the same comment block all inherit that block's EXPIRES.
+expired=0
+comment_block=""
+while IFS= read -r line; do
+  # If it's a comment line, accumulate it
+  if [[ "$line" =~ ^[[:space:]]*# ]]; then
+    comment_block="${comment_block}${line}"$'\n'
+  else
+    # If we hit a non-comment line with an advisory ID, extract EXPIRES from comment_block
+    if [[ "$line" =~ \"(RUSTSEC-[0-9]+-[0-9]+)\" ]]; then
+      id="${BASH_REMATCH[1]}"
+      # Extract first date in YYYY-MM-DD format from accumulated comments
+      expiry=""
+      if [[ "$comment_block" =~ EXPIRES[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
+        expiry="${BASH_REMATCH[1]}"
+      fi
+
+      if [ -n "$expiry" ]; then
+        if ! validate_date "$expiry"; then
+          echo "EXPIRED  $id  invalid EXPIRES date: $expiry (expected YYYY-MM-DD)"
+          expired=1
+          continue
+        fi
+
+        # Compare dates lexicographically; fail only when today > expiry
+        # (today = expiry passes; boundary is exclusive on the far side)
+        if [ "$today" \> "$expiry" ]; then
+          echo "EXPIRED  $id  EXPIRES $expiry, today is $today"
+          expired=1
+        fi
+      fi
+      # Do NOT clear comment_block here - consecutive IDs under the same block share the EXPIRES
+    else
+      # Non-comment, non-ID line: clear the block for the next section
+      comment_block=""
+    fi
+  fi
+done < "$AUDIT"
+
 dead=0
 for id in $ids; do
   case "$SKIP_IDS" in *" $id "*) continue ;; esac
@@ -99,9 +183,14 @@ for id in $ids; do
   rm -f "$err"
 done
 
-if [ "$dead" -ne 0 ]; then
-  echo "FAIL: at least one ignored advisory no longer applies (see DEAD lines above)."
+if [ "$dead" -ne 0 ] || [ "$expired" -ne 0 ]; then
+  if [ "$dead" -ne 0 ]; then
+    echo "FAIL: at least one ignored advisory no longer applies (see DEAD lines above)."
+  fi
+  if [ "$expired" -ne 0 ]; then
+    echo "FAIL: at least one advisory ignore has expired (see EXPIRED lines above)."
+  fi
   exit 1
 fi
-echo "OK: every checked ignore still matches an unfixed advisory in a crate we actually build."
+echo "OK: every checked ignore still matches an unfixed advisory in a crate we actually build, and none have expired."
 exit 0
