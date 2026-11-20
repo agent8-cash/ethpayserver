@@ -922,7 +922,9 @@ mod tests {
             asset_symbol: "USDC".to_string(),
             decimals: 6,
             wallet_id: wallet,
-            xpub: wallet.map(|_| "xpub".to_string()),
+            // Non-deriving reads do not return xpub; only derivation does.
+            // This fixture simulates what get_payment_method returns.
+            xpub: None,
             derivation_index: wallet.map(|_| 0),
             enabled: true,
             created_at: chrono::Utc::now(),

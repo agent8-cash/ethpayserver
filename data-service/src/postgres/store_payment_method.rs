@@ -11,16 +11,18 @@ use crate::{RepositoryError, RepositoryResult, sqlx_to_repo_error};
 use types::{DerivationAllocation, StorePaymentMethod};
 use types::{StorePaymentMethodReader, StorePaymentMethodWriter};
 
-/// The projection every read uses.
+/// The projection for non-deriving reads.
 ///
-/// `wallet_id`, `xpub` and `derivation_index` are the *resolved* wallet's, not
-/// the method's: the method holds at most a pin, and the key it
-/// actually derives from is found by walking pin, store override, account
-/// primary. Reading through that walk is what stops a caller rendering one key
-/// while payments are collected on another.
+/// `wallet_id` and `derivation_index` are the *resolved* wallet's, not the
+/// method's: the method holds at most a pin, and the key it actually derives
+/// from is found by walking pin, store override, account primary. Reading
+/// through that walk is what stops a caller rendering one key while payments
+/// are collected on another. `xpub` is excluded to reduce blast radius of the
+/// plaintext column — only `allocate_derivation` needs it, selecting it
+/// separately via its own RETURNING clause.
 const METHOD_COLUMNS: &str = "pm.id, pm.store_id, pm.chain_id, pm.token_address, \
-     pm.asset_symbol, pm.decimals, w.id AS wallet_id, w.xpub, w.derivation_index, \
-     pm.enabled, pm.created_at";
+     pm.asset_symbol, pm.decimals, w.id AS wallet_id, \
+     w.derivation_index, pm.enabled, pm.created_at";
 
 /// The wallet a payment method aliased `pm` derives from: its pin, else its
 /// store's override for the method's family, else the account primary for that
@@ -70,7 +72,7 @@ fn row_to_payment_method(row: &sqlx::postgres::PgRow) -> StorePaymentMethod {
         asset_symbol: row.get("asset_symbol"),
         decimals: decimals as u8,
         wallet_id: row.get("wallet_id"),
-        xpub: row.get("xpub"),
+        xpub: None,
         derivation_index: row.get("derivation_index"),
         enabled: row.get("enabled"),
         created_at: row.get("created_at"),
