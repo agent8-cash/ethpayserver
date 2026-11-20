@@ -126,6 +126,17 @@ jobs:
         if: always()
         run: scripts/check-commons-pin.sh
 
+      # The redaction key set is consumed from payserver-commons, not restated.
+      # This fails if a Rust file keeps its own list or predicate, or restates
+      # the shared keys in a literal array. The self-test proves it goes red.
+      - name: Sensitive-key guard self-test
+        if: always()
+        run: scripts/check-sensitive-keys-agree.test.sh
+
+      - name: Sensitive keys agree with payserver-commons
+        if: always()
+        run: scripts/check-sensitive-keys-agree.sh
+
       # A collision here is not a naming nit: sqlx keys applied migrations by
       # the version in the filename, so the second file to claim a version is
       # refused on every startup from then on, not just the first. Two branches
