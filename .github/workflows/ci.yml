@@ -65,6 +65,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cargo.lock matches Cargo.toml
+        if: always()
+        run: ./scripts/check-lockfile-current.sh
+
+      - name: Lockfile guard self-test
+        if: always()
+        run: ./scripts/check-lockfile-current.test.sh
+
       - name: Install mold linker
         run: |
           # apt on hosted runners hangs often enough to matter: a stuck
@@ -524,29 +532,38 @@ jobs:
       # built without its GC heap and component model, and only until a fixed
       # release is locked. See the script.
       - name: wasmtime ignore guard self-test
+        if: always()
         run: ./scripts/check-wasmtime-ignores.test.sh
       - name: wasmtime ignores still valid
+        if: always()
         run: ./scripts/check-wasmtime-ignores.sh
       - name: zip ignore guard self-test
+        if: always()
         run: ./scripts/check-zip-ignores.test.sh
       - name: zip ignores still valid
+        if: always()
         run: ./scripts/check-zip-ignores.sh
       # cargo audit reads the lockfile, which lists crates no target builds.
       # This blocks on an advisory in a crate in the build graph and only
       # reports one that is lockfile-only; the job output labels each.
       - name: audit build-graph self-test
+        if: always()
         run: ./scripts/audit-build-graph.test.sh
       - name: cargo audit (build graph blocks, lockfile-only reports)
+        if: always()
         run: ./scripts/audit-build-graph.sh
       # .cargo/audit.toml's ignore list can only grow stale: fails once an
       # ignored advisory is fixed upstream, or its crate is no longer
       # reachable from any workspace member. Runs after the build-graph audit
       # above so the advisory db it fetched is already warm (--no-fetch here).
       - name: advisory ignores self-test
+        if: always()
         run: ./scripts/check-advisory-ignores.test.sh
       - name: advisory ignores still needed
+        if: always()
         run: ./scripts/check-advisory-ignores.sh
       - name: cargo deny
+        if: always()
         run: cargo deny check licenses sources
 
   # Pull requests only. Scans the commits a PR adds for committed secrets, and
