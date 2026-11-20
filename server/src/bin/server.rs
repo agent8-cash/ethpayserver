@@ -563,12 +563,31 @@ async fn main() -> Result<()> {
     // request tracing, CORS, and the Sentry transaction layers together, in
     // the one order this binary and its test both use.
     let app = api::with_sentry_performance_tracing(api::router(
-        state,
+        state.clone(),
         config.enable_swagger,
         Some(rate_limiters),
         idempotency,
         Some(api_key_rate_limiter),
     ));
+
+    // Create metrics listener on loopback (unauthenticated /metrics for Prometheus)
+    let metrics_bind_addr = config.metrics_bind_address();
+    let metrics_listener = TcpListener::bind(&metrics_bind_addr).await?;
+    tracing::info!("Metrics listener bound to http://{}", metrics_bind_addr);
+
+    let metrics_router = api::metrics_router(state);
+
+    // Spawn metrics listener in background
+    let metrics_handle = tokio::spawn(async move {
+        let result = axum::serve(
+            metrics_listener,
+            metrics_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+        if let Err(e) = result {
+            tracing::error!(error = %e, "metrics listener error");
+        }
+    });
 
     // Start server
     let bind_addr = config.bind_address();
@@ -599,6 +618,10 @@ async fn main() -> Result<()> {
             bridge_for_shutdown.begin_shutdown();
         }
     }
+
+    // Clean up metrics listener gracefully
+    tracing::debug!("shutting down metrics listener");
+    metrics_handle.abort();
 
     // Give the events subscription the same chance evmmonitor's command
     // subscription gets: a moment to notice its own connection ending and
