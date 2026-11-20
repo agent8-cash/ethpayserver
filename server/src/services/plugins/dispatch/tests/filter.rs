@@ -342,3 +342,104 @@ async fn a_fresh_shared_confirmed_basis_raises_nothing() {
     assert!(logged.is_empty(), "{logged}");
     assert!(counters.is_empty(), "{counters}");
 }
+
+fn a_store_creation() -> StoreCreationFilterRequest {
+    StoreCreationFilterRequest {
+        account_id: auth::UserId(Uuid::new_v4()),
+        existing_store_count: 1,
+    }
+}
+
+/// The store-creation wire contract in the direction a real plugin uses it:
+/// the plugin refuses, and its own words reach the merchant unchanged.
+#[tokio::test]
+async fn a_store_creation_refusal_reaches_the_merchant_verbatim() {
+    let host = host();
+    host.register(
+        manifest("cash.random.storefilter", "filter", None),
+        &answering(
+            FILTER_STORE_CREATION,
+            r#"{"allow":false,"reason":"Your plan allows 1 store. Upgrade to add another."}"#,
+        ),
+    )
+    .unwrap();
+
+    let filter = PluginStoreCreationFilter::new(
+        Arc::clone(&host),
+        PluginId::new("cash.random.storefilter").unwrap(),
+    );
+
+    match filter.filter_store_creation(a_store_creation()).await {
+        FilterVerdict::Deny { reason } => {
+            assert_eq!(reason, "Your plan allows 1 store. Upgrade to add another.");
+        }
+        FilterVerdict::Allow => panic!("the plugin refused the store; the host allowed it"),
+    }
+}
+
+/// Answering allow must not be overridden by the host.
+#[tokio::test]
+async fn a_store_creation_allow_is_not_overridden() {
+    let host = host();
+    host.register(
+        manifest("cash.random.storepermits", "filter", None),
+        &answering(FILTER_STORE_CREATION, r#"{"allow":true}"#),
+    )
+    .unwrap();
+
+    let filter = PluginStoreCreationFilter::new(
+        Arc::clone(&host),
+        PluginId::new("cash.random.storepermits").unwrap(),
+    );
+
+    assert_eq!(
+        filter.filter_store_creation(a_store_creation()).await,
+        FilterVerdict::Allow
+    );
+}
+
+/// A store-creation filter that fails closed refuses without leaking
+/// internals to the merchant.
+#[tokio::test]
+async fn a_failed_closed_store_filter_refuses_without_leaking_internals() {
+    let host = host();
+    host.register(
+        manifest("cash.random.storestrict", "filter", None),
+        &trapping(FILTER_STORE_CREATION),
+    )
+    .unwrap();
+
+    let filter = PluginStoreCreationFilter::new(
+        Arc::clone(&host),
+        PluginId::new("cash.random.storestrict").unwrap(),
+    );
+
+    match filter.filter_store_creation(a_store_creation()).await {
+        FilterVerdict::Deny { reason } => {
+            assert_eq!(reason, UNAVAILABLE);
+            assert!(!reason.contains("export") && !reason.contains("wasm"));
+        }
+        FilterVerdict::Allow => panic!("a closed filter that could not run must refuse"),
+    }
+}
+
+/// A store-creation filter whose plugin is not a filter kind is not registered.
+#[test]
+fn store_creation_filters_only_take_filter_kind_plugins() {
+    let host = host();
+    host.register(
+        manifest("cash.random.storeaction", "action", None),
+        &trapping(FILTER_STORE_CREATION),
+    )
+    .unwrap();
+    host.register(
+        manifest("cash.random.storefilter2", "filter", None),
+        &trapping(FILTER_STORE_CREATION),
+    )
+    .unwrap();
+    let loaded = vec![
+        PluginId::new("cash.random.storeaction").unwrap(),
+        PluginId::new("cash.random.storefilter2").unwrap(),
+    ];
+    assert_eq!(store_creation_filters(&host, &loaded).len(), 1);
+}
