@@ -115,6 +115,10 @@ jobs:
         if: always()
         run: scripts/check-commons-pin.test.sh
 
+      - name: Commons link script self-test
+        if: always()
+        run: ./scripts/commons.test.sh
+
       # A cross-repo ticket pins commons by the commons PR's branch sha before
       # that PR merges. Merge ethpayserver first (or just forget to re-pin)
       # and the workspace ends up pinned to a commit that only exists on the
