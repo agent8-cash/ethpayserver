@@ -59,6 +59,10 @@ jobs:
         if: always()
         run: ./scripts/check-no-ticket-refs.sh
 
+      - name: Ticket id guard self-test
+        if: always()
+        run: ./scripts/check-no-ticket-refs.test.sh
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
