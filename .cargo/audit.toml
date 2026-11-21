@@ -53,6 +53,28 @@ ignore = [
     # to leak via timing. derive_private_key's only other callers are its own
     # unit tests.
     "RUSTSEC-2026-0387", # crypto-bigint timing variability - see the note above
+    # rmcp RUSTSEC-2026-0462 (unbounded response body buffering) and
+    # RUSTSEC-2026-0457 (OAuth SSRF filter host string check). Both published
+    # 2026-10-22/11-05, fixes available in rmcp >=3.7.0 and >=3.9.0 respectively.
+    # EXPIRES 2026-12-10 or when mcp-server upgrades rmcp to >= 3.9.0, whichever is sooner.
+    # Re-evaluate before that date whether rmcp 3.x is compatible with the
+    # existing API usage in mcp-server/src, or whether these can be tolerated.
+    #
+    # PATH: rmcp 2.1.0 <- mcp-server 0.1.0 <- workspace. mcp-server pins
+    # rmcp = { version = "2.0", ... } in mcp-server/Cargo.toml (allows >=2.0.0,
+    # <3.0.0). No patched release exists in the 2.x line; the fixes require a
+    # major version bump to 3.x which would need API compatibility review.
+    #
+    # WHY NOT EXPLOITABLE IN THIS CONTEXT, traced through the current usage:
+    # - RUSTSEC-2026-0462 (unbounded response buffering) applies to streamable
+    #   HTTP clients. mcp-server uses rmcp with stdio transport only
+    #   (rmcp::transport::stdio), not HTTP, so response streaming is not involved.
+    # - RUSTSEC-2026-0457 (OAuth SSRF filter) applies to OAuth client flows.
+    #   mcp-server has no OAuth usage (grepped mcp-server/ for oauth/OAuth patterns,
+    #   found none); stdio transport uses no host name resolution or external network
+    #   connections beyond what the application layer (data-service) already does.
+    "RUSTSEC-2026-0462",
+    "RUSTSEC-2026-0457",
     # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
