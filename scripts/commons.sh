@@ -17,7 +17,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 manifest="$repo_root/Cargo.toml"
 config="$repo_root/.cargo/config.toml"
-url="https://github.com/randomcash/payserver-commons.git"
+url="https://github.com/agent8-cash/payserver-commons.git"
 # Every commons crate this workspace pins, read from the manifest rather than
 # listed here.
 #
