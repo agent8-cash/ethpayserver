@@ -15,8 +15,11 @@
 use super::super::{StoreScope, verify_store_access_for_query};
 use ::types::StoreId;
 use async_trait::async_trait;
-use auth::store::{UserStore, UserStoreInfo, Store};
-use auth::{Result, Role, UserId, UserInfo, repository::{StoreRepository, UserStoreRepository}};
+use auth::store::{Store, UserStore, UserStoreInfo};
+use auth::{
+    Result, Role, UserId, UserInfo,
+    repository::{StoreRepository, UserStoreRepository},
+};
 use axum::http::StatusCode;
 use chrono::Utc;
 use uuid::Uuid;

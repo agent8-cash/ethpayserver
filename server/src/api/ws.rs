@@ -38,7 +38,10 @@ use futures::{SinkExt, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use auth::{SessionService, repository::{StoreRepository, UserStoreRepository}};
+use auth::{
+    SessionService,
+    repository::{StoreRepository, UserStoreRepository},
+};
 use types::{InvoiceId, InvoiceReader, StoreId};
 
 use super::invoices::{StoreScope, verify_store_access_for_query};
@@ -959,7 +962,10 @@ mod tests {
             unimplemented!("not exercised by entitlement_of")
         }
 
-        async fn get_stores_for_user(&self, user_id: auth::UserId) -> auth::Result<Vec<auth::Store>> {
+        async fn get_stores_for_user(
+            &self,
+            user_id: auth::UserId,
+        ) -> auth::Result<Vec<auth::Store>> {
             Ok(self
                 .0
                 .iter()
