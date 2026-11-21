@@ -60,7 +60,7 @@ async fn seed_user(pool: &PgPool) -> Uuid {
     id
 }
 
-async fn seed_session_cookie(pool: &PgPool, user_id: Uuid) -> String {
+async fn seed_session_token(pool: &PgPool, user_id: Uuid) -> String {
     let device_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO devices (id, user_id, name, device_type, encrypted_symmetric_key, kdf_params, is_active) \
@@ -87,7 +87,7 @@ async fn seed_session_cookie(pool: &PgPool, user_id: Uuid) -> String {
     .await
     .expect("seed session");
 
-    format!("session_id={}", session_id)
+    session_id.to_string()
 }
 
 /// Tests that a plugin page action request without plugins loaded returns 502.
@@ -96,7 +96,7 @@ async fn seed_session_cookie(pool: &PgPool, user_id: Uuid) -> String {
 async fn page_action_without_plugin_host_returns_service_unavailable() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
-    let cookie = seed_session_cookie(pg.pool(), user_id).await;
+    let token = seed_session_token(pg.pool(), user_id).await;
 
     let app = app(&pg);
 
@@ -110,7 +110,7 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
     let request = Request::builder()
         .method("POST")
         .uri("/plugins/test-plugin/page-actions/test-page")
-        .header("Cookie", &cookie)
+        .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -151,14 +151,14 @@ async fn unauthenticated_page_action_returns_unauthorized() {
 async fn malformed_page_action_request_returns_bad_request() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
-    let cookie = seed_session_cookie(pg.pool(), user_id).await;
+    let token = seed_session_token(pg.pool(), user_id).await;
 
     let app = app(&pg);
 
     let request = Request::builder()
         .method("POST")
         .uri("/plugins/test-plugin/page-actions/test-page")
-        .header("Cookie", &cookie)
+        .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from("not valid json"))
         .unwrap();
@@ -173,7 +173,7 @@ async fn malformed_page_action_request_returns_bad_request() {
 async fn action_to_nonexistent_plugin_returns_not_found() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
-    let cookie = seed_session_cookie(pg.pool(), user_id).await;
+    let token = seed_session_token(pg.pool(), user_id).await;
 
     let app = app(&pg);
 
@@ -186,7 +186,7 @@ async fn action_to_nonexistent_plugin_returns_not_found() {
     let request = Request::builder()
         .method("POST")
         .uri("/plugins/nonexistent-plugin-xyz/page-actions/test-page")
-        .header("Cookie", &cookie)
+        .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -201,7 +201,7 @@ async fn action_to_nonexistent_plugin_returns_not_found() {
 async fn empty_action_id_returns_bad_request() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
-    let cookie = seed_session_cookie(pg.pool(), user_id).await;
+    let token = seed_session_token(pg.pool(), user_id).await;
 
     let app = app(&pg);
 
@@ -214,7 +214,7 @@ async fn empty_action_id_returns_bad_request() {
     let request = Request::builder()
         .method("POST")
         .uri("/plugins/test-plugin/page-actions/test-page")
-        .header("Cookie", &cookie)
+        .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
