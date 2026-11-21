@@ -78,6 +78,7 @@ run "db tests never skip"       ./scripts/check-test-db-skips.sh
 run "commons pin matches lock"  ./scripts/check-commons-pin.sh
 run "commons link finds crates" ./scripts/commons.test.sh
 run "file sizes (report only)"   ./scripts/check-file-size.sh
+run "lockfile current"          ./scripts/check-lockfile-current.sh
 
 echo "== compiler =="
 run "cargo fmt"                 cargo fmt --all -- --check
