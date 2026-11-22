@@ -90,17 +90,36 @@ async fn seed_session_token(pool: &PgPool, user_id: Uuid) -> String {
     session_id.to_string()
 }
 
-/// Tests that a plugin page action request without plugins loaded returns 502.
+/// Installs a plugin row with no manifest guarantees beyond parsing - enough
+/// for `resolve_plugin`'s fallback-by-id path to find it, without implying
+/// the (absent, in these tests) plugin host can actually load it.
+async fn seed_installed_plugin(pool: &PgPool, id: &str) {
+    sqlx::query(
+        "INSERT INTO installed_plugins (id, version, manifest_toml, artifact_sha256) \
+         VALUES ($1, '0.1.0', $2, $3)",
+    )
+    .bind(id)
+    .bind(format!(
+        "id = \"{id}\"\nversion = \"0.1.0\"\nkind = \"action\"\n"
+    ))
+    .bind("a".repeat(64))
+    .execute(pool)
+    .await
+    .expect("seed installed plugin");
+}
+
+/// Tests that a plugin page action request without plugins loaded returns 503.
 #[tokio::test]
 #[ignore]
 async fn page_action_without_plugin_host_returns_service_unavailable() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
     let token = seed_session_token(pg.pool(), user_id).await;
+    seed_installed_plugin(pg.pool(), "test-plugin").await;
 
     let app = app(&pg);
 
-    // POST an action - with no plugins loaded, the host is unavailable
+    // POST an action - the plugin is installed but no host is running
     let body = serde_json::to_vec(&json!({
         "action_id": "test_action",
         "data": {"key": "value"}
@@ -202,6 +221,7 @@ async fn empty_action_id_returns_bad_request() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
     let token = seed_session_token(pg.pool(), user_id).await;
+    seed_installed_plugin(pg.pool(), "test-plugin").await;
 
     let app = app(&pg);
 

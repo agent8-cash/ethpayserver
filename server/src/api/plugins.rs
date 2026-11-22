@@ -414,11 +414,26 @@ pub async fn handle_page_action<A>(
 where
     A: SessionService + 'static,
 {
-    // Resolve plugin by slug or id, same as GET path
+    // Resolve plugin by slug or id, same as GET path. Unlike GET, nothing
+    // downstream re-checks that an id taken via the fallback actually names
+    // an installed plugin before the plugin-host check below runs - so
+    // without this, a nonexistent plugin and an unavailable host were
+    // indistinguishable, and host-down always won.
     let plugin_id = match resolve_plugin(&state, &plugin_ref).await {
         Some(id) => id,
-        None => PluginId::new(plugin_ref)
-            .map_err(|e| ApiErr::from((StatusCode::NOT_FOUND, e.to_string())))?,
+        None => {
+            let id = PluginId::new(plugin_ref)
+                .map_err(|e| ApiErr::from((StatusCode::NOT_FOUND, e.to_string())))?;
+            data_service::InstalledPluginReader::get_installed_plugin(
+                &*state.data_service,
+                id.as_str(),
+            )
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| ApiErr::from((StatusCode::NOT_FOUND, "plugin not found".to_string())))?;
+            id
+        }
     };
 
     // Validate the action_id is not empty - a malformed request must be refused
