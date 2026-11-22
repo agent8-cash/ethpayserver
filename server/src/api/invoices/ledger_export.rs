@@ -205,6 +205,46 @@ fn header_row() -> String {
     csv_row(LEDGER_HEADER)
 }
 
+/// Columns whose value is free text a payer can influence.
+///
+/// These are the columns a spreadsheet will evaluate. `order_number` comes from
+/// invoice metadata and `customer_email` from whoever paid, so both are
+/// attacker-controlled by the person being invoiced.
+const PAYER_INFLUENCED_TEXT_COLUMNS: &[&str] = &["order_number", "customer_email"];
+
+/// Neutralise a leading spreadsheet formula trigger.
+///
+/// Quoting is not enough: Excel and LibreOffice still evaluate a quoted cell
+/// that begins with `=`, `+`, `-` or `@`, and also treat a leading TAB or CR as
+/// a prefix to one. A merchant opening this file in a spreadsheet is the whole
+/// point of the file, so a payer-supplied value must never become a formula -
+/// `=HYPERLINK(...)` in an order number would otherwise run when the accountant
+/// opens the ledger. Prefixing an apostrophe makes the cell literal text.
+///
+/// The value is only touched when the first character is a trigger, so ordinary
+/// addresses, ids and amounts stay byte-identical to what they were.
+fn neutralise_formula(field: &str) -> String {
+    match field.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{field}"),
+        _ => field.to_string(),
+    }
+}
+
+/// Apply `neutralise_formula` to the payer-influenced columns of a built row.
+///
+/// Kept separate from `build_ledger_row` so the neutralisation is a deliberate,
+/// column-scoped step rather than being hidden inside a 26-element vector
+/// literal, where a later column reorder would silently drop it.
+fn neutralise_row(row: &mut [String]) {
+    for name in PAYER_INFLUENCED_TEXT_COLUMNS {
+        if let Some(i) = LEDGER_HEADER.iter().position(|h| h == name)
+            && let Some(cell) = row.get_mut(i)
+        {
+            *cell = neutralise_formula(cell);
+        }
+    }
+}
+
 /// Render one page of payments as CSV rows.
 ///
 /// `Err(())` means the data service failed, which ends the stream the same way
@@ -223,14 +263,19 @@ where
             .await
             .map_err(|_| ())?;
 
+        // A failed option read must not become "no option": empty scale and
+        // destination cells are indistinguishable from a payment that never had
+        // an option, and the accountant would then read a real payment as one
+        // that cannot be scaled. Same rule as the invoice read above.
         let option: Option<PaymentOptionData> = match payment.payment_option_id {
             Some(id) => PaymentOptionReader::get(ds, &PaymentOptionId(id))
                 .await
-                .unwrap_or_default(),
+                .map_err(|_| ())?,
             None => None,
         };
 
-        let row = build_ledger_row(payment, invoice.as_ref(), option.as_ref());
+        let mut row = build_ledger_row(payment, invoice.as_ref(), option.as_ref());
+        neutralise_row(&mut row);
         let refs: Vec<&str> = row.iter().map(String::as_str).collect();
         chunk.push_str(&csv_row(&refs));
     }
@@ -282,8 +327,10 @@ where
     let date = chrono::Utc::now().format("%Y%m%d");
     let filename = format!("ledger_{}_{}.csv", store_label, date);
 
-    let header_stream =
-        futures::stream::once(async { Ok::<_, std::convert::Infallible>(header_row()) });
+    // The body is a fallible stream on purpose: a mid-export failure has to
+    // reach the client as an aborted download. A cleanly-ended 200 would look
+    // like a complete ledger that is silently short of rows.
+    let header_stream = futures::stream::once(async { Ok::<_, std::io::Error>(header_row()) });
 
     let ds = Arc::clone(&state.data_service);
     let data_stream =
@@ -292,9 +339,16 @@ where
                 .clone()
                 .with_limit(EXPORT_PAGE_SIZE)
                 .with_offset(offset);
+            // Both failure paths yield a stream error, not an end: the client
+            // sees an aborted download instead of a 200 with rows missing.
             let payments = match PaymentReader::query(&*ds, &page).await {
                 Ok((_, rows)) => rows,
-                Err(_) => return None,
+                Err(_) => {
+                    return Some((
+                        Err(std::io::Error::other("payment page read failed")),
+                        (offset, params, ds),
+                    ));
+                }
             };
             if payments.is_empty() {
                 return None;
@@ -303,12 +357,14 @@ where
             let new_offset = offset + payments.len() as i64;
             let chunk = match page_to_csv(&*ds, &payments).await {
                 Ok(chunk) => chunk,
-                Err(()) => return None,
+                Err(()) => {
+                    return Some((
+                        Err(std::io::Error::other("ledger join failed")),
+                        (new_offset, params, ds),
+                    ));
+                }
             };
-            Some((
-                Ok::<_, std::convert::Infallible>(chunk),
-                (new_offset, params, ds),
-            ))
+            Some((Ok::<_, std::io::Error>(chunk), (new_offset, params, ds)))
         });
 
     let body = Body::from_stream(header_stream.chain(data_stream));
@@ -486,6 +542,223 @@ mod tests {
         assert_eq!(col("order_number"), "ORD-7");
         assert_eq!(col("status"), "confirmed");
         assert!(!col("confirmed_at").is_empty());
+    }
+
+    /// A data service that answers the two joins `page_to_csv` needs and can be
+    /// told to fail either one, so the fail-closed behaviour is exercised
+    /// without a database.
+    struct JoinStub {
+        invoice: Option<InvoiceData>,
+        option: Option<PaymentOptionData>,
+        invoice_error: bool,
+        option_error: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl InvoiceReader for JoinStub {
+        async fn get(&self, _: &InvoiceId) -> types::RepositoryResult<Option<InvoiceData>> {
+            if self.invoice_error {
+                return Err(types::RepositoryError::Database("boom".to_string()));
+            }
+            Ok(self.invoice.clone())
+        }
+        async fn query(
+            &self,
+            _: &types::InvoiceQueryParams,
+        ) -> types::RepositoryResult<(i64, Vec<InvoiceData>)> {
+            unimplemented!("page_to_csv reads rows through PaymentReader, not InvoiceReader")
+        }
+        async fn get_expired(&self) -> types::RepositoryResult<Vec<InvoiceData>> {
+            unimplemented!("not exercised here")
+        }
+        fn stream_expired_pending(
+            &self,
+        ) -> futures::stream::BoxStream<'_, types::RepositoryResult<InvoiceId>> {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PaymentOptionReader for JoinStub {
+        async fn get(
+            &self,
+            _: &PaymentOptionId,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            if self.option_error {
+                return Err(types::RepositoryError::Database("boom".to_string()));
+            }
+            Ok(self.option.clone())
+        }
+        async fn get_for_invoice(
+            &self,
+            _: &InvoiceId,
+        ) -> types::RepositoryResult<Vec<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_by_payment_method(
+            &self,
+            _: &InvoiceId,
+            _: &types::PaymentMethodId,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_active_for_invoice(
+            &self,
+            _: &InvoiceId,
+        ) -> types::RepositoryResult<Vec<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_by_address(
+            &self,
+            _: &str,
+            _: &ChainId,
+            _: Option<&str>,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_invoice_join_fails_the_page_instead_of_dropping_the_row() {
+        let stub = JoinStub {
+            invoice: None,
+            option: Some(option(6)),
+            invoice_error: true,
+            option_error: false,
+        };
+        let p = payment("1500000", Some("1.50"));
+        assert!(
+            page_to_csv(&stub, std::slice::from_ref(&p)).await.is_err(),
+            "a failed invoice read must end the stream as an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_option_join_is_not_read_as_a_payment_without_an_option() {
+        // The row renders fine with no option - that is the bug. A database
+        // error has to be distinguishable from "this payment has no option
+        // row", otherwise a real payment exports with empty scale/address as if
+        // the data were simply absent.
+        let stub = JoinStub {
+            invoice: Some(invoice()),
+            option: None,
+            invoice_error: false,
+            option_error: true,
+        };
+        let p = payment("1500000", Some("1.50"));
+        assert!(
+            page_to_csv(&stub, std::slice::from_ref(&p)).await.is_err(),
+            "a failed option read must not be swallowed into an empty column"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_option_row_still_renders_the_payment() {
+        // The control for the test above: an option that is genuinely absent
+        // must still produce a row, with the payment-level columns filled.
+        let stub = JoinStub {
+            invoice: Some(invoice()),
+            option: None,
+            invoice_error: false,
+            option_error: false,
+        };
+        let p = payment("1500000", Some("1.50"));
+        let csv = page_to_csv(&stub, std::slice::from_ref(&p))
+            .await
+            .expect("an absent option is not an error");
+        assert_eq!(csv.matches("\r\n").count(), 1);
+        assert!(csv.contains("USDC"));
+    }
+
+    #[tokio::test]
+    async fn rows_from_page_to_csv_are_formula_neutralised() {
+        let mut inv = invoice();
+        inv.metadata = Some(serde_json::json!({"order_number": "=1+1"}));
+        let stub = JoinStub {
+            invoice: Some(inv),
+            option: Some(option(6)),
+            invoice_error: false,
+            option_error: false,
+        };
+        let p = payment("1500000", Some("1.50"));
+        let csv = page_to_csv(&stub, std::slice::from_ref(&p))
+            .await
+            .expect("happy path");
+        // Quoted by the CSV escaper because of the apostrophe? No: an
+        // apostrophe is not special, so the cell stays unquoted and must not
+        // begin the field with '='.
+        assert!(csv.contains("'=1+1"), "got: {csv}");
+        assert!(!csv.contains(",=1+1"), "a bare formula survived: {csv}");
+    }
+
+    #[test]
+    fn payer_supplied_text_cannot_become_a_spreadsheet_formula() {
+        // An order number and a customer email are both written by the payer.
+        // A leading =, +, -, @, TAB or CR makes Excel and LibreOffice treat the
+        // cell as a formula, so each one must be prefixed with an apostrophe.
+        let mut inv = invoice();
+        inv.metadata = Some(serde_json::json!({"order_number": "=HYPERLINK(\"http://x\",\"a\")"}));
+        inv.customer_email = Some("@evil.example".to_string());
+
+        let mut row = build_ledger_row(
+            &payment("1500000", Some("1.50")),
+            Some(&inv),
+            Some(&option(6)),
+        );
+        neutralise_row(&mut row);
+
+        let col = |name: &str| -> String {
+            let i = LEDGER_HEADER.iter().position(|h| *h == name).unwrap();
+            row[i].clone()
+        };
+        assert_eq!(col("order_number"), "'=HYPERLINK(\"http://x\",\"a\")");
+        assert_eq!(col("customer_email"), "'@evil.example");
+    }
+
+    #[test]
+    fn every_formula_trigger_is_neutralised_and_ordinary_text_is_not() {
+        for trigger in ["=cmd", "+cmd", "-cmd", "@cmd", "\tcmd", "\rcmd"] {
+            assert_eq!(
+                neutralise_formula(trigger),
+                format!("'{trigger}"),
+                "{trigger:?} would be evaluated by a spreadsheet"
+            );
+        }
+        // A negative-looking but non-leading trigger is ordinary text.
+        assert_eq!(neutralise_formula("A-1"), "A-1");
+        assert_eq!(neutralise_formula("buyer@example.com"), "buyer@example.com");
+        assert_eq!(neutralise_formula(""), "");
+    }
+
+    #[test]
+    fn neutralisation_touches_only_the_payer_influenced_columns() {
+        // The tx hash, addresses and amounts are produced by the chain reader,
+        // not the payer, and must stay byte-identical - including a value that
+        // starts with a trigger character.
+        let mut p = payment("1500000", Some("-1.50"));
+        p.tx_hash = "0xabc".to_string();
+        let mut row = build_ledger_row(&p, Some(&invoice()), Some(&option(6)));
+        let before = row.clone();
+        neutralise_row(&mut row);
+
+        let changed: Vec<usize> = before
+            .iter()
+            .zip(row.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            changed.is_empty(),
+            "no payer-influenced column in this row starts with a trigger, so nothing may change; changed indices {changed:?}"
+        );
+
+        // And the fiat column keeps its leading minus untouched.
+        let i = LEDGER_HEADER
+            .iter()
+            .position(|h| *h == "fiat_value_credited")
+            .unwrap();
+        assert_eq!(row[i], "-1.50");
     }
 
     #[test]
