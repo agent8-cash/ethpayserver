@@ -30,6 +30,7 @@ use server::{
     DEFAULT_CALL_DEADLINE, DEFAULT_MAX_FAILURES, DEFAULT_MAX_IN_FLIGHT, PluginArtifacts,
     PluginHost, PluginPools, account_closed_observers, host_version, invoice_creation_filters,
     load_installed_plugins, own_store_payment_reporting, payment_observers, report_boot,
+    store_creation_filters,
 };
 
 use server::tracing_init::init_tracing;
@@ -264,11 +265,17 @@ async fn main() -> Result<()> {
 
     // Turn the loaded plugins into the capability implementations the server
     // calls - without this, a plugin registers but nothing dispatches to it.
-    let (plugin_filters, plugin_payment_observers, plugin_account_closed_observers) = plugin_host
+    let (
+        plugin_filters,
+        plugin_store_filters,
+        plugin_payment_observers,
+        plugin_account_closed_observers,
+    ) = plugin_host
         .as_ref()
-        .map_or((Vec::new(), Vec::new(), Vec::new()), |host| {
+        .map_or((Vec::new(), Vec::new(), Vec::new(), Vec::new()), |host| {
             (
                 invoice_creation_filters(host, &loaded),
+                store_creation_filters(host, &loaded),
                 payment_observers(host, &loaded),
                 account_closed_observers(host, &loaded),
             )
@@ -450,6 +457,7 @@ async fn main() -> Result<()> {
     // installed, which is every deployment today; before this line it was
     // empty even then.
     state.invoice_creation_filters = plugin_filters;
+    state.store_creation_filters = plugin_store_filters;
     // Capability 8, empty until a plugin is installed, same as the filter list above.
     state.account_closed_observers = plugin_account_closed_observers;
     // Only drives own-store payment reporting; filter exemption is per credential.
@@ -563,12 +571,31 @@ async fn main() -> Result<()> {
     // request tracing, CORS, and the Sentry transaction layers together, in
     // the one order this binary and its test both use.
     let app = api::with_sentry_performance_tracing(api::router(
-        state,
+        state.clone(),
         config.enable_swagger,
         Some(rate_limiters),
         idempotency,
         Some(api_key_rate_limiter),
     ));
+
+    // Create metrics listener on loopback (unauthenticated /metrics for Prometheus)
+    let metrics_bind_addr = config.metrics_bind_address();
+    let metrics_listener = TcpListener::bind(&metrics_bind_addr).await?;
+    tracing::info!("Metrics listener bound to http://{}", metrics_bind_addr);
+
+    let metrics_router = api::metrics_router(state);
+
+    // Spawn metrics listener in background
+    let metrics_handle = tokio::spawn(async move {
+        let result = axum::serve(
+            metrics_listener,
+            metrics_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+        if let Err(e) = result {
+            tracing::error!(error = %e, "metrics listener error");
+        }
+    });
 
     // Start server
     let bind_addr = config.bind_address();
@@ -599,6 +626,10 @@ async fn main() -> Result<()> {
             bridge_for_shutdown.begin_shutdown();
         }
     }
+
+    // Clean up metrics listener gracefully
+    tracing::debug!("shutting down metrics listener");
+    metrics_handle.abort();
 
     // Give the events subscription the same chance evmmonitor's command
     // subscription gets: a moment to notice its own connection ending and

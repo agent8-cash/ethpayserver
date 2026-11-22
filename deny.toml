@@ -35,4 +35,4 @@ wildcards = "allow"
 unknown-registry = "warn"
 unknown-git = "allow"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/randomcash/payserver-commons.git"]
+allow-git = ["https://github.com/agent8-cash/payserver-commons.git"]
