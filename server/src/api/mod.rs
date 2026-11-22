@@ -250,6 +250,7 @@ where
     let payment_routes = Router::new()
         .route("/", get(invoices::list_payments::<A>))
         .route("/export.csv", get(invoices::export_payments_csv::<A>))
+        .route("/ledger.csv", get(invoices::export_ledger_csv::<A>))
         .route("/{payment_id}", get(invoices::get_payment::<A>))
         .with_state(state.clone());
 
