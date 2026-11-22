@@ -37,7 +37,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 
 use ::types::{
-    InvoiceData, InvoiceReader, PaymentData, PaymentOptionData, PaymentOptionId,
+    InvoiceData, InvoiceId, InvoiceReader, PaymentData, PaymentOptionData, PaymentOptionId,
     PaymentOptionReader, PaymentReader,
 };
 use auth::SessionService;
@@ -245,36 +245,98 @@ fn neutralise_row(row: &mut [String]) {
     }
 }
 
+/// How many join reads may be in flight at once.
+///
+/// The reads are independent, so they overlap; the cap keeps a page with many
+/// distinct ids from opening that many connections at the same instant. It is a
+/// concurrency bound, not a row bound: rows are rendered afterwards from
+/// id-keyed maps, so the file's row order is the payment order regardless of
+/// which read finished first.
+const JOIN_CONCURRENCY: usize = 16;
+
 /// Render one page of payments as CSV rows.
 ///
 /// `Err(())` means the data service failed, which ends the stream the same way
 /// a failed page read does - half a ledger is worse than an error, because the
 /// truncated file still opens and still reconciles against nothing.
+///
+/// The joins are done per **distinct id**, not per row: one merchant invoice
+/// routinely carries several payments (partial payments, retries, a second
+/// asset), and every one of those rows would otherwise re-read the same invoice
+/// and the same payment option. The deduplicated id sets are read concurrently
+/// with a bounded width, then rows are rendered from the resulting maps without
+/// any further I/O.
+///
+/// This is still one read per distinct id, so a page of 1000 payments to 1000
+/// different invoices is 1000 reads at width 16 rather than 2000 sequential
+/// ones. Collapsing that to a single query needs an id-set reader on
+/// `InvoiceReader`/`PaymentOptionReader` in payserver-commons; that is a
+/// separate repository and a separate change.
 async fn page_to_csv<D>(ds: &D, payments: &[PaymentData]) -> Result<String, ()>
 where
     D: InvoiceReader + PaymentOptionReader,
 {
+    // Distinct ids, preserving first-seen order so the maps are built in a
+    // stable order. The ids are owned clones: the read futures have to own
+    // them, because a borrowed id ties the future to the page lifetime and the
+    // resulting stream cannot outlive this call.
+    let mut invoice_ids: Vec<InvoiceId> = Vec::new();
+    let mut option_ids: Vec<uuid::Uuid> = Vec::new();
+    let mut seen_invoice: std::collections::HashSet<&InvoiceId> = std::collections::HashSet::new();
+    let mut seen_option: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+
+    for payment in payments {
+        if seen_invoice.insert(&payment.invoice_id) {
+            invoice_ids.push(payment.invoice_id.clone());
+        }
+        if let Some(id) = payment.payment_option_id
+            && seen_option.insert(id)
+        {
+            option_ids.push(id);
+        }
+    }
+
+    // A failed read must not become "not recorded": empty scale and destination
+    // cells are indistinguishable from a payment that never had an option, and
+    // the accountant would then read a real payment as one that cannot be
+    // scaled. Same rule for the invoice side.
+    let invoices: Vec<Option<InvoiceData>> = futures::stream::iter(invoice_ids.iter().cloned())
+        .map(|id| async move { InvoiceReader::get(ds, &id).await })
+        .buffered(JOIN_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+
+    let options: Vec<Option<PaymentOptionData>> = futures::stream::iter(option_ids.iter().copied())
+        .map(|id| async move { PaymentOptionReader::get(ds, &PaymentOptionId(id)).await })
+        .buffered(JOIN_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+
+    let invoice_by_id: std::collections::HashMap<InvoiceId, Option<InvoiceData>> =
+        invoice_ids.into_iter().zip(invoices).collect();
+    let option_by_id: std::collections::HashMap<uuid::Uuid, Option<PaymentOptionData>> =
+        option_ids.into_iter().zip(options).collect();
+
     let mut chunk = String::new();
     for payment in payments {
         // A payment whose invoice is gone is still a real receipt: the
         // invoice-side columns stay empty rather than dropping the row or
         // inventing an invoice to fill them.
-        let invoice = InvoiceReader::get(ds, &payment.invoice_id)
-            .await
-            .map_err(|_| ())?;
+        let invoice = invoice_by_id
+            .get(&payment.invoice_id)
+            .and_then(|i| i.as_ref());
+        let option = payment
+            .payment_option_id
+            .and_then(|id| option_by_id.get(&id))
+            .and_then(|o| o.as_ref());
 
-        // A failed option read must not become "no option": empty scale and
-        // destination cells are indistinguishable from a payment that never had
-        // an option, and the accountant would then read a real payment as one
-        // that cannot be scaled. Same rule as the invoice read above.
-        let option: Option<PaymentOptionData> = match payment.payment_option_id {
-            Some(id) => PaymentOptionReader::get(ds, &PaymentOptionId(id))
-                .await
-                .map_err(|_| ())?,
-            None => None,
-        };
-
-        let mut row = build_ledger_row(payment, invoice.as_ref(), option.as_ref());
+        let mut row = build_ledger_row(payment, invoice, option);
         neutralise_row(&mut row);
         let refs: Vec<&str> = row.iter().map(String::as_str).collect();
         chunk.push_str(&csv_row(&refs));
@@ -668,6 +730,141 @@ mod tests {
             .expect("an absent option is not an error");
         assert_eq!(csv.matches("\r\n").count(), 1);
         assert!(csv.contains("USDC"));
+    }
+
+    /// A data service that counts how many reads it was asked for, so the
+    /// deduplication can be proved by call count rather than by inspection.
+    struct CountingStub {
+        invoice_reads: std::sync::atomic::AtomicUsize,
+        option_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl InvoiceReader for CountingStub {
+        async fn get(&self, _: &InvoiceId) -> types::RepositoryResult<Option<InvoiceData>> {
+            self.invoice_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(invoice()))
+        }
+        async fn query(
+            &self,
+            _: &types::InvoiceQueryParams,
+        ) -> types::RepositoryResult<(i64, Vec<InvoiceData>)> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_expired(&self) -> types::RepositoryResult<Vec<InvoiceData>> {
+            unimplemented!("not exercised here")
+        }
+        fn stream_expired_pending(
+            &self,
+        ) -> futures::stream::BoxStream<'_, types::RepositoryResult<InvoiceId>> {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PaymentOptionReader for CountingStub {
+        async fn get(
+            &self,
+            _: &PaymentOptionId,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            self.option_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(option(6)))
+        }
+        async fn get_for_invoice(
+            &self,
+            _: &InvoiceId,
+        ) -> types::RepositoryResult<Vec<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_by_payment_method(
+            &self,
+            _: &InvoiceId,
+            _: &types::PaymentMethodId,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_active_for_invoice(
+            &self,
+            _: &InvoiceId,
+        ) -> types::RepositoryResult<Vec<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+        async fn get_by_address(
+            &self,
+            _: &str,
+            _: &ChainId,
+            _: Option<&str>,
+        ) -> types::RepositoryResult<Option<PaymentOptionData>> {
+            unimplemented!("not exercised here")
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_invoice_and_option_are_read_once_per_page() {
+        // Three payments on one invoice through one payment option is the
+        // ordinary shape of a partially paid invoice: the old code did six
+        // point reads for it.
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let shared_invoice = InvoiceId::new();
+        let shared_option = PaymentOptionId(uuid::Uuid::new_v4());
+        let payments: Vec<PaymentData> = (0..3)
+            .map(|_| {
+                let mut p = payment("500000", Some("0.50"));
+                p.invoice_id = shared_invoice.clone();
+                p.payment_option_id = Some(shared_option.0);
+                p
+            })
+            .collect();
+
+        let stub = CountingStub {
+            invoice_reads: std::sync::atomic::AtomicUsize::new(0),
+            option_reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let csv = page_to_csv(&stub, &payments).await.expect("happy path");
+
+        assert_eq!(csv.matches("\r\n").count(), 3, "one row per payment");
+        assert_eq!(
+            stub.invoice_reads.load(SeqCst),
+            1,
+            "a shared invoice must be read once per page, not once per payment"
+        );
+        assert_eq!(
+            stub.option_reads.load(SeqCst),
+            1,
+            "a shared payment option must be read once per page"
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_ids_are_all_read_and_rows_keep_payment_order() {
+        // The control for the test above: deduplication must not collapse rows
+        // that genuinely differ, and each row must still get its own join.
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let payments: Vec<PaymentData> = (0..3)
+            .map(|i| {
+                let mut p = payment(&format!("{}", 1000 + i), Some("1.00"));
+                p.invoice_id = InvoiceId(format!("inv-{i}"));
+                p.payment_option_id = Some(uuid::Uuid::new_v4());
+                p
+            })
+            .collect();
+
+        let stub = CountingStub {
+            invoice_reads: std::sync::atomic::AtomicUsize::new(0),
+            option_reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let csv = page_to_csv(&stub, &payments).await.expect("happy path");
+
+        assert_eq!(stub.invoice_reads.load(SeqCst), 3);
+        assert_eq!(stub.option_reads.load(SeqCst), 3);
+        // Rows are emitted in payment order, one per line.
+        assert_eq!(csv.matches("\r\n").count(), 3);
+        let first = csv.split("\r\n").next().unwrap();
+        assert!(first.contains(&payments[0].id.to_string()), "got: {first}");
     }
 
     #[tokio::test]
