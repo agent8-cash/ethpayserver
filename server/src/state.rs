@@ -15,9 +15,9 @@ use rates::RateProvider;
 use crate::api::ws::WsBroadcast;
 use crate::services::email::EmailSender;
 use crate::services::plugins::AccountClosedObserver;
-use crate::services::plugins::InvoiceCreationFilter;
 use crate::services::plugins::PageHost;
 use crate::services::plugins::PluginHost;
+use crate::services::plugins::{InvoiceCreationFilter, StoreCreationFilter};
 use crate::services::webhook::WebhookSink;
 
 /// Read-only data service trait for the application.
@@ -106,6 +106,10 @@ pub struct AppState<D, A, E> {
     /// to enforce a lapsed subscription. Empty when no such plugin is
     /// installed, in which case invoice creation is never filtered at all.
     pub invoice_creation_filters: Vec<Arc<dyn InvoiceCreationFilter>>,
+
+    /// Plugins that may refuse store creation. Empty when no such plugin is
+    /// installed, in which case store creation is never filtered.
+    pub store_creation_filters: Vec<Arc<dyn StoreCreationFilter>>,
 
     /// Plugins told when an account is deleted (host capability 8). Empty
     /// when no plugin is installed, in which case a deleted account's rows in
@@ -211,6 +215,7 @@ impl<D, A, E> Clone for AppState<D, A, E> {
             webhook_sink: self.webhook_sink.clone(),
             webauthn: self.webauthn.clone(),
             invoice_creation_filters: self.invoice_creation_filters.clone(),
+            store_creation_filters: self.store_creation_filters.clone(),
             account_closed_observers: self.account_closed_observers.clone(),
             operator_store_id: self.operator_store_id,
             operator_account_id: self.operator_account_id,
@@ -245,6 +250,7 @@ impl<D, A, E> AppState<D, A, E> {
             webhook_sink: None,
             webauthn: None,
             invoice_creation_filters: Vec::new(),
+            store_creation_filters: Vec::new(),
             account_closed_observers: Vec::new(),
             operator_store_id: None,
             operator_account_id: None,

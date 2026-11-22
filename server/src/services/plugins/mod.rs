@@ -83,13 +83,14 @@ pub use boot::{
 };
 pub use dispatch::{
     ACCOUNT_CLOSED, CANCEL_SUBSCRIPTION, CancelSubscriptionOutcome, FILTER_INVOICE_CREATION,
-    PAYMENT_SETTLED, PluginAccountClosedObserver, PluginInvoiceCreationFilter,
-    PluginPaymentObserver, account_closed_observers, cancel_subscription, invoice_creation_filters,
-    own_store_payment_reporting, payment_observers,
+    FILTER_STORE_CREATION, PAYMENT_SETTLED, PluginAccountClosedObserver,
+    PluginInvoiceCreationFilter, PluginPaymentObserver, PluginStoreCreationFilter,
+    account_closed_observers, cancel_subscription, invoice_creation_filters,
+    own_store_payment_reporting, payment_observers, store_creation_filters,
 };
 pub use filter::{
-    FilterVerdict, InvoiceCreationFilter, InvoiceCreationFilterRequest,
-    run_invoice_creation_filters,
+    FilterVerdict, InvoiceCreationFilter, InvoiceCreationFilterRequest, StoreCreationFilter,
+    StoreCreationFilterRequest, run_invoice_creation_filters, run_store_creation_filters,
 };
 pub use host_calls::{
     DeferredBulkVolume, DeferredCapabilities, DeferredIssuer, DeferredNotifier, DeferredStanding,
