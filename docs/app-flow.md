@@ -74,11 +74,12 @@ Check the derived addresses before taking a payment with
 curl -X POST https://your-instance.example.com/stores/{store_id}/payment-methods \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"chain_id": "eip155:1"}'
+  -d '{"chain_id": "eip155:11155111"}'
 ```
 
-`chain_id` is a CAIP-2 string. Each payment method derives its addresses
-from the store's xpub.
+`chain_id` is a CAIP-2 string; this example uses Sepolia, this deployment's
+testnet chain. Each payment method derives its addresses from the store's
+xpub.
 
 ## 5. Invoice creation
 
