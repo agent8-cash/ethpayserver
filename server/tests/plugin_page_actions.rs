@@ -115,7 +115,8 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
     let token = seed_session_token(pg.pool(), user_id).await;
-    seed_installed_plugin(pg.pool(), "test-plugin").await;
+    let plugin_id = format!("test-plugin-{}", Uuid::new_v4());
+    seed_installed_plugin(pg.pool(), &plugin_id).await;
 
     let app = app(&pg);
 
@@ -128,7 +129,7 @@ async fn page_action_without_plugin_host_returns_service_unavailable() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/page-actions/test-page")
+        .uri(format!("/plugins/{plugin_id}/page-actions/test-page"))
         .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from(body))
@@ -221,7 +222,8 @@ async fn empty_action_id_returns_bad_request() {
     let pg = Arc::new(pg_service().await);
     let user_id = seed_user(pg.pool()).await;
     let token = seed_session_token(pg.pool(), user_id).await;
-    seed_installed_plugin(pg.pool(), "test-plugin").await;
+    let plugin_id = format!("test-plugin-{}", Uuid::new_v4());
+    seed_installed_plugin(pg.pool(), &plugin_id).await;
 
     let app = app(&pg);
 
@@ -233,7 +235,7 @@ async fn empty_action_id_returns_bad_request() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/plugins/test-plugin/page-actions/test-page")
+        .uri(format!("/plugins/{plugin_id}/page-actions/test-page"))
         .header("Authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(Body::from(body))
