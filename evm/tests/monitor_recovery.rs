@@ -150,16 +150,35 @@ async fn killed_connection_goes_red_then_resumes_without_restart() {
     // Kill the RPC endpoint: sever the stream the running monitor is
     // holding (the way a dropped WebSocket would) and make every connection
     // attempt fail until restored.
+    let killed_at = std::time::Instant::now();
     test_source.kill_connection();
     test_source.set_block_number(230); // the chain kept advancing while we couldn't see it
 
-    // Give the watchdog time to notice the stall, try to resubscribe, and
-    // have that attempt fail - which is what actually flips `status` to
+    // Wait for the watchdog to notice the stall, try to resubscribe, and have
+    // that attempt fail - which is what actually flips `status` to
     // `Disconnected` (the mock, like the real `RpcBlockSource`, only updates
     // status as a side effect of a subscribe attempt, never on its own).
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Poll for the condition rather than sleeping a fixed time, so the test
+    // measures the watchdog and not the machine it runs on.
+    let ceiling = Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + ceiling;
+    let health = loop {
+        let health = monitor.get_health().await;
+        if health.status == SourceStatus::Disconnected {
+            break health;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "status never reached Disconnected within {ceiling:?} (last: {:?})",
+            health.status
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    eprintln!(
+        "disconnect_flip_latency_ms={}",
+        killed_at.elapsed().as_millis()
+    );
 
-    let health = monitor.get_health().await;
     assert_eq!(health.status, SourceStatus::Disconnected);
     assert!(
         !health.is_healthy,
