@@ -35,6 +35,15 @@ pub(super) fn invalid_key_response() -> Response {
     )
         .into_response()
 }
+
+/// 503 response when Redis is unavailable and idempotency cannot be guaranteed.
+pub(super) fn redis_unavailable_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({"error": "service_unavailable"})),
+    )
+        .into_response()
+}
 /// Build a response from cached data with `Idempotency-Replayed: true` header.
 ///
 /// Restores every cached header (content-type, location, pagination, custom
