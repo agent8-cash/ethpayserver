@@ -1,7 +1,7 @@
 //! HTTP handlers for liveness, readiness, basic health, chains health and metrics.
 
 use auth::SessionService;
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, extract::State, http::StatusCode};
 
 use crate::api::AdminAuth;
 use crate::api::extractors::MaybeAdmin;
@@ -240,29 +240,14 @@ where
     }
 }
 
-/// Prometheus metrics endpoint.
+/// Render Prometheus metrics as bytes.
 ///
-/// Returns metrics in Prometheus exposition format for scraping.
-///
-/// Requires server admin authentication.
-#[utoipa::path(
-    get,
-    path = "/metrics",
-    tag = "health",
-    responses(
-        (status = 200, description = "Prometheus metrics"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin access required"),
-        (status = 503, description = "Metrics not available"),
-    ),
-    security(("bearer_auth" = []))
-)]
-pub async fn prometheus_metrics<A>(
-    _admin: AdminAuth,
-    State(state): State<PgAppState<A>>,
-) -> impl IntoResponse
+/// Returns (status_code, headers, body) tuple that can be converted to responses.
+async fn render_prometheus_metrics_bytes<A>(
+    state: &PgAppState<A>,
+) -> (StatusCode, &'static str, String)
 where
-    A: SessionService + 'static,
+    A: Send + Sync + 'static,
 {
     // Update user and store count gauges before rendering
     if let Ok(count) = state.data_service.count_users().await {
@@ -282,13 +267,54 @@ where
     match metrics::render() {
         Some(body) => (
             StatusCode::OK,
-            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+            "text/plain; version=0.0.4; charset=utf-8",
             body,
         ),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            [("content-type", "text/plain")],
+            "text/plain",
             "Metrics not initialized".to_string(),
         ),
     }
+}
+
+/// Prometheus metrics endpoint (admin only).
+///
+/// Returns metrics in Prometheus exposition format for scraping.
+/// Requires server admin authentication.
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "health",
+    responses(
+        (status = 200, description = "Prometheus metrics"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin access required"),
+        (status = 503, description = "Metrics not available"),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn prometheus_metrics<A>(
+    _admin: AdminAuth,
+    State(state): State<PgAppState<A>>,
+) -> (StatusCode, [(&'static str, &'static str); 1], String)
+where
+    A: SessionService + 'static,
+{
+    let (status, content_type, body) = render_prometheus_metrics_bytes(&state).await;
+    (status, [("content-type", content_type)], body)
+}
+
+/// Prometheus metrics endpoint (unauthenticated).
+///
+/// Returns metrics in Prometheus exposition format for scraping.
+/// No authentication required - intended for loopback access by monitoring systems.
+pub async fn prometheus_metrics_unauthenticated<A>(
+    State(state): State<PgAppState<A>>,
+) -> (StatusCode, [(&'static str, &'static str); 1], String)
+where
+    A: Send + Sync + 'static,
+{
+    let (status, content_type, body) = render_prometheus_metrics_bytes(&state).await;
+    (status, [("content-type", content_type)], body)
 }

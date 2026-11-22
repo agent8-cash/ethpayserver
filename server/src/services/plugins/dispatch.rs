@@ -45,12 +45,18 @@ use payserver_plugin_api::{PluginId, PluginKind, StandingBasis};
 use serde::{Deserialize, Serialize};
 
 use super::account_closed::AccountClosedObserver;
-use super::filter::{FilterVerdict, InvoiceCreationFilter, InvoiceCreationFilterRequest};
+use super::filter::{
+    FilterVerdict, InvoiceCreationFilter, InvoiceCreationFilterRequest, StoreCreationFilter,
+    StoreCreationFilterRequest,
+};
 use super::payment_observer::{OwnStorePayment, OwnStorePaymentObserver};
 use payserver_plugin_host::{FilterOutcome, PluginHost};
 
 /// The export consulted before an invoice is created.
 pub const FILTER_INVOICE_CREATION: &str = "filter_invoice_creation";
+
+/// The export consulted before a store is created.
+pub const FILTER_STORE_CREATION: &str = "filter_store_creation";
 
 /// The export told that an own-store invoice settled.
 pub const PAYMENT_SETTLED: &str = "payment_settled";
@@ -366,6 +372,89 @@ pub fn invoice_creation_filters(
                 Arc::clone(host),
                 id.clone(),
             )) as Arc<dyn InvoiceCreationFilter>
+        })
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
+struct WireStoreCreationRequest {
+    account_id: String,
+    existing_store_count: u32,
+}
+
+/// One plugin, asked whether a store may be created.
+pub struct PluginStoreCreationFilter {
+    host: Arc<PluginHost>,
+    id: PluginId,
+}
+
+impl PluginStoreCreationFilter {
+    #[must_use]
+    pub fn new(host: Arc<PluginHost>, id: PluginId) -> Self {
+        Self { host, id }
+    }
+}
+
+#[async_trait]
+impl StoreCreationFilter for PluginStoreCreationFilter {
+    async fn filter_store_creation(&self, request: StoreCreationFilterRequest) -> FilterVerdict {
+        let wire = WireStoreCreationRequest {
+            account_id: request.account_id.0.to_string(),
+            existing_store_count: request.existing_store_count,
+        };
+
+        let outcome: FilterOutcome<WireFilterVerdict> = self
+            .host
+            .run_filter(&self.id, FILTER_STORE_CREATION, &wire)
+            .await;
+
+        match outcome {
+            FilterOutcome::Ran(verdict) if verdict.allow => FilterVerdict::Allow,
+            FilterOutcome::Ran(verdict) => FilterVerdict::Deny {
+                reason: verdict.reason.unwrap_or_else(|| UNAVAILABLE.to_string()),
+            },
+            FilterOutcome::CouldNotRun {
+                allowed: true,
+                reason,
+            } => {
+                tracing::warn!(
+                    plugin = %self.id,
+                    %reason,
+                    "store-creation filter could not run; its manifest fails open, so the store is allowed"
+                );
+                FilterVerdict::Allow
+            }
+            FilterOutcome::CouldNotRun {
+                allowed: false,
+                reason,
+            } => {
+                tracing::warn!(
+                    plugin = %self.id,
+                    %reason,
+                    "store-creation filter could not run; its manifest fails closed, so the store is refused"
+                );
+                // Deliberately not `reason`: it names our internals.
+                FilterVerdict::Deny {
+                    reason: UNAVAILABLE.to_string(),
+                }
+            }
+        }
+    }
+}
+
+/// Every loaded plugin that declares the filter kind, as store-creation
+/// filters. Same kind rule as [`invoice_creation_filters`].
+#[must_use]
+pub fn store_creation_filters(
+    host: &Arc<PluginHost>,
+    loaded: &[PluginId],
+) -> Vec<Arc<dyn StoreCreationFilter>> {
+    loaded
+        .iter()
+        .filter(|id| host.kind(id).is_some_and(PluginKind::is_filter))
+        .map(|id| {
+            Arc::new(PluginStoreCreationFilter::new(Arc::clone(host), id.clone()))
+                as Arc<dyn StoreCreationFilter>
         })
         .collect()
 }
