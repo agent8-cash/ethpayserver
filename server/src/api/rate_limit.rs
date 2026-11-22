@@ -301,6 +301,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_invite_accept_is_write_tier() {
+        // Redeeming an invite is an authenticated POST that writes a row on
+        // every attempt, so it must draw from the per-IP write budget.
+        assert!(matches!(
+            classify("/users/me/invites/accept", &Method::POST),
+            Tier::Write
+        ));
+    }
+
+    #[test]
     fn config_defaults() {
         let config = RateLimitConfig::default();
         assert_eq!(config.auth_rpm, 30);
