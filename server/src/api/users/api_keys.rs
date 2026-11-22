@@ -38,14 +38,14 @@ pub struct CreateApiKeyResponsePayload {
     pub key: String,
     /// The scope actually granted.
     ///
-    /// `None` means the key inherits the owner's role in full - the same
-    /// thing `list_api_keys` and the rotate response report as `null` for
-    /// such a key. It is deliberately not an echo of the request: an absent
-    /// or empty `permissions` is stored as `NULL`, so echoing `[]` back would
-    /// tell a caller who asked for a least-privilege key that it can do
-    /// nothing, while handing them one that can do everything its owner can.
-    /// Of the three responses that report a key's scope, this was the only
-    /// one that could say the opposite of what was stored.
+    /// `None` means the key inherits the owner's role in full. An absent
+    /// `permissions` field in the request (not provided at all) is stored as
+    /// `NULL` in the database and reported here as `null`.
+    ///
+    /// A request with `"permissions": []` is stored as an empty scope and
+    /// reported as `[]` — a key with no permissions that refuses every
+    /// scoped action. This is distinct from the inherited case and is
+    /// correctly preserved through the create/list/rotate cycle.
     pub permissions: Option<Vec<String>>,
 }
 
