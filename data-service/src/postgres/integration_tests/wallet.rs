@@ -916,7 +916,7 @@ async fn allocation_returns_the_key_of_the_wallet_whose_counter_moved() {
     )
     .await
     .unwrap();
-    assert_eq!(stale.xpub.as_deref(), Some(xpub_a.as_str()));
+    assert_eq!(stale.xpub, None, "non-deriving reads must not return xpub");
 
     service
         .rotate_payment_method_xpub(store, stale.id, EVM, &xpub_b, Some("test"))

@@ -30,7 +30,22 @@ use server::services::RedisEVMMonitor;
 use server::state::PgAppState;
 use types::{ChainId, StorePaymentMethodWriter};
 
-const TEST_XPUB: &str = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
+/// A fresh, valid, derivable account xpub, distinct from any literal another
+/// test file in this shared-Postgres suite registers: `wallets.xpub` is
+/// unique per account across the whole run, and `xpub661MyMwAq...` (BIP-32
+/// test vector 1) is already claimed by `wallet_rotation_invoice_derivation.rs`'s
+/// `OLD_XPUB`. The standard all-"abandon" mnemonic is public and used
+/// throughout this suite; `tag` as its passphrase gives each caller its own
+/// account key off the same root.
+fn fresh_xpub(tag: &str) -> String {
+    evm::HdWallet::from_mnemonic(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        tag,
+    )
+    .unwrap()
+    .account_xpub_string_for(evm::ChainFamily::Evm)
+    .unwrap()
+}
 
 struct NoopSessionService;
 
@@ -108,6 +123,7 @@ fn invoice_request(store_id: Uuid) -> CreateInvoiceRequest {
 #[tokio::test]
 #[ignore]
 async fn two_invoices_on_one_store_derive_different_addresses() {
+    let test_xpub = fresh_xpub("xpub-narrowing-derive");
     let pg = pg_service().await;
     let owner = seed_user(pg.pool()).await;
     let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
@@ -123,7 +139,7 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
         None,
         "ETH",
         18,
-        Some(TEST_XPUB),
+        Some(&test_xpub),
     )
     .await
     .expect("seed payment method");
@@ -143,7 +159,7 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
     let address1 = invoice1.payment_options[0].payment_address.clone();
 
     // Independently derive the expected address at index 0
-    let expected_addr_0 = XpubDeriver::from_xpub("eip155", TEST_XPUB)
+    let expected_addr_0 = XpubDeriver::from_xpub("eip155", &test_xpub)
         .unwrap()
         .derive_address(0)
         .unwrap();
@@ -165,7 +181,7 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
     let address2 = invoice2.payment_options[0].payment_address.clone();
 
     // Independently derive the expected address at index 1
-    let expected_addr_1 = XpubDeriver::from_xpub("eip155", TEST_XPUB)
+    let expected_addr_1 = XpubDeriver::from_xpub("eip155", &test_xpub)
         .unwrap()
         .derive_address(1)
         .unwrap();
@@ -189,6 +205,7 @@ async fn two_invoices_on_one_store_derive_different_addresses() {
 async fn xpub_does_not_leak_from_narrowed_payment_method_reads() {
     use data_service::StorePaymentMethodReader;
 
+    let test_xpub = fresh_xpub("xpub-narrowing-leak");
     let pg = pg_service().await;
     let owner = seed_user(pg.pool()).await;
     let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
@@ -204,7 +221,7 @@ async fn xpub_does_not_leak_from_narrowed_payment_method_reads() {
         None,
         "ETH",
         18,
-        Some(TEST_XPUB),
+        Some(&test_xpub),
     )
     .await
     .expect("seed payment method");
