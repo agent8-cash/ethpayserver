@@ -59,11 +59,23 @@ jobs:
         if: always()
         run: ./scripts/check-no-ticket-refs.sh
 
+      - name: Ticket id guard self-test
+        if: always()
+        run: ./scripts/check-no-ticket-refs.test.sh
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo.lock matches Cargo.toml
+        if: always()
+        run: ./scripts/check-lockfile-current.sh
+
+      - name: Lockfile guard self-test
+        if: always()
+        run: ./scripts/check-lockfile-current.test.sh
 
       - name: Install mold linker
         run: |
@@ -114,6 +126,10 @@ jobs:
       - name: Commons pin guard self-test
         if: always()
         run: scripts/check-commons-pin.test.sh
+
+      - name: Commons link script self-test
+        if: always()
+        run: ./scripts/commons.test.sh
 
       # A cross-repo ticket pins commons by the commons PR's branch sha before
       # that PR merges. Merge ethpayserver first (or just forget to re-pin)
@@ -192,6 +208,10 @@ jobs:
         if: always()
         run: ./scripts/check-file-size.test.sh
 
+      - name: Cargo job count reporter self-test
+        if: always()
+        run: ./scripts/cargo-jobs.test.sh
+
       - name: Migration versions are distinct
         if: always()
         run: ./scripts/check-migrations.sh
@@ -199,6 +219,13 @@ jobs:
       - name: Migration guard self-test
         if: always()
         run: ./scripts/check-migrations.test.sh
+
+      # docs/backend-schema.md is generated from the migrations. This runs the
+      # generator for real and diffs its output, so a migration merged without
+      # regenerating the doc fails here.
+      - name: Backend schema doc is current
+        if: always()
+        run: ./scripts/gen-backend-schema.test.sh
 
       # Deleting a test cannot fail a test run, so a merge that resolves a test
       # file to an older copy can drop the very tests a change is justified by
@@ -275,6 +302,7 @@ jobs:
       # so it needs the pinned binary. Same pin as the docker job's installer;
       # change both together.
       - name: Install cosign
+        if: always()
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
@@ -513,29 +541,38 @@ jobs:
       # built without its GC heap and component model, and only until a fixed
       # release is locked. See the script.
       - name: wasmtime ignore guard self-test
+        if: always()
         run: ./scripts/check-wasmtime-ignores.test.sh
       - name: wasmtime ignores still valid
+        if: always()
         run: ./scripts/check-wasmtime-ignores.sh
       - name: zip ignore guard self-test
+        if: always()
         run: ./scripts/check-zip-ignores.test.sh
       - name: zip ignores still valid
+        if: always()
         run: ./scripts/check-zip-ignores.sh
       # cargo audit reads the lockfile, which lists crates no target builds.
       # This blocks on an advisory in a crate in the build graph and only
       # reports one that is lockfile-only; the job output labels each.
       - name: audit build-graph self-test
+        if: always()
         run: ./scripts/audit-build-graph.test.sh
       - name: cargo audit (build graph blocks, lockfile-only reports)
+        if: always()
         run: ./scripts/audit-build-graph.sh
       # .cargo/audit.toml's ignore list can only grow stale: fails once an
       # ignored advisory is fixed upstream, or its crate is no longer
       # reachable from any workspace member. Runs after the build-graph audit
       # above so the advisory db it fetched is already warm (--no-fetch here).
       - name: advisory ignores self-test
+        if: always()
         run: ./scripts/check-advisory-ignores.test.sh
       - name: advisory ignores still needed
+        if: always()
         run: ./scripts/check-advisory-ignores.sh
       - name: cargo deny
+        if: always()
         run: cargo deny check licenses sources
 
   # Pull requests only. Scans the commits a PR adds for committed secrets, and

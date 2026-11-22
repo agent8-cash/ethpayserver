@@ -718,15 +718,16 @@ pub fn sentry_log_event_filter(
 /// stays down: `ChainMonitor::resubscribe_if_stalled`
 /// (`evm/src/monitor/chain/lifecycle.rs`) already watches for that on its own
 /// clock, independent of anything `alloy_transport_ws` or `alloy_pubsub` logs
-/// or doesn't log. It resubscribes and logs its own `error!` under
-/// `evm::monitor::chain::lifecycle` - a target this filter never touches -
-/// once a block stream has gone silent for `stall_timeout`. So a transient
-/// reset stays a breadcrumb, and a connection that never recovers pages
-/// within one stall window regardless of what the WS layer's own retry logic
-/// happens to be doing underneath it. `our_own_errors_still_page` covers that
-/// target generically, and `evm/tests/stalled_stream_still_pages.rs` drives a
-/// real stall through a real `ChainMonitor` to confirm
-/// `resubscribe_if_stalled`'s own `error!` resolves to a paging event, not
+/// or doesn't log. It resubscribes once a block stream has gone silent for
+/// `stall_timeout`, logging a `warn!` under `evm::monitor::chain::lifecycle` -
+/// a target this filter never touches. Only when a resubscribe fails to
+/// restore delivery does it log an `error!` there, so a transient reset stays
+/// a breadcrumb, and a connection that never recovers pages within two stall
+/// windows regardless of what the WS layer's own retry logic happens to be
+/// doing underneath it. `our_own_errors_still_page` covers that target
+/// generically, and `evm/tests/stalled_stream_still_pages.rs` drives a
+/// sustained stall through a real `ChainMonitor` to confirm
+/// `resubscribe_if_stalled`'s sustained `error!` resolves to a paging event, not
 /// just a hand-typed target string.
 ///
 /// An earlier version of this filter argued instead that `alloy_pubsub`'s own

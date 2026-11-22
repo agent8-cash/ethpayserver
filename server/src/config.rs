@@ -9,6 +9,8 @@
 //! ## Server
 //! - `HOST` - Server host (default: 127.0.0.1)
 //! - `PORT` - Server port (default: 3000)
+//! - `METRICS_HOST` - Metrics listener host (default: 127.0.0.1, loopback only)
+//! - `METRICS_PORT` - Metrics listener port (default: 9102, unauthenticated /metrics endpoint)
 //! - `LOG_LEVEL` - Log level: trace, debug, info, warn, error (default: info)
 //! - `LOG_FORMAT` - Log output format: `pretty` or `json` (default: pretty).
 //!   `json` is what a log shipper (e.g. Grafana Cloud's Loki agent) parses;
@@ -79,6 +81,13 @@ pub struct Config {
 
     /// HTTP server port.
     pub port: u16,
+
+    /// Metrics listener host (default: 127.0.0.1).
+    /// Bind address for the unauthenticated metrics listener.
+    pub metrics_host: String,
+
+    /// Metrics listener port (default: 9102).
+    pub metrics_port: u16,
 
     /// Log level (trace, debug, info, warn, error).
     pub log_level: String,
@@ -167,6 +176,12 @@ impl Config {
             .parse()
             .map_err(|_| anyhow::anyhow!("PORT must be a valid number"))?;
 
+        let metrics_host = env::var("METRICS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let metrics_port = env::var("METRICS_PORT")
+            .unwrap_or_else(|_| "9102".to_string())
+            .parse()
+            .map_err(|_| anyhow::anyhow!("METRICS_PORT must be a valid number"))?;
+
         let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let log_format = env::var("LOG_FORMAT").unwrap_or_else(|_| "pretty".to_string());
 
@@ -184,6 +199,8 @@ impl Config {
             redis_url,
             host,
             port,
+            metrics_host,
+            metrics_port,
             log_level,
             log_format,
             enable_swagger,
@@ -231,6 +248,11 @@ impl Config {
     /// Get the server bind address.
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// Get the metrics listener bind address.
+    pub fn metrics_bind_address(&self) -> String {
+        format!("{}:{}", self.metrics_host, self.metrics_port)
     }
 }
 
@@ -426,6 +448,8 @@ mod tests {
             redis_url: Some(SecretString::from("redis://:r3dis@redis:6379".to_string())),
             host: "127.0.0.1".to_string(),
             port: 3000,
+            metrics_host: "127.0.0.1".to_string(),
+            metrics_port: 9102,
             log_level: "info".to_string(),
             log_format: "pretty".to_string(),
             enable_swagger: false,

@@ -58,6 +58,9 @@ run() {
     fi
 }
 
+# First, so a slow run shows its job count before the slow part starts.
+./scripts/cargo-jobs.sh
+echo
 echo "== repository checks =="
 # Each of these exists because something got through once. Losing one of them
 # from this list is how that thing gets through again.
@@ -70,9 +73,12 @@ echo "== repository checks =="
 run "no ticket ids in source"   ./scripts/check-no-ticket-refs.sh
 run "no session urls"           ./scripts/check-no-session-urls.sh
 run "migration versions unique" ./scripts/check-migrations.sh
+run "backend schema doc current" ./scripts/gen-backend-schema.test.sh
 run "db tests never skip"       ./scripts/check-test-db-skips.sh
 run "commons pin matches lock"  ./scripts/check-commons-pin.sh
+run "commons link finds crates" ./scripts/commons.test.sh
 run "file sizes (report only)"   ./scripts/check-file-size.sh
+run "lockfile current"          ./scripts/check-lockfile-current.sh
 
 echo "== compiler =="
 run "cargo fmt"                 cargo fmt --all -- --check
