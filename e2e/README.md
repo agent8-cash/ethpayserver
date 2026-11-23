@@ -69,8 +69,8 @@ This sets sane defaults:
 
 | Variable            | Default when `E2E_REMOTE` is set     | Purpose                                    |
 |---------------------|--------------------------------------|--------------------------------------------|
-| `E2E_BASE_URL`      | `https://testnet.random.cash`        | Frontend URL for Playwright `baseURL`      |
-| `E2E_API_URL`       | `https://testnet.random.cash`        | API base URL                               |
+| `E2E_BASE_URL`      | `https://testnet.agent8.cash`        | Frontend URL for Playwright `baseURL`      |
+| `E2E_API_URL`       | `https://testnet.agent8.cash`        | API base URL                               |
 | `E2E_SKIP_DB_RESET` | `true` (implicit in remote mode)     | Skips `TRUNCATE` in `fixtures/db.ts`       |
 | `E2E_SKIP_AUTH`     | _(unset)_                            | Set `true` to skip the auth spec           |
 
@@ -108,7 +108,7 @@ Any other target needs `E2E_ALLOW_NON_LOCAL_TARGET=true`. Remote mode is unaffec
 ```bash
 cd e2e
 npm install
-E2E_REMOTE=true E2E_BASE_URL=https://testnet.random.cash npx playwright test
+E2E_REMOTE=true E2E_BASE_URL=https://testnet.agent8.cash npx playwright test
 ```
 
 Auth tests are skipped in remote mode, and the reason has been wrong twice.
@@ -117,7 +117,7 @@ It is **not** the RP ID. The old note claimed the virtual authenticator's RP ID
 (`localhost`) could not match a remote domain, but `WebAuthn.addVirtualAuthenticator`
 has no RP ID parameter — it comes from the page's origin when
 `navigator.credentials.create()` runs. The deployed server logs
-`rp_id=testnet.random.cash rp_origin=https://testnet.random.cash`, and a single
+`rp_id=testnet.agent8.cash rp_origin=https://testnet.agent8.cash`, and a single
 registration against live testnet completes end to end.
 
 It is **not** `resetDatabase()`. `fixtures/db.ts` returns early when `E2E_REMOTE`
@@ -190,7 +190,7 @@ an `afterEach`. This script archives the ones that accumulated before
 that landed, and anything a run abandoned by dying outright.
 
 ```bash
-E2E_API_URL=https://testnet.random.cash E2E_REMOTE=true E2E_API_TOKEN=ak_... \
+E2E_API_URL=https://testnet.agent8.cash E2E_REMOTE=true E2E_API_TOKEN=ak_... \
   node scripts/sweep-e2e-stores.mjs          # lists only
 E2E_API_URL=... E2E_REMOTE=true E2E_API_TOKEN=ak_... \
   node scripts/sweep-e2e-stores.mjs --execute
@@ -204,7 +204,7 @@ there is no timestamp-shape gate, and the token only needs to own the stores
 (it need not be `server_admin`). `GET /stores` returns only the token's own
 stores, so it cannot reach another account. A real merchant store whose name
 starts with `e2e-` would be archived too, so `--execute` refuses any host other
-than `testnet.random.cash` or localhost unless you add `--force`.
+than `testnet.agent8.cash` or localhost unless you add `--force`.
 
 It no longer hard-deletes. `DELETE /admin/stores/{id}` (`hard_delete_store`)
 still exists as the escape hatch and still refuses any name that is not the
@@ -240,7 +240,7 @@ account with no email and no wallet that also has no store, or whose only
 stores are ones the sweep above would also clear.
 
 ```bash
-E2E_API_URL=https://testnet.random.cash E2E_REMOTE=true E2E_API_TOKEN=ak_... \
+E2E_API_URL=https://testnet.agent8.cash E2E_REMOTE=true E2E_API_TOKEN=ak_... \
   node scripts/sweep-e2e-accounts.mjs          # lists only
 E2E_API_URL=... E2E_REMOTE=true E2E_API_TOKEN=ak_... \
   node scripts/sweep-e2e-accounts.mjs --execute

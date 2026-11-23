@@ -6,7 +6,7 @@
  * in a container, so its `localhost` is not ours. To assert delivery against the
  * live deployment the sink therefore needs a real HTTPS URL: by default we open
  * a cloudflared quick tunnel (cloudflared already fronts the deployment — it is what
- * fronts testnet.random.cash), and `E2E_WEBHOOK_PUBLIC_URL` overrides it with a
+ * fronts testnet.agent8.cash), and `E2E_WEBHOOK_PUBLIC_URL` overrides it with a
  * stable tunnel when one exists.
  */
 import { spawn, type ChildProcess } from 'node:child_process';

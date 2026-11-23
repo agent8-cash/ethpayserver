@@ -39,8 +39,8 @@ assertSafeTarget(process.env);
 // "the frontend is not where I looked".
 const CLIENT_DIR = process.env.PAYSERVER_CLIENT_DIR ?? '../../payserver-client';
 
-const API_URL = process.env.E2E_API_URL || (REMOTE ? 'https://testnet.random.cash' : 'http://localhost:3000');
-const BASE_URL = process.env.E2E_BASE_URL || (REMOTE ? 'https://testnet.random.cash' : 'http://localhost:8080');
+const API_URL = process.env.E2E_API_URL || (REMOTE ? 'https://testnet.agent8.cash' : 'http://localhost:3000');
+const BASE_URL = process.env.E2E_BASE_URL || (REMOTE ? 'https://testnet.agent8.cash' : 'http://localhost:8080');
 
 export default defineConfig({
   testDir: './tests',
