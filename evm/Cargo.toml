@@ -28,7 +28,7 @@ test-utils = []
 hot-wallet = []
 # Sentry `before_send` PII scrubber and tracing event filter. Shared by the
 # `server` and `evmmonitor` binaries so both run one audited implementation.
-sentry-scrub = ["dep:sentry", "dep:sentry-tracing", "dep:tracing-subscriber", "dep:regex", "dep:anyhow"]
+sentry-scrub = ["dep:sentry", "dep:sentry-tracing", "dep:tracing-subscriber", "dep:regex", "dep:anyhow", "dep:scrub"]
 monitor-bin = ["redis", "types", "data-service", "data-service/redis", "dep:toml", "dep:tracing-subscriber", "dep:dotenvy", "dep:clap", "dep:anyhow", "dep:sentry", "dep:sentry-tracing", "sentry-scrub", "tokio/full"]
 
 [dependencies]
@@ -98,6 +98,8 @@ sentry-tracing = { version = "0.49.3", features = ["logs"], optional = true }
 
 # PII/secret scrubber for Sentry error payloads (sentry-scrub feature)
 regex = { version = "1", optional = true }
+# The shared sensitive-key set and predicate. Consumed, not restated.
+scrub = { workspace = true, optional = true }
 
 # API (optional)
 axum = { version = "0.8", optional = true }
@@ -112,9 +114,6 @@ too_many_lines = { level = "deny", priority = -1 }
 cognitive_complexity = "deny"
 
 [dev-dependencies]
-# The shared hand-written scrubber, asserted here to match the regex table
-# below. Test-only: the binaries run the regex implementation.
-scrub = { workspace = true }
 tokio = { version = "1.42", features = ["full", "test-util"] }
 # `test` unlocks `sentry::test::with_captured_envelopes_options`, which drives
 # a log through the real subscriber -> sentry_tracing -> before_send_log path
