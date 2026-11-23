@@ -24,19 +24,28 @@ ignore = [
     # bump, because `Vec::with_capacity` aborts the process rather than
     # panicking, so no caller could have contained it.
     # MAINNET BLOCKER. Timing variability in operations crypto-bigint
-    # intends to be constant-time (published 2026-10-23, fixed upstream at
-    # >=0.7.6). EXPIRES 2026-11-23 or any mainnet deploy, whichever is sooner -
-    # re-run `cargo update -p crypto-bigint --precise 0.7.6 --dry-run` then;
-    # if elliptic-curve/k256/alloy have moved to a compatible chain by then,
-    # take the bump instead of renewing this.
+    # intends to be constant-time (published 2026-10-23). EXPIRES 2026-12-23
+    # or any mainnet deploy, whichever is sooner.
+    #
+    # RENEWED 2026-11-23 (previous EXPIRES was today). Re-checked, not just
+    # re-dated: `crypto-bigint 0.7.6`, the fix version this ignore originally
+    # named, is now yanked by its author - no longer installable at all.
+    # Re-ran the bump attempt from scratch: `cargo update -p elliptic-curve
+    # --precise 0.14.3 --dry-run` and `cargo update -p k256 --precise 0.14.0
+    # --dry-run` both fail - `alloy-primitives` (pulled into every binary
+    # that links `evm`, not something a narrower change avoids) still hard-
+    # requires `k256 = "^0.13"` at its latest published release, 1.7.3,
+    # confirmed against the registry directly. That is the actual anchor;
+    # our own three k256 call sites (evm/src/wallet/hd_wallet.rs,
+    # server/src/api/users/wallets.rs and its test) are not what is blocking
+    # this. Next review: re-run those two dry-runs, and check
+    # `alloy-primitives`'s latest published version against this file's date
+    # - if it has moved off `k256 ^0.13`, take the bump instead of renewing.
     #
     # PATH: crypto-bigint 0.5.5 -> elliptic-curve 0.13.8 -> {ecdsa 0.16.9 ->
-    # k256 0.13.4, alloy-signer 1.8.3} -> evm/server. Bump attempted and
-    # confirmed to cascade 2026-10-24: elliptic-curve 0.13.8 pins
-    # `crypto-bigint = "^0.5"` and will not take 0.7.x; alloy 1.8.3 is
-    # upstream's current latest (`cargo update -p alloy` locks 0 packages),
-    # so there is no available path today that does not wait on alloy and
-    # the whole RustCrypto chain to publish compatible new majors.
+    # k256 0.13.4, alloy-signer 1.8.3} -> evm/server. No available path today
+    # that does not wait on alloy-primitives to publish a compatible new
+    # major.
     #
     # WHY NOT EXPLOITABLE HERE, traced through every real (non-test) caller,
     # not asserted: the only code that feeds a derived private key into a
