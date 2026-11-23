@@ -1,0 +1,16 @@
+# Storefront connector plugin for WooCommerce and Shopify
+id = "com.example.storefront.connector"
+version = "0.1.0"
+dependencies = ["ethpayserver:^0.1.0"]
+kind = "action"
+slug = "storefront"
+ui_schema = 1
+
+[[pages]]
+path = "overview"
+label = "Storefront Overview"
+
+[[pages]]
+path = "setup"
+label = "Setup"
+admin_only = true
