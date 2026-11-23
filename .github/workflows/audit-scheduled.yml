@@ -44,15 +44,37 @@ jobs:
         id: audit
         run: |
           set +e
-          out=$(cargo audit 2>&1); audit_rc=$?
+          # Same checks the PR-gating Audit job runs, so this cron reports
+          # the same signal: a crate we actually build, not every advisory
+          # cargo audit finds in the lockfile regardless of reachability.
+          # Before this, the naive `cargo audit` below failed on four
+          # advisories already known lockfile-only (not reachable from any
+          # workspace member) every single day, burying any new, real
+          # finding in noise this issue had already carried for weeks.
+          wasmtime=$(./scripts/check-wasmtime-ignores.sh 2>&1); wasmtime_rc=$?
+          zip=$(./scripts/check-zip-ignores.sh 2>&1); zip_rc=$?
+          graph=$(./scripts/audit-build-graph.sh 2>&1); graph_rc=$?
+          ignores=$(./scripts/check-advisory-ignores.sh 2>&1); ignores_rc=$?
           deny=$(cargo deny check licenses sources 2>&1); deny_rc=$?
           set -e
 
           {
             echo "report<<REPORT_EOF"
-            echo "### cargo audit (exit $audit_rc)"
+            echo "### wasmtime ignores (exit $wasmtime_rc)"
             echo '```'
-            echo "$out" | tail -60
+            echo "$wasmtime" | tail -20
+            echo '```'
+            echo "### zip ignores (exit $zip_rc)"
+            echo '```'
+            echo "$zip" | tail -20
+            echo '```'
+            echo "### audit build-graph (exit $graph_rc)"
+            echo '```'
+            echo "$graph" | tail -60
+            echo '```'
+            echo "### advisory ignores (exit $ignores_rc)"
+            echo '```'
+            echo "$ignores" | tail -20
             echo '```'
             echo "### cargo deny (exit $deny_rc)"
             echo '```'
@@ -61,8 +83,9 @@ jobs:
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
 
-          echo "$out" | tail -40
-          [ "$audit_rc" -eq 0 ] && [ "$deny_rc" -eq 0 ] || exit 1
+          echo "$graph" | tail -40
+          [ "$wasmtime_rc" -eq 0 ] && [ "$zip_rc" -eq 0 ] && [ "$graph_rc" -eq 0 ] \
+            && [ "$ignores_rc" -eq 0 ] && [ "$deny_rc" -eq 0 ] || exit 1
 
       - name: File an issue on findings
         if: failure()
