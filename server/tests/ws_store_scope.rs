@@ -874,3 +874,23 @@ async fn an_idle_socket_is_pinged() {
         "expected a ping, got {msg:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs DATABASE_URL"]
+async fn a_store_owner_receives_their_own_stores_updates() {
+    let pg = support::service().await;
+    let pg = Arc::new(pg);
+    let owner = Person::new(pg.pool()).await;
+    let (store, _) = tenant(&pg, &owner, "owner-store").await;
+    let h = serve(pg.clone(), &[&owner]).await;
+    let mut ws_owner = connect(&h, &owner).await;
+
+    // The owner should receive updates from their own store, even though
+    // they are the owner and not a member via user_stores.
+    h.broadcast.send(sid(&store), paid("owner-update"));
+
+    let got = next_update(&mut ws_owner)
+        .await
+        .expect("owner sees own store");
+    assert_eq!(got["invoice_id"], "owner-update", "first frame was {got}");
+}

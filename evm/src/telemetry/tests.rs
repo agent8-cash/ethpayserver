@@ -746,28 +746,7 @@ fn everyday_key_words_need_an_explicit_separator() {
 /// catch that, because its corpus held no case for any of the five.
 #[test]
 fn every_sensitive_key_is_redacted_with_an_explicit_separator() {
-    for key in [
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "apikey",
-        "api_key",
-        "api-key",
-        "mnemonic",
-        "seed",
-        "privatekey",
-        "private_key",
-        "private-key",
-        "authorization",
-        "bearer",
-        "auth",
-        "dsn",
-        "credential",
-        "session",
-        "cookie",
-        "signature",
-    ] {
+    for key in scrub::SENSITIVE_KEYS {
         assert!(
             is_sensitive_key(&key.to_uppercase()),
             "{key} is sensitive in the shared crate but not here"

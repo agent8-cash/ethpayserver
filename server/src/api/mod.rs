@@ -153,6 +153,7 @@ where
         .route("/{store_id}/webhook", get(stores::get_store_webhook::<A>))
         .route("/{store_id}/webhook", put(stores::configure_store_webhook::<A>))
         .route("/{store_id}/webhook", delete(stores::delete_store_webhook::<A>))
+        .route("/{store_id}/webhook/rotate", post(stores::rotate_store_webhook_secret::<A>))
         // Payment methods
         .route("/{store_id}/payment-methods", get(stores::list_payment_methods::<A>))
         .route("/{store_id}/payment-methods", post(stores::create_payment_method::<A>))
@@ -269,7 +270,12 @@ where
         // What the client puts in its navigation. Declared in each plugin's
         // manifest, so building a menu runs no plugin code.
         .route("/", get(plugins::list_plugin_pages::<A>))
+        // Fetch a plugin page
         .route("/{id}/pages/{*path}", get(plugins::get_page::<A>))
+        // Submit an action from a plugin page. Separate route prefix to avoid
+        // collision with the catch-all render path; any route must not follow
+        // a greedy wildcard.
+        .route("/{id}/page-actions/{*path}", post(plugins::handle_page_action::<A>))
         // Core, not a plugin's: the standing gates invoice creation, so it is
         // stored by the host and lands whether or not any plugin is loaded.
         .route("/entitlements", entitlements::route::<A>())
