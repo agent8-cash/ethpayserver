@@ -181,6 +181,7 @@ where
         store_id: webhook.store_id,
         webhook_url: webhook.webhook_url,
         webhook_secret: None, // Don't expose secret on GET
+        rotate_secret: false,
         enabled: webhook.enabled,
         created_at: webhook.created_at,
         updated_at: webhook.updated_at,
@@ -254,6 +255,7 @@ where
         store_id: webhook.store_id,
         webhook_url: webhook.webhook_url,
         webhook_secret: Some(webhook.webhook_secret), // Show secret on create/update
+        rotate_secret: req.rotate_secret,
         enabled: webhook.enabled,
         created_at: webhook.created_at,
         updated_at: webhook.updated_at,
@@ -346,6 +348,7 @@ where
         store_id: webhook.store_id,
         webhook_url: webhook.webhook_url,
         webhook_secret: Some(webhook.webhook_secret),
+        rotate_secret: true,
         enabled: webhook.enabled,
         created_at: webhook.created_at,
         updated_at: webhook.updated_at,

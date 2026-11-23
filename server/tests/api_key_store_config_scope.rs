@@ -226,6 +226,7 @@ fn webhook_request() -> Json<ConfigureWebhookRequest> {
     Json(ConfigureWebhookRequest {
         webhook_url: "https://example.com/hook".to_string(),
         enabled: true,
+        rotate_secret: false,
     })
 }
 
