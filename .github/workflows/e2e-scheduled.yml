@@ -4,7 +4,7 @@ name: Scheduled E2E (testnet)
 # integration gate and the deploy health assertion all stop
 # short of a browser and of an actual on-chain payment — the client loader
 # overlay (#38) broke the login page for seven weeks and no build could have
-# caught it. This runs the Playwright suite against https://testnet.random.cash
+# caught it. This runs the Playwright suite against https://testnet.agent8.cash
 # on a clock, and then sends a real Sepolia transaction through the money path.
 #
 # Runs on hosted runners on purpose. The deploy host is also the self-hosted
@@ -30,8 +30,8 @@ permissions:
 
 env:
   E2E_REMOTE: "true"
-  E2E_BASE_URL: https://testnet.random.cash
-  E2E_API_URL: https://testnet.random.cash
+  E2E_BASE_URL: https://testnet.agent8.cash
+  E2E_API_URL: https://testnet.agent8.cash
 
 jobs:
   server-not-empty:
@@ -129,9 +129,9 @@ jobs:
       # ui-interactions) all build on the `registeredPage` fixture.
       #
       # This used to say passkey registration "cannot succeed against
-      # testnet.random.cash" because the virtual authenticator's RP ID is
+      # testnet.agent8.cash" because the virtual authenticator's RP ID is
       # localhost. That was wrong: addVirtualAuthenticator has no RP ID, the
-      # server logs rp_id=testnet.random.cash, and a single registration against
+      # server logs rp_id=testnet.agent8.cash, and a single registration against
       # live testnet completes end to end. The real limit is rate limiting - the
       # auth tier allows 5 req/min/IP, so a spec that registers repeatedly gets
       # 429s (see e2e/README.md).
@@ -300,8 +300,8 @@ jobs:
             const title = 'Scheduled E2E: testnet is failing';
             const body = [
               process.env.TRIGGER === 'schedule'
-                ? 'The daily E2E run against https://testnet.random.cash failed.'
-                : `A manually dispatched (${process.env.TRIGGER}) E2E run against https://testnet.random.cash failed. This is not the daily scheduled run.`,
+                ? 'The daily E2E run against https://testnet.agent8.cash failed.'
+                : `A manually dispatched (${process.env.TRIGGER}) E2E run against https://testnet.agent8.cash failed. This is not the daily scheduled run.`,
               '',
               `- Playwright suite: **${process.env.BROWSER}**`,
               `- Synthetic payment: **${process.env.SYNTHETIC}**`,

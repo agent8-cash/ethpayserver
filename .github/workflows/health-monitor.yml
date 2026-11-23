@@ -70,7 +70,7 @@ jobs:
             health-state-testnet-
       - name: Check /api/health/deep
         env:
-          HEALTH_URL: https://testnet.random.cash/api/health/deep
+          HEALTH_URL: https://testnet.agent8.cash/api/health/deep
           SENTRY_CRON_URL: ${{ secrets.SENTRY_CRON_HEALTH_TESTNET_URL }}
           HEALTH_STATE_FILE: .health-state/testnet.json
         run: scripts/check-health-deep.sh

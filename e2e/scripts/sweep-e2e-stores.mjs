@@ -8,12 +8,12 @@
  * stay, and `POST /stores/{id}/unarchive` brings one back. Like BTCPay, nothing
  * here destroys history.
  *
- *   E2E_API_URL=https://testnet.random.cash E2E_REMOTE=true \
+ *   E2E_API_URL=https://testnet.agent8.cash E2E_REMOTE=true \
  *   E2E_API_TOKEN=ak_... node scripts/sweep-e2e-stores.mjs [--execute]
  *
  * Dry run by default: it lists what it would archive and changes nothing. Only
  * `--execute` archives, because this runs against a live server. `--execute`
- * refuses any host other than testnet.random.cash or localhost unless `--force`.
+ * refuses any host other than testnet.agent8.cash or localhost unless `--force`.
  *
  * - `GET /stores` returns only the live stores the token's own user can see, so
  *   this can never reach another account's stores, and an already-archived
@@ -45,7 +45,7 @@ const force = argv.includes('--force');
 
 const apiUrl = requireEnv(
   'E2E_API_URL',
-  'the server to sweep, e.g. https://testnet.random.cash',
+  'the server to sweep, e.g. https://testnet.agent8.cash',
 ).replace(/\/$/, '');
 // Archiving closes a store to new invoices, so pointing --execute at mainnet
 // with a real merchant's key could silence a live store whose name happens to

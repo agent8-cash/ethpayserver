@@ -1290,11 +1290,11 @@ jobs:
 
       - name: Poll /health/deep until it reports this commit
         env:
-          # The `/api` prefix is load-bearing. testnet.random.cash serves the
+          # The `/api` prefix is load-bearing. testnet.agent8.cash serves the
           # client, whose SPA fallback answers `/health/deep` with 200 and a
           # page of HTML - a gate pointed there would pass on a server that
           # never restarted. The API lives under `/api`.
-          HEALTH_URL: https://testnet.random.cash/api/health/deep
+          HEALTH_URL: https://testnet.agent8.cash/api/health/deep
           # Long enough for the dispatch to be picked up, the image pulled and
           # migrations to run. Short enough that a deploy which never lands is
           # reported on the same run that should have produced it. Four
@@ -1523,8 +1523,8 @@ jobs:
         working-directory: e2e
         env:
           E2E_REMOTE: "true"
-          E2E_BASE_URL: https://testnet.random.cash
-          E2E_API_URL: https://testnet.random.cash
+          E2E_BASE_URL: https://testnet.agent8.cash
+          E2E_API_URL: https://testnet.agent8.cash
           E2E_POSTMERGE_PAYMENT: "true"
           E2E_TEST_MNEMONIC: ${{ secrets.E2E_TEST_MNEMONIC }}
           E2E_SEPOLIA_RPC_URL: ${{ secrets.E2E_SEPOLIA_RPC_URL }}

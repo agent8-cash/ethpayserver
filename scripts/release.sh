@@ -38,7 +38,7 @@
 # Env:
 #   TARGET_BRANCH       branch to tag (default: testnet)
 #   HEALTH_URL          deployment to check build_sha against
-#                       (default: https://testnet.random.cash/api/health)
+#                       (default: https://testnet.agent8.cash/api/health)
 #   SKIP_DEPLOY_CHECK   set to skip check 5
 
 set -euo pipefail
@@ -51,7 +51,7 @@ fi
 
 VERSION="${1:-}"
 TARGET_BRANCH="${TARGET_BRANCH:-testnet}"
-HEALTH_URL="${HEALTH_URL:-https://testnet.random.cash/api/health}"
+HEALTH_URL="${HEALTH_URL:-https://testnet.agent8.cash/api/health}"
 
 die() { echo "error: $*" >&2; exit 1; }
 

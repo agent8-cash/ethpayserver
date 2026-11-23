@@ -95,7 +95,7 @@ deploy-triggered, not continuous:
 - `scripts/smoke-prod.sh`, run manually per the same checklist.
 
 Between deploys, coverage is `.github/workflows/health-monitor.yml`: it runs
-`scripts/check-health-deep.sh` against both `testnet.random.cash` and
+`scripts/check-health-deep.sh` against both `testnet.agent8.cash` and
 `pay.random.cash` every 5 minutes on a GitHub-hosted runner, asserts
 `postgres`, `redis`, `monitor.data_fresh` and every `rpcs.*.status`, and checks
 in to a Sentry Cron Monitor (`SENTRY_CRON_HEALTH_TESTNET_URL` /

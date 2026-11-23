@@ -51,7 +51,7 @@
 set -u
 set -o pipefail
 
-: "${HEALTH_URL:?HEALTH_URL required — e.g. https://testnet.random.cash/api/health/deep}"
+: "${HEALTH_URL:?HEALTH_URL required — e.g. https://testnet.agent8.cash/api/health/deep}"
 : "${SENTRY_CRON_URL:?SENTRY_CRON_URL required — create a Sentry Cron Monitor (check in via HTTP) and set the URL as a repo secret; see docs/ops.md. A missing check-in URL is not treated as \"no Sentry configured, skip it\" because that silently drops the only path this check has to alert a person.}"
 : "${HEALTH_STATE_FILE:=}"
 : "${STALL_THRESHOLD:=3}"
