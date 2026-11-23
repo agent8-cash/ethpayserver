@@ -128,7 +128,7 @@ async fn an_api_keys_own_payouts_refunds_and_deliveries_remain_reachable() {
     let a_delivery = seed_webhook_delivery(&pg, &a).await;
     let state = app_state(Arc::new(pg));
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let own_payout = server::api::payouts::get_payout(
         a_via_key,
         State(state.clone()),
@@ -138,7 +138,7 @@ async fn an_api_keys_own_payouts_refunds_and_deliveries_remain_reachable() {
     .expect("an API key must be able to fetch its owner's own payout");
     assert_eq!(own_payout.id, a_payout);
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let own_payouts =
         server::api::payouts::list_payouts(a_via_key, State(state.clone()), Path(a.store.id.0))
             .await

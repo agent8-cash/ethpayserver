@@ -33,10 +33,47 @@ use auth::{SessionService, UserStoreRepository};
 use data_service::{InvoiceReader, PaymentReader, PayoutClaimReader, PayoutReader, PayoutWriter};
 use types::{PayoutData, PayoutStatus, StoreId};
 
-use super::extractors::AuthenticatedUser;
+use super::extractors::{StoreScopedUser, key_grants_store_permission};
 use crate::metrics;
 use crate::state::PgAppState;
 pub use api_types::{CreatePayoutRequest, PayoutListResponse, PayoutResponse};
+
+/// Gate a payout read or write behind a store permission.
+///
+/// Every sibling module (webhooks, invoices, settings) checks a specific
+/// `ethpay.store.can...` permission before a privileged operation; this
+/// module used to check only bare store membership, so any role down to
+/// Guest - and any API key regardless of scope, since `AuthenticatedUser`
+/// carries no key scope at all - could create, settle or abandon a payout.
+///
+/// `NOT_FOUND`, not `FORBIDDEN`, on refusal: this module's own convention
+/// (see `server/src/api/payouts/tests.rs`) is that the difference between
+/// "not yours" and "no such row" is itself a fact about another merchant's
+/// data, and a permission failure is the same kind of fact as a membership
+/// failure.
+async fn require_payout_permission<A: SessionService>(
+    state: &PgAppState<A>,
+    user: &auth::UserInfo,
+    key_scope: Option<&[String]>,
+    store_id: StoreId,
+    permission: &str,
+) -> Result<(), StatusCode> {
+    if user.role.is_admin() {
+        return Ok(());
+    }
+    let has_permission = state
+        .data_service
+        .user_has_store_permission(user.id, store_id, permission)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        && key_grants_store_permission(key_scope, permission, store_id);
+
+    if has_permission {
+        Ok(())
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
 
 /// Total of the payments on this chain and asset that may be paid out.
 ///
@@ -176,7 +213,7 @@ where
 /// broadcast anywhere in this deployment: the server holds only public xpubs, so
 /// the record stays `Pending` until something outside this process acts on it.
 pub async fn create_payout<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
     Json(body): Json<CreatePayoutRequest>,
@@ -186,17 +223,14 @@ where
 {
     let store_id = StoreId(store_id);
 
-    // Verify user has access to this store
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_payout_permission(
+        &state,
+        &user,
+        key_scope.as_deref(),
+        store_id,
+        auth::Policies::STORE_MODIFY_INVOICES,
+    )
+    .await?;
 
     // Validate destination address is not empty
     if body.destination_address.trim().is_empty() {
@@ -273,7 +307,7 @@ where
 
 /// List payouts for a store.
 pub async fn list_payouts<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
 ) -> Result<Json<PayoutListResponse>, StatusCode>
@@ -282,17 +316,14 @@ where
 {
     let store_id = StoreId(store_id);
 
-    // Verify user has access to this store
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_payout_permission(
+        &state,
+        &user,
+        key_scope.as_deref(),
+        store_id,
+        auth::Policies::STORE_VIEW_PAYMENTS,
+    )
+    .await?;
 
     let (total, payouts) =
         PayoutReader::get_payouts_for_store(&*state.data_service, store_id, 50, 0)
@@ -307,7 +338,7 @@ where
 
 /// Get a specific payout.
 pub async fn get_payout<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path((store_id, payout_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<PayoutResponse>, StatusCode>
@@ -316,17 +347,14 @@ where
 {
     let store_id = StoreId(store_id);
 
-    // Verify user has access to this store
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_payout_permission(
+        &state,
+        &user,
+        key_scope.as_deref(),
+        store_id,
+        auth::Policies::STORE_VIEW_PAYMENTS,
+    )
+    .await?;
 
     let payout = payout_for_store(&*state.data_service, store_id, payout_id).await?;
 
@@ -362,7 +390,7 @@ pub struct AbandonPayoutRequest {
 /// Only a `Pending` payout can be settled. Settling one twice is refused
 /// rather than silently overwriting the first transaction hash.
 pub async fn settle_payout<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path((store_id, payout_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SettlePayoutRequest>,
@@ -372,16 +400,14 @@ where
 {
     let store_id = StoreId(store_id);
 
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_payout_permission(
+        &state,
+        &user,
+        key_scope.as_deref(),
+        store_id,
+        auth::Policies::STORE_MODIFY_INVOICES,
+    )
+    .await?;
 
     let tx_hash = body.tx_hash.trim();
     if tx_hash.is_empty() {
@@ -435,7 +461,7 @@ where
 /// Moves the payout to `Failed`, which is what the claim query already treats
 /// as released.
 pub async fn abandon_payout<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path((store_id, payout_id)): Path<(Uuid, Uuid)>,
     body: Option<Json<AbandonPayoutRequest>>,
@@ -445,16 +471,14 @@ where
 {
     let store_id = StoreId(store_id);
 
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_payout_permission(
+        &state,
+        &user,
+        key_scope.as_deref(),
+        store_id,
+        auth::Policies::STORE_MODIFY_INVOICES,
+    )
+    .await?;
 
     let payout = payout_for_store(&*state.data_service, store_id, payout_id).await?;
 
