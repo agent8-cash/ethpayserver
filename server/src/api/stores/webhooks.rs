@@ -181,6 +181,7 @@ where
         store_id: webhook.store_id,
         webhook_url: webhook.webhook_url,
         webhook_secret: None, // Don't expose secret on GET
+        rotate_secret: false,
         enabled: webhook.enabled,
         created_at: webhook.created_at,
         updated_at: webhook.updated_at,
@@ -231,9 +232,14 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    // Generate new secret
-    let secret = uuid::Uuid::new_v4().to_string();
-
+    let secret = if req.rotate_secret {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        match StoreWebhookReader::get_webhook(&*state.data_service, store_id).await {
+            Ok(Some(existing)) => existing.webhook_secret,
+            _ => uuid::Uuid::new_v4().to_string(),
+        }
+    };
     let webhook = StoreWebhookWriter::upsert_webhook(
         &*state.data_service,
         store_id,
@@ -249,6 +255,7 @@ where
         store_id: webhook.store_id,
         webhook_url: webhook.webhook_url,
         webhook_secret: Some(webhook.webhook_secret), // Show secret on create/update
+        rotate_secret: req.rotate_secret,
         enabled: webhook.enabled,
         created_at: webhook.created_at,
         updated_at: webhook.updated_at,
@@ -290,4 +297,60 @@ where
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Rotate webhook secret for a store.
+#[utoipa::path(
+    post,
+    path = "/stores/{store_id}/webhook/rotate",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    request_body = (),
+    responses(
+        (status = 200, description = "Webhook secret rotated", body = WebhookResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Webhook not found"),
+    )
+)]
+pub async fn rotate_store_webhook_secret<A>(
+    StoreScopedUser(user, key_scope): StoreScopedUser,
+    State(state): State<PgAppState<A>>,
+    Path(store_id): Path<Uuid>,
+) -> Result<Json<WebhookResponse>, StatusCode>
+where
+    A: SessionService + 'static,
+{
+    require_store_settings_permission(&state, &user, key_scope.as_deref(), store_id).await?;
+
+    // Ensure webhook exists
+    let existing = StoreWebhookReader::get_webhook(&*state.data_service, store_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let new_secret = uuid::Uuid::new_v4().to_string();
+    let webhook = StoreWebhookWriter::upsert_webhook(
+        &*state.data_service,
+        store_id,
+        &existing.webhook_url,
+        &new_secret,
+        existing.enabled,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(WebhookResponse {
+        id: webhook.id,
+        store_id: webhook.store_id,
+        webhook_url: webhook.webhook_url,
+        webhook_secret: Some(webhook.webhook_secret),
+        rotate_secret: true,
+        enabled: webhook.enabled,
+        created_at: webhook.created_at,
+        updated_at: webhook.updated_at,
+    }))
 }
