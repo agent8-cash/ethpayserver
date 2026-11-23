@@ -53,6 +53,9 @@ ignore = [
     # to leak via timing. derive_private_key's only other callers are its own
     # unit tests.
     "RUSTSEC-2026-0387", # crypto-bigint timing variability - see the note above
+    # rmcp RUSTSEC-2026-0462/0457 ignores removed: mcp-server is on rmcp
+    # 3.9.0+, past the >=3.9.0 fix line this waiver's own condition named for
+    # dropping it.
     # wasmtime RUSTSEC-2026-0315/0316/0325/0326/0327 ignores removed: the
     # commons `rev` bump landed, wasmtime is >=48.0.4, and
     # scripts/check-wasmtime-ignores.sh now fails on a fixed release with any
