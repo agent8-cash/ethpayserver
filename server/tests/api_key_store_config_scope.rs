@@ -49,7 +49,8 @@ use server::api::StoreScopedUser;
 use server::api::stores::{
     configure_store_webhook, create_payment_method, delete_payment_method, delete_store_webhook,
     delete_token_policy, get_payment_method, get_store_webhook, get_token_policy,
-    list_payment_methods, set_token_policy, update_payment_method, update_store_settings,
+    list_payment_methods, rotate_store_webhook_secret, set_token_policy, update_payment_method,
+    update_store_settings,
 };
 use server::state::PgAppState;
 use types::{
@@ -148,6 +149,13 @@ async fn webhook_url(pg: &PgDataService, store_id: Uuid) -> Option<String> {
         .await
         .expect("read webhook")
         .map(|w| w.webhook_url)
+}
+
+async fn webhook_secret(pg: &PgDataService, store_id: Uuid) -> Option<String> {
+    StoreWebhookReader::get_webhook(pg, store_id)
+        .await
+        .expect("read webhook")
+        .map(|w| w.webhook_secret)
 }
 
 async fn seed_policy(pg: &PgDataService, store_id: Uuid) {
@@ -273,6 +281,56 @@ async fn a_key_scoped_to_create_invoice_is_refused_configuring_the_store_webhook
     .await;
     assert_eq!(result.err(), Some(StatusCode::FORBIDDEN));
     assert_eq!(webhook_url(&state.data_service, store.id.0).await, None);
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_modify_settings_can_rotate_the_store_webhook_secret() {
+    let (state, owner, store) = env().await;
+    seed_webhook(&state.data_service, store.id.0).await;
+    let result = rotate_store_webhook_secret(
+        StoreScopedUser(
+            user_info(owner),
+            Some(vec![Policies::STORE_MODIFY_SETTINGS.to_string()]),
+        ),
+        State(state),
+        Path(store.id.0),
+    )
+    .await;
+    let Ok(Json(body)) = result else {
+        panic!("a key scoped to canmodifystoresettings must be admitted");
+    };
+    assert!(body.rotate_secret, "the rotate endpoint always rotates");
+    assert!(
+        body.webhook_secret.is_some(),
+        "the rotated secret must be returned"
+    );
+}
+
+/// A new secret going to the wrong caller is as bad as redirecting payment
+/// notifications - both hand an attacker what they need to forge a webhook.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_create_invoice_is_refused_rotating_the_store_webhook_secret() {
+    let (state, owner, store) = env().await;
+    seed_webhook(&state.data_service, store.id.0).await;
+    let result = rotate_store_webhook_secret(
+        StoreScopedUser(
+            user_info(owner),
+            Some(vec![Policies::STORE_CREATE_INVOICE.to_string()]),
+        ),
+        State(state.clone()),
+        Path(store.id.0),
+    )
+    .await;
+    assert_eq!(result.err(), Some(StatusCode::FORBIDDEN));
+    assert_eq!(
+        webhook_secret(&state.data_service, store.id.0)
+            .await
+            .as_deref(),
+        Some("secret"),
+        "a refused rotation must not change the existing secret"
+    );
 }
 
 #[tokio::test]
