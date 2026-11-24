@@ -35,12 +35,15 @@ ignore = [
     # --dry-run` both fail - `alloy-primitives` (pulled into every binary
     # that links `evm`, not something a narrower change avoids) still hard-
     # requires `k256 = "^0.13"` at its latest published release, 1.7.3,
-    # confirmed against the registry directly. That is the actual anchor;
-    # our own three k256 call sites (evm/src/wallet/hd_wallet.rs,
-    # server/src/api/users/wallets.rs and its test) are not what is blocking
-    # this. Next review: re-run those two dry-runs, and check
-    # `alloy-primitives`'s latest published version against this file's date
-    # - if it has moved off `k256 ^0.13`, take the bump instead of renewing.
+    # confirmed against the registry directly. But the dry-run's own
+    # resolver error names `server`'s manifest directly too: our own
+    # `k256 = "^0.13"` pin (evm/src/wallet/hd_wallet.rs,
+    # server/src/api/users/wallets.rs and its test are the call sites) is an
+    # equally real anchor, not merely downstream of alloy-primitives' - both
+    # have to move before this bump is possible. Next review: re-run those
+    # two dry-runs, and check both alloy-primitives's latest published
+    # version and our own pin against this file's date - only take the bump
+    # once neither blocks it.
     #
     # PATH: crypto-bigint 0.5.5 -> elliptic-curve 0.13.8 -> {ecdsa 0.16.9 ->
     # k256 0.13.4, alloy-signer 1.8.3} -> evm/server. No available path today
@@ -48,19 +51,32 @@ ignore = [
     # major.
     #
     # WHY NOT EXPLOITABLE HERE, traced through every real (non-test) caller,
-    # not asserted: the only code that feeds a derived private key into a
-    # crypto-bigint-adjacent operation is evm/src/transaction.rs
-    # (send_native_transfer and its sibling, via HdWallet::derive_private_key).
-    # That module is gated behind the `hot-wallet` feature (evm/Cargo.toml),
-    # which is absent from `default = []`, never passed by any CI workflow,
-    # and documented in the module's own header as reserved for "a possible
-    # future hot-wallet mode - a deliberate product decision that has not
-    # been made". The deployed binary never compiles it in. The other real
-    # k256 usage (server/src/api/users/wallets.rs's verify_wallet_signature)
-    # is ECDSA signature RECOVERY from a signature the user's own wallet
-    # already produced - a public operation on public inputs, nothing secret
-    # to leak via timing. derive_private_key's only other callers are its own
-    # unit tests.
+    # not asserted: HdWallet (evm/src/wallet/hd_wallet.rs) is the only type
+    # that ever holds a private master key and does crypto-bigint-adjacent
+    # scalar arithmetic - every one of its methods does, not only
+    # derive_private_key, because its paths are hardened at every segment up
+    # to the account level and hardened BIP-32 can only be computed from a
+    # private key. It is not feature-gated. But the deployed server binary
+    # never constructs one: the only call to
+    # HdWallet::from_mnemonic/from_seed outside tests is in
+    # evm/src/bin/derive-xpub.rs, a separate CLI binary a merchant runs on
+    # their own machine with their own mnemonic - never built or run by the
+    # server. A timing side-channel there is moot: whoever runs it already
+    # holds the secret being timed.
+    #
+    # The server's own per-invoice address derivation
+    # (server/src/api/invoices/payment_options.rs -> XpubDeriver, in
+    # evm/src/wallet/xpub_deriver.rs) holds only an XPub - parsed straight
+    # from the merchant's pasted xpub string - and derives via
+    # account_xpub.derive_child: EC point addition on public inputs, no
+    # secret scalar anywhere in it. The other real k256 usage
+    # (server/src/api/users/wallets.rs's verify_wallet_signature) is ECDSA
+    # signature RECOVERY from a signature the user's own wallet already
+    # produced - also a public operation on public inputs. Nothing in the
+    # deployed server binary ever feeds a secret into a crypto-bigint-
+    # adjacent operation; `hot-wallet` (evm/Cargo.toml, absent from
+    # `default = []`, never passed by any CI workflow) stays irrelevant to
+    # this argument rather than load-bearing for it.
     "RUSTSEC-2026-0387", # crypto-bigint timing variability - see the note above
     # rmcp RUSTSEC-2026-0462/0457 ignores removed: mcp-server is on rmcp
     # 3.9.0+, past the >=3.9.0 fix line this waiver's own condition named for
