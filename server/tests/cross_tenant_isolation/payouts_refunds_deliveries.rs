@@ -17,11 +17,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use uuid::Uuid;
 
-use server::api::AuthenticatedUser;
+use server::api::{AuthenticatedUser, StoreScopedUser};
 
 use crate::support::{
-    app_state, seed_payout, seed_refund, seed_tenant, seed_webhook_delivery, service, user_info,
-    user_info_with_role,
+    app_state, seed_payout, seed_refund, seed_tenant, seed_webhook_delivery, service,
+    store_scoped_user_info, user_info, user_info_with_role,
 };
 
 #[tokio::test]
@@ -119,7 +119,7 @@ async fn list_refunds_across_tenants_is_refused() {
     let state = app_state(Arc::new(pg));
 
     let result = server::api::refunds::list_refunds(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(b.invoice.id.0.clone()),
     )
@@ -133,7 +133,7 @@ async fn list_refunds_across_tenants_is_refused() {
     // Positive control: without this, an endpoint that 404s regardless of
     // caller would pass the assertion above for the wrong reason.
     let own = server::api::refunds::list_refunds(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(a.invoice.id.0.clone()),
     )
@@ -153,7 +153,7 @@ async fn list_deliveries_for_invoice_across_tenants_is_refused() {
     let state = app_state(Arc::new(pg));
 
     let result = server::api::webhook_deliveries::list_deliveries_for_invoice(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(b.invoice.id.0.clone()),
     )
@@ -167,7 +167,7 @@ async fn list_deliveries_for_invoice_across_tenants_is_refused() {
     // Positive control: without this, an endpoint that 404s regardless of
     // caller would pass the assertion above for the wrong reason.
     let own = server::api::webhook_deliveries::list_deliveries_for_invoice(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(a.invoice.id.0.clone()),
     )
@@ -187,7 +187,7 @@ async fn list_deliveries_for_store_across_tenants_is_refused() {
     let state = app_state(Arc::new(pg));
 
     let result = server::api::webhook_deliveries::list_deliveries_for_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(b.store.id.0),
     )
@@ -201,7 +201,7 @@ async fn list_deliveries_for_store_across_tenants_is_refused() {
     // Positive control: without this, an endpoint that 404s regardless of
     // caller would pass the assertion above for the wrong reason.
     let own = server::api::webhook_deliveries::list_deliveries_for_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(a.store.id.0),
     )
@@ -290,7 +290,10 @@ async fn list_refunds_as_server_admin_reaches_another_tenants_invoice() {
     let state = app_state(Arc::new(pg));
 
     let result = server::api::refunds::list_refunds(
-        AuthenticatedUser(user_info_with_role(a.user_id, auth::Role::ServerAdmin)),
+        StoreScopedUser(
+            user_info_with_role(a.user_id, auth::Role::ServerAdmin),
+            None,
+        ),
         State(state),
         Path(b.invoice.id.0.clone()),
     )
@@ -309,7 +312,10 @@ async fn list_deliveries_for_invoice_as_server_admin_reaches_another_tenants_inv
     let state = app_state(Arc::new(pg));
 
     let result = server::api::webhook_deliveries::list_deliveries_for_invoice(
-        AuthenticatedUser(user_info_with_role(a.user_id, auth::Role::ServerAdmin)),
+        StoreScopedUser(
+            user_info_with_role(a.user_id, auth::Role::ServerAdmin),
+            None,
+        ),
         State(state),
         Path(b.invoice.id.0.clone()),
     )
@@ -326,7 +332,7 @@ async fn list_deliveries_for_store_with_a_nil_store_id_is_refused_like_any_forei
     let state = app_state(Arc::new(pg));
 
     let result = server::api::webhook_deliveries::list_deliveries_for_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(Uuid::nil()),
     )
@@ -348,11 +354,192 @@ async fn list_deliveries_for_store_as_server_admin_reaches_every_tenants_store()
     let state = app_state(Arc::new(pg));
 
     let result = server::api::webhook_deliveries::list_deliveries_for_store(
-        AuthenticatedUser(user_info_with_role(a.user_id, auth::Role::ServerAdmin)),
+        StoreScopedUser(
+            user_info_with_role(a.user_id, auth::Role::ServerAdmin),
+            None,
+        ),
         State(state),
         Path(b.store.id.0),
     )
     .await
     .expect("a server admin must be able to list another tenant's webhook deliveries by store");
     assert!(result.deliveries.iter().any(|d| d.id == b_delivery));
+}
+
+// =============================================================================
+// Key-scope boundary: refunds and webhook-delivery endpoints
+//
+// Review finding: `list_refunds` and all three webhook-delivery handlers
+// checked only bare store membership (`get_user_store(...).is_some()`)
+// through `AuthenticatedUser`, which carries no API-key scope at all - the
+// same gap payouts had. Fixed to gate `list_refunds` behind
+// `ethpay.store.canviewpayments` and the three webhook-delivery handlers
+// (reads and `replay_delivery`, a write) behind
+// `ethpay.store.canmanagewebhooks`. `a`'s own store role (Owner, via
+// `seed_tenant`) already holds both permissions, so only the key's scope
+// varies below.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_payments_can_list_refunds() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_refund = seed_refund(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_VIEW_PAYMENTS.to_string()]);
+    let result = server::api::refunds::list_refunds(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.invoice.id.0.clone()),
+    )
+    .await
+    .expect("a key scoped to canviewpayments must be admitted to list refunds");
+    assert!(result.iter().any(|r| r.id == a_refund));
+}
+
+/// The refusal side: a key scoped to an unrelated permission must be
+/// refused - `canviewpayments` is what the guard checks, not merely "has
+/// some permission".
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_create_invoices_is_refused_listing_refunds() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    seed_refund(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_CREATE_INVOICE.to_string()]);
+    let result = server::api::refunds::list_refunds(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.invoice.id.0.clone()),
+    )
+    .await;
+    assert_eq!(
+        result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to cancreateinvoice must be refused listing refunds"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_manage_webhooks_can_list_webhook_deliveries() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_delivery = seed_webhook_delivery(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_MANAGE_WEBHOOKS.to_string()]);
+
+    let by_invoice = server::api::webhook_deliveries::list_deliveries_for_invoice(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path(a.invoice.id.0.clone()),
+    )
+    .await
+    .expect("a key scoped to canmanagewebhooks must be admitted to list deliveries by invoice");
+    assert!(by_invoice.deliveries.iter().any(|d| d.id == a_delivery));
+
+    let by_store = server::api::webhook_deliveries::list_deliveries_for_store(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await
+    .expect("a key scoped to canmanagewebhooks must be admitted to list deliveries by store");
+    assert!(by_store.deliveries.iter().any(|d| d.id == a_delivery));
+}
+
+/// The refusal side for both read handlers: `canviewpayments` alone - the
+/// permission the sibling `list_refunds`/payout-read endpoints accept - must
+/// not be enough here. Webhook delivery history is an operations concern
+/// gated behind `canmanagewebhooks`, not merchant-facing payment data.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_payments_is_refused_listing_webhook_deliveries() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    seed_webhook_delivery(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_VIEW_PAYMENTS.to_string()]);
+
+    let by_invoice = server::api::webhook_deliveries::list_deliveries_for_invoice(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path(a.invoice.id.0.clone()),
+    )
+    .await;
+    assert_eq!(
+        by_invoice.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused listing deliveries by invoice"
+    );
+
+    let by_store = server::api::webhook_deliveries::list_deliveries_for_store(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await;
+    assert_eq!(
+        by_store.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused listing deliveries by store"
+    );
+}
+
+/// `replay_delivery`'s grant side proves the permission gate specifically,
+/// not full delivery - this harness's `app_state` has no webhook sink
+/// configured (see `support::app_state`), so a replay that gets past the
+/// permission check still ends in `SERVICE_UNAVAILABLE`. That is still a
+/// meaningful positive: it is a *different* refusal than the permission
+/// gate produces (`NOT_FOUND`, pinned below), proving the gate - not some
+/// later check - is what distinguishes grant from refusal.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_manage_webhooks_reaches_past_the_permission_gate_to_replay_a_delivery() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_delivery = seed_webhook_delivery(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_MANAGE_WEBHOOKS.to_string()]);
+    let result = server::api::webhook_deliveries::replay_delivery(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path((a.store.id.0, a_delivery)),
+    )
+    .await;
+    assert_eq!(
+        result.unwrap_err(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a key scoped to canmanagewebhooks must pass the permission gate - the no-sink \
+         SERVICE_UNAVAILABLE below it is this test harness's limit, not a refusal"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_payments_is_refused_replaying_a_delivery() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_delivery = seed_webhook_delivery(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_VIEW_PAYMENTS.to_string()]);
+    let result = server::api::webhook_deliveries::replay_delivery(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path((a.store.id.0, a_delivery)),
+    )
+    .await;
+    assert_eq!(
+        result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused replaying a delivery"
+    );
 }

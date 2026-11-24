@@ -6,9 +6,9 @@
 //!
 //! `webhook_deliveries` used to be written by nobody: the retry queue existed,
 //! backed off, and threw its history away the moment a job gave up. This is
-//! the read side of making that history visible - scoped the same way
-//! refunds and payouts already are, to the store the caller belongs to, 404
-//! for anyone else's.
+//! the read side of making that history visible - gated behind
+//! `ethpay.store.canmanagewebhooks` (see `require_webhook_permission`), 404
+//! for anyone without it on the store named in the path.
 
 #[cfg(test)]
 mod tests;
@@ -25,9 +25,42 @@ use auth::{SessionService, UserStoreRepository};
 use data_service::{InvoiceReader, StoreWebhookReader, WebhookDeliveryData, WebhookDeliveryReader};
 use types::{InvoiceId, StoreId};
 
-use super::extractors::AuthenticatedUser;
+use super::extractors::{StoreScopedUser, key_grants_store_permission};
 use crate::services::webhook::{WebhookJob, WebhookPayload};
 use crate::state::PgAppState;
+
+/// Gate a webhook-delivery read or replay behind a store permission.
+///
+/// All three handlers used to check only bare store membership through
+/// `AuthenticatedUser`, which carries no API-key scope at all. Reuses
+/// `ethpay.store.canmanagewebhooks` - the permission already defined for
+/// webhook configuration (Owner and Manager, not Employee or Guest) - for
+/// every operation here, reads included: delivery history and replay are
+/// both webhook-operations concerns, not merchant-facing business data the
+/// way invoices/payments are, so this does not reuse `canviewpayments`.
+async fn require_webhook_permission<A: SessionService>(
+    state: &PgAppState<A>,
+    user: &auth::UserInfo,
+    key_scope: Option<&[String]>,
+    store_id: StoreId,
+) -> Result<(), StatusCode> {
+    if user.role.is_admin() {
+        return Ok(());
+    }
+    const MANAGE_WEBHOOKS: &str = "ethpay.store.canmanagewebhooks";
+    let has_permission = state
+        .data_service
+        .user_has_store_permission(user.id, store_id, MANAGE_WEBHOOKS)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        && key_grants_store_permission(key_scope, MANAGE_WEBHOOKS, store_id);
+
+    if has_permission {
+        Ok(())
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
 
 /// Pages are not exposed to the caller yet - the same fixed-size-page
 /// starting point `payouts::list_payouts` used before pagination existed.
@@ -118,7 +151,7 @@ where
 
 /// List recent webhook deliveries for an invoice.
 pub async fn list_deliveries_for_invoice<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(invoice_id): Path<String>,
 ) -> Result<Json<WebhookDeliveryListResponse>, StatusCode>
@@ -132,16 +165,7 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, invoice.store_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_webhook_permission(&state, &user, key_scope.as_deref(), invoice.store_id).await?;
 
     let (total, deliveries) = WebhookDeliveryReader::list_deliveries_for_invoice(
         &*state.data_service,
@@ -160,23 +184,14 @@ where
 
 /// List recent webhook deliveries for a store.
 pub async fn list_deliveries_for_store<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
 ) -> Result<Json<WebhookDeliveryListResponse>, StatusCode>
 where
     A: SessionService + 'static,
 {
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, StoreId(store_id))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_webhook_permission(&state, &user, key_scope.as_deref(), StoreId(store_id)).await?;
 
     let (total, deliveries) = WebhookDeliveryReader::list_deliveries_for_store(
         &*state.data_service,
@@ -201,23 +216,14 @@ where
 /// `idempotency_key` is derived from the event's identity and is not touched,
 /// so a subscriber that dedupes correctly sees no new event.
 pub async fn replay_delivery<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path((store_id, delivery_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<WebhookDeliveryResponse>, StatusCode>
 where
     A: SessionService + 'static,
 {
-    if !user.role.is_admin()
-        && state
-            .data_service
-            .get_user_store(user.id, StoreId(store_id))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    require_webhook_permission(&state, &user, key_scope.as_deref(), StoreId(store_id)).await?;
 
     let delivery = delivery_for_store(&*state.data_service, store_id, delivery_id).await?;
 

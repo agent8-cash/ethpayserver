@@ -250,7 +250,7 @@ async fn an_api_key_cannot_reach_another_tenants_payouts_refunds_or_deliveries()
         "an API key must not list payouts on another tenant's store"
     );
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let result = server::api::refunds::list_refunds(
         a_via_key,
         State(state.clone()),
@@ -263,7 +263,7 @@ async fn an_api_key_cannot_reach_another_tenants_payouts_refunds_or_deliveries()
         "an API key must not list refunds on another tenant's invoice"
     );
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let result = server::api::webhook_deliveries::list_deliveries_for_invoice(
         a_via_key,
         State(state.clone()),
@@ -276,7 +276,7 @@ async fn an_api_key_cannot_reach_another_tenants_payouts_refunds_or_deliveries()
         "an API key must not list webhook deliveries on another tenant's invoice"
     );
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let result = server::api::webhook_deliveries::list_deliveries_for_store(
         a_via_key,
         State(state),

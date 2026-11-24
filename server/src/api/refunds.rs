@@ -53,7 +53,7 @@ use auth::{SessionService, UserStoreRepository};
 use data_service::{InvoiceReader, RefundReader};
 use types::InvoiceId;
 
-use super::extractors::AuthenticatedUser;
+use super::extractors::{AuthenticatedUser, StoreScopedUser, key_grants_store_permission};
 use crate::api::ApiErr;
 use crate::state::PgAppState;
 pub use api_types::RefundResponse;
@@ -87,7 +87,7 @@ where
 
 /// List refunds for an invoice.
 pub async fn list_refunds<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(invoice_id): Path<String>,
 ) -> Result<Json<Vec<RefundResponse>>, StatusCode>
@@ -102,15 +102,20 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    // Verify user has access to this invoice's store
-    if !user.role.is_admin()
-        && state
+    // Verify the caller may view this store's payments: a bare member used
+    // to be enough, through AuthenticatedUser, which carries no API-key
+    // scope at all. Reuses canviewpayments - already held by every role
+    // including Guest, matching the sibling read endpoints (payouts,
+    // webhook deliveries).
+    const VIEW_PAYMENTS: &str = "ethpay.store.canviewpayments";
+    let has_permission = user.role.is_admin()
+        || (state
             .data_service
-            .get_user_store(user.id, invoice.store_id)
+            .user_has_store_permission(user.id, invoice.store_id, VIEW_PAYMENTS)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .is_none()
-    {
+            && key_grants_store_permission(key_scope.as_deref(), VIEW_PAYMENTS, invoice.store_id));
+    if !has_permission {
         return Err(StatusCode::NOT_FOUND);
     }
 
