@@ -198,7 +198,7 @@ async fn wallet_rotation_history_is_owner_only() {
 
     // Positive control: without this, an endpoint that refuses regardless
     // of caller would pass the assertion above for the wrong reason.
-    server::api::users::get_wallet_rotations(
+    let _ = server::api::users::get_wallet_rotations(
         store_scoped_user_info(a.user_id),
         State(state),
         Path(a.store.id.0),
@@ -215,7 +215,7 @@ async fn a_key_scoped_to_modify_store_settings_can_read_wallet_rotation_history(
     let state = app_state(Arc::new(pg));
 
     let scope = Some(vec![auth::Policies::STORE_MODIFY_SETTINGS.to_string()]);
-    server::api::users::get_wallet_rotations(
+    let _ = server::api::users::get_wallet_rotations(
         StoreScopedUser(user_info(a.user_id), scope),
         State(state),
         Path(a.store.id.0),

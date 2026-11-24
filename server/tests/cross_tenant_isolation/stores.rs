@@ -283,13 +283,14 @@ async fn a_key_scoped_to_modify_store_settings_can_delete_and_unarchive_its_stor
     .await
     .expect("a key scoped to canmodifystoresettings must be admitted to delete its own store");
 
-    server::api::stores::unarchive_store(
+    let restored = server::api::stores::unarchive_store(
         StoreScopedUser(user_info(a.user_id), scope),
         State(state),
         Path(a.store.id.0),
     )
     .await
     .expect("a key scoped to canmodifystoresettings must be admitted to unarchive its own store");
+    assert!(!restored.archived);
 }
 
 /// The refusal side: a key scoped to an unrelated permission must be refused,
