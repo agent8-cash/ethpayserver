@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use alloy_primitives::U256;
 use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::{Request as HttpRequest, StatusCode};
@@ -231,6 +232,40 @@ pub(crate) async fn grant_store_permission(pg: &PgDataService, tenant: &Tenant, 
     )
     .await
     .expect("assign the test role to the tenant's own store membership");
+}
+
+/// A confirmed payment on `tenant`'s own invoice, on the default chain/asset
+/// `create_payout` sweeps (`eip155:11155111`, native ETH) - unlike
+/// `seed_tenant`'s own payment (`confirmed_at: None`, standing in for "not
+/// yet payable"), this one is what `sum_payable` actually counts: confirmed,
+/// not reorged, matching chain and asset. Returns the payment's base-unit
+/// amount as a `U256` so a caller can assert the payout total it produces.
+pub(crate) async fn seed_confirmed_payment(pg: &PgDataService, tenant: &Tenant) -> U256 {
+    const AMOUNT: &str = "500000000000000000";
+    let payment = PaymentData {
+        id: Uuid::new_v4(),
+        invoice_id: tenant.invoice.id.clone(),
+        payment_option_id: None,
+        chain_id: ChainId::evm(11155111),
+        asset_type: AssetType::Native,
+        amount: AMOUNT.to_string(),
+        asset_symbol: "ETH".to_string(),
+        token_address: None,
+        tx_hash: format!("0x{:064x}", Uuid::new_v4().as_u128()),
+        block_number: Some(1),
+        detected_at: Utc::now(),
+        confirmed_at: Some(Utc::now()),
+        from_address: None,
+        reorged: false,
+        extra: None,
+        credited_amount: None,
+        rate_used: None,
+        rate_applied_at: None,
+    };
+    PaymentWriter::upsert(pg, &payment)
+        .await
+        .expect("seed confirmed payment");
+    AMOUNT.parse().expect("AMOUNT is a valid U256")
 }
 
 /// A payout on `store`, unrelated to any real invoice - the payout endpoints
