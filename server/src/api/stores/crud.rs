@@ -347,7 +347,7 @@ where
     )
 )]
 pub async fn delete_store<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode>
@@ -362,6 +362,13 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let is_member = is_store_member(&state, user.id, StoreId(store_id)).await?;
     store_for_caller(store, user.id, is_member, true)?;
+    if !key_grants_store_permission(
+        key_scope.as_deref(),
+        "ethpay.store.canmodifystoresettings",
+        StoreId(store_id),
+    ) {
+        return Err(StatusCode::NOT_FOUND);
+    }
 
     state
         .data_service
@@ -391,7 +398,7 @@ where
     )
 )]
 pub async fn unarchive_store<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
 ) -> Result<Json<StoreResponse>, StatusCode>
@@ -405,6 +412,13 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let is_member = is_store_member(&state, user.id, StoreId(store_id)).await?;
     let mut store = store_for_caller(store, user.id, is_member, true)?;
+    if !key_grants_store_permission(
+        key_scope.as_deref(),
+        "ethpay.store.canmodifystoresettings",
+        StoreId(store_id),
+    ) {
+        return Err(StatusCode::NOT_FOUND);
+    }
 
     store.archived = false;
     state
