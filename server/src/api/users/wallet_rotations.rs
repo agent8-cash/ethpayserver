@@ -17,7 +17,7 @@ use uuid::Uuid;
 use auth::repository::StoreRepository;
 use auth::{SessionService, UserId};
 
-use crate::api::extractors::AuthenticatedUser;
+use crate::api::extractors::{StoreScopedUser, key_grants_store_permission};
 use crate::api::stores::mask_xpub;
 use crate::state::PgAppState;
 
@@ -54,7 +54,7 @@ pub(crate) fn may_read_rotation_history(caller: UserId, owner: UserId) -> bool {
     )
 )]
 pub async fn get_wallet_rotations<A>(
-    AuthenticatedUser(user): AuthenticatedUser,
+    StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
     Path(store_id): Path<Uuid>,
 ) -> Result<Json<Vec<WalletRotationEntry>>, (StatusCode, &'static str)>
@@ -73,6 +73,13 @@ where
     match store {
         Some(store) if may_read_rotation_history(user.id, store.owner_id) => {}
         _ => return Err((StatusCode::NOT_FOUND, "store not found")),
+    }
+    if !key_grants_store_permission(
+        key_scope.as_deref(),
+        "ethpay.store.canmodifystoresettings",
+        auth::StoreId(store_id),
+    ) {
+        return Err((StatusCode::NOT_FOUND, "store not found"));
     }
 
     let rotations = state
