@@ -13,15 +13,18 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use uuid::Uuid;
 
+use server::api::payouts::{CreatePayoutRequest, SettlePayoutRequest};
 use server::api::{AuthenticatedUser, StoreScopedUser};
+use types::ChainId;
 
 use crate::support::{
-    app_state, seed_payout, seed_refund, seed_tenant, seed_webhook_delivery, service,
-    store_scoped_user_info, user_info, user_info_with_role,
+    app_state, seed_confirmed_payment, seed_payout, seed_refund, seed_tenant,
+    seed_webhook_delivery, service, store_scoped_user_info, user_info, user_info_with_role,
 };
 
 #[tokio::test]
@@ -35,7 +38,7 @@ async fn payout_endpoints_refuse_a_non_members_store() {
     let state = app_state(Arc::new(pg));
 
     let get_result = server::api::payouts::get_payout(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path((b.store.id.0, b_payout)),
     )
@@ -47,7 +50,7 @@ async fn payout_endpoints_refuse_a_non_members_store() {
     );
 
     let list_result = server::api::payouts::list_payouts(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(b.store.id.0),
     )
@@ -62,7 +65,7 @@ async fn payout_endpoints_refuse_a_non_members_store() {
     // including one asking about their own store, would pass the assertions
     // above for the wrong reason.
     let own = server::api::payouts::get_payout(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path((a.store.id.0, a_payout)),
     )
@@ -71,7 +74,7 @@ async fn payout_endpoints_refuse_a_non_members_store() {
     assert_eq!(own.id, a_payout);
 
     let own_list = server::api::payouts::list_payouts(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(a.store.id.0),
     )
@@ -95,7 +98,7 @@ async fn get_payout_refuses_another_tenants_payout_even_via_the_callers_own_stor
     let state = app_state(Arc::new(pg));
 
     let result = server::api::payouts::get_payout(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path((a.store.id.0, b_payout)),
     )
@@ -224,7 +227,7 @@ async fn payout_endpoints_with_a_nil_store_id_is_refused_like_any_foreign_store(
     let state = app_state(Arc::new(pg));
 
     let get_result = server::api::payouts::get_payout(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path((Uuid::nil(), a_payout)),
     )
@@ -236,7 +239,7 @@ async fn payout_endpoints_with_a_nil_store_id_is_refused_like_any_foreign_store(
     );
 
     let list_result = server::api::payouts::list_payouts(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state),
         Path(Uuid::nil()),
     )
@@ -262,7 +265,10 @@ async fn payout_endpoints_as_server_admin_reach_every_tenants_store() {
     let state = app_state(Arc::new(pg));
 
     let get_result = server::api::payouts::get_payout(
-        AuthenticatedUser(user_info_with_role(a.user_id, auth::Role::ServerAdmin)),
+        StoreScopedUser(
+            user_info_with_role(a.user_id, auth::Role::ServerAdmin),
+            None,
+        ),
         State(state.clone()),
         Path((b.store.id.0, b_payout)),
     )
@@ -271,7 +277,10 @@ async fn payout_endpoints_as_server_admin_reach_every_tenants_store() {
     assert_eq!(get_result.id, b_payout);
 
     let list_result = server::api::payouts::list_payouts(
-        AuthenticatedUser(user_info_with_role(a.user_id, auth::Role::ServerAdmin)),
+        StoreScopedUser(
+            user_info_with_role(a.user_id, auth::Role::ServerAdmin),
+            None,
+        ),
         State(state),
         Path(b.store.id.0),
     )
@@ -541,5 +550,213 @@ async fn a_key_scoped_to_view_payments_is_refused_replaying_a_delivery() {
         result.unwrap_err(),
         StatusCode::NOT_FOUND,
         "a key scoped only to canviewpayments must be refused replaying a delivery"
+    );
+}
+
+// =============================================================================
+// Key-scope boundary: payout endpoints
+//
+// Review finding: all five payout handlers checked only bare store
+// membership (`get_user_store(...).is_some()`) through `AuthenticatedUser`,
+// which carries no API-key scope at all - any role down to Guest, and any
+// API key regardless of scope, could create, settle or abandon a payout.
+// Fixed to match every sibling module (webhooks, invoices, settings):
+// `StoreScopedUser` plus a store permission check
+// (`ethpay.store.canmodifyinvoices` for the three writes,
+// `ethpay.store.canviewpayments` for the two reads). These tests pin the new
+// boundary in both directions; `a`'s own store role (Owner, via
+// `seed_tenant`) already holds both permissions, so only the key's scope
+// varies.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_modify_invoices_can_create_a_payout() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let amount = seed_confirmed_payment(&pg, &a).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_MODIFY_INVOICES.to_string()]);
+    let created = server::api::payouts::create_payout(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+        Json(CreatePayoutRequest {
+            invoice_ids: vec![a.invoice.id.0.clone()],
+            destination_address: format!("0x{:040x}", Uuid::new_v4().as_u128()),
+            chain_id: ChainId::evm(11155111),
+            asset_symbol: "ETH".to_string(),
+            token_address: None,
+        }),
+    )
+    .await
+    .expect("a key scoped to canmodifyinvoices must be admitted to create a payout");
+    assert_eq!(created.amount, amount.to_string());
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_modify_invoices_can_settle_and_abandon_payouts() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let to_settle = seed_payout(&pg, &a.store).await;
+    let to_abandon = seed_payout(&pg, &a.store).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_MODIFY_INVOICES.to_string()]);
+
+    let settled = server::api::payouts::settle_payout(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path((a.store.id.0, to_settle)),
+        Json(SettlePayoutRequest {
+            tx_hash: format!("0x{:064x}", Uuid::new_v4().as_u128()),
+        }),
+    )
+    .await
+    .expect("a key scoped to canmodifyinvoices must be admitted to settle a payout");
+    assert_eq!(settled.id, to_settle);
+
+    let abandoned = server::api::payouts::abandon_payout(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path((a.store.id.0, to_abandon)),
+        None,
+    )
+    .await
+    .expect("a key scoped to canmodifyinvoices must be admitted to abandon a payout");
+    assert_eq!(abandoned.id, to_abandon);
+}
+
+/// The refusal side for all three write handlers: a key scoped only to
+/// `canviewpayments` (read-only) must be refused every write, matching
+/// Guest's own role permissions exactly - a Guest invited as "read only"
+/// must not be able to create, settle or abandon a payout even though the
+/// handler used to let any member do so.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_payments_is_refused_creating_settling_or_abandoning_a_payout() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    seed_confirmed_payment(&pg, &a).await;
+    let existing = seed_payout(&pg, &a.store).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_VIEW_PAYMENTS.to_string()]);
+
+    let create_result = server::api::payouts::create_payout(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path(a.store.id.0),
+        Json(CreatePayoutRequest {
+            invoice_ids: vec![a.invoice.id.0.clone()],
+            destination_address: format!("0x{:040x}", Uuid::new_v4().as_u128()),
+            chain_id: ChainId::evm(11155111),
+            asset_symbol: "ETH".to_string(),
+            token_address: None,
+        }),
+    )
+    .await;
+    assert_eq!(
+        create_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused creating a payout"
+    );
+
+    let settle_result = server::api::payouts::settle_payout(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path((a.store.id.0, existing)),
+        Json(SettlePayoutRequest {
+            tx_hash: format!("0x{:064x}", Uuid::new_v4().as_u128()),
+        }),
+    )
+    .await;
+    assert_eq!(
+        settle_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused settling a payout"
+    );
+
+    let abandon_result = server::api::payouts::abandon_payout(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path((a.store.id.0, existing)),
+        None,
+    )
+    .await;
+    assert_eq!(
+        abandon_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to canviewpayments must be refused abandoning a payout"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_payments_can_get_and_list_payouts() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_payout = seed_payout(&pg, &a.store).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_VIEW_PAYMENTS.to_string()]);
+
+    let got = server::api::payouts::get_payout(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path((a.store.id.0, a_payout)),
+    )
+    .await
+    .expect("a key scoped to canviewpayments must be admitted to fetch a payout");
+    assert_eq!(got.id, a_payout);
+
+    let listed = server::api::payouts::list_payouts(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await
+    .expect("a key scoped to canviewpayments must be admitted to list payouts");
+    assert!(listed.payouts.iter().any(|p| p.id == a_payout));
+}
+
+/// The refusal side for both read handlers: a key scoped to an unrelated
+/// permission (`cancreateinvoice`, no view-payments grant) must be refused -
+/// a working guard must distinguish "has some permission" from "has this
+/// permission".
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_create_invoices_is_refused_getting_or_listing_payouts() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let a_payout = seed_payout(&pg, &a.store).await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_CREATE_INVOICE.to_string()]);
+
+    let get_result = server::api::payouts::get_payout(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path((a.store.id.0, a_payout)),
+    )
+    .await;
+    assert_eq!(
+        get_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to cancreateinvoice must be refused fetching a payout"
+    );
+
+    let list_result = server::api::payouts::list_payouts(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await;
+    assert_eq!(
+        list_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to cancreateinvoice must be refused listing payouts"
     );
 }

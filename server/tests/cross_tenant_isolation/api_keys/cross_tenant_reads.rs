@@ -227,7 +227,7 @@ async fn an_api_key_cannot_reach_another_tenants_payouts_refunds_or_deliveries()
     let _b_delivery = seed_webhook_delivery(&pg, &b).await;
     let state = app_state(Arc::new(pg));
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let result = server::api::payouts::get_payout(
         a_via_key,
         State(state.clone()),
@@ -240,7 +240,7 @@ async fn an_api_key_cannot_reach_another_tenants_payouts_refunds_or_deliveries()
         "an API key must not fetch a payout on another tenant's store"
     );
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let result =
         server::api::payouts::list_payouts(a_via_key, State(state.clone()), Path(b.store.id.0))
             .await;

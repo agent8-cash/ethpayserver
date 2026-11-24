@@ -10,9 +10,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use uuid::Uuid;
 
-use server::api::AuthenticatedUser;
+use server::api::{AuthenticatedUser, StoreScopedUser};
 
-use crate::support::{app_state, seed_tenant, service, user_info};
+use crate::support::{app_state, seed_tenant, service, store_scoped_user_info, user_info};
 
 #[tokio::test]
 #[ignore]
@@ -49,13 +49,13 @@ async fn get_store_by_id_across_tenants_is_refused() {
 
     // So must delete.
     let foreign_delete = server::api::stores::delete_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(b.store.id.0),
     )
     .await;
     let missing_delete = server::api::stores::delete_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(Uuid::new_v4()),
     )
@@ -152,14 +152,14 @@ async fn unarchive_store_is_owner_only_and_round_trips() {
     let state = app_state(Arc::new(pg));
 
     let refused = server::api::stores::unarchive_store(
-        AuthenticatedUser(user_info(b.user_id)),
+        store_scoped_user_info(b.user_id),
         State(state.clone()),
         Path(a.store.id.0),
     )
     .await;
     assert_eq!(refused.unwrap_err(), StatusCode::NOT_FOUND);
     let missing = server::api::stores::unarchive_store(
-        AuthenticatedUser(user_info(b.user_id)),
+        store_scoped_user_info(b.user_id),
         State(state.clone()),
         Path(Uuid::new_v4()),
     )
@@ -178,7 +178,7 @@ async fn unarchive_store_is_owner_only_and_round_trips() {
     assert!(still.archived, "a refused unarchive must change nothing");
 
     let restored = server::api::stores::unarchive_store(
-        AuthenticatedUser(user_info(a.user_id)),
+        store_scoped_user_info(a.user_id),
         State(state.clone()),
         Path(a.store.id.0),
     )
@@ -259,4 +259,71 @@ async fn archived_store_refuses_new_invoices() {
         "unarchived store: {body:?}"
     );
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// Key-scope boundary: delete_store and unarchive_store check store ownership
+// but, through AuthenticatedUser, ignore any API-key scope. Fixed to also
+// require ethpay.store.canmodifystoresettings, the one Owner-exclusive
+// permission already in the schema - matching the owner-only semantics these
+// two handlers already enforce by role.
+
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_modify_store_settings_can_delete_and_unarchive_its_store() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_MODIFY_SETTINGS.to_string()]);
+    server::api::stores::delete_store(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path(a.store.id.0),
+    )
+    .await
+    .expect("a key scoped to canmodifystoresettings must be admitted to delete its own store");
+
+    let restored = server::api::stores::unarchive_store(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await
+    .expect("a key scoped to canmodifystoresettings must be admitted to unarchive its own store");
+    assert!(!restored.archived);
+}
+
+/// The refusal side: a key scoped to an unrelated permission must be refused,
+/// even for the real owner acting on their own store.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_create_invoices_is_refused_deleting_or_unarchiving_its_store() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let state = app_state(Arc::new(pg));
+
+    let scope = Some(vec![auth::Policies::STORE_CREATE_INVOICE.to_string()]);
+    let delete_result = server::api::stores::delete_store(
+        StoreScopedUser(user_info(a.user_id), scope.clone()),
+        State(state.clone()),
+        Path(a.store.id.0),
+    )
+    .await;
+    assert_eq!(
+        delete_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to cancreateinvoice must be refused deleting its own store"
+    );
+
+    let unarchive_result = server::api::stores::unarchive_store(
+        StoreScopedUser(user_info(a.user_id), scope),
+        State(state),
+        Path(a.store.id.0),
+    )
+    .await;
+    assert_eq!(
+        unarchive_result.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "a key scoped only to cancreateinvoice must be refused unarchiving its own store"
+    );
 }

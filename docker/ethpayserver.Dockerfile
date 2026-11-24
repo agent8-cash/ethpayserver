@@ -5,7 +5,15 @@
 #   target/release/migrate_postgres
 
 FROM archlinux:base
-RUN pacman -Sy --noconfirm ca-certificates && pacman -Scc --noconfirm
+# openssl-3, not the bare `openssl` package: Arch's `openssl` moved to 4.x,
+# which ships libssl.so.4/libcrypto.so.4. The binaries above are pre-built on
+# an ubuntu-24.04 CI runner and dynamically link OpenSSL 3.x (libssl.so.3,
+# libcrypto.so.3) - archlinux:base is an unpinned, rolling-release image, so
+# the exact moment upstream Arch's `openssl` crossed that major version, this
+# image silently stopped carrying a library these binaries need, with no
+# code change on this side to point at. openssl-3 is Arch's own maintained
+# 3.5 LTS compat package for exactly this transition.
+RUN pacman -Sy --noconfirm ca-certificates openssl-3 && pacman -Scc --noconfirm
 RUN useradd -r -s /bin/false ethpayserver
 COPY --chmod=755 target/release/ethpayserver /usr/local/bin/
 COPY --chmod=755 target/release/migrate_postgres /usr/local/bin/
