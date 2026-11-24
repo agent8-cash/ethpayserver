@@ -257,3 +257,50 @@ async fn csv_export_via_api_key_cannot_reach_another_tenants_store() {
     .expect("an API key must be able to export its owner's own store's payments");
     assert_eq!(own.status(), StatusCode::OK);
 }
+
+/// The ledger export is a separate handler with its own copy of the store
+/// guard, so it needs its own proof rather than inheriting the two above: a
+/// handler that refuses every explicit store id would satisfy a one-sided
+/// assertion for the wrong reason, which is why each case carries a positive
+/// control against the caller's own store.
+#[tokio::test]
+#[ignore]
+async fn export_ledger_csv_is_store_scoped_in_both_directions() {
+    let pg = service().await;
+    let a = seed_tenant(&pg, "a").await;
+    let b = seed_tenant(&pg, "b").await;
+    let state = app_state(Arc::new(pg));
+
+    let result = server::api::invoices::export_ledger_csv(
+        store_scoped_user_info(a.user_id),
+        State(state.clone()),
+        Query(server::api::invoices::ListPaymentsQuery {
+            store_id: Some(b.store.id.0),
+            status: None,
+            search: None,
+            limit: None,
+            offset: None,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status_of(result),
+        StatusCode::FORBIDDEN,
+        "A must not be able to export B's store's ledger by naming its id directly"
+    );
+
+    let own = server::api::invoices::export_ledger_csv(
+        store_scoped_user_info(a.user_id),
+        State(state),
+        Query(server::api::invoices::ListPaymentsQuery {
+            store_id: Some(a.store.id.0),
+            status: None,
+            search: None,
+            limit: None,
+            offset: None,
+        }),
+    )
+    .await
+    .expect("A must be able to export A's own store's ledger by naming its id directly");
+    assert_eq!(own.status(), StatusCode::OK);
+}
