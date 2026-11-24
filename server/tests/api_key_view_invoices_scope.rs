@@ -33,8 +33,9 @@ use data_service::{PgDataService, SettlementToleranceWriter};
 use rates::NoOpRateProvider;
 use server::api::StoreScopedUser;
 use server::api::invoices::{
-    ListInvoicesQuery, ListPaymentsQuery, export_invoices_csv, export_payments_csv, get_invoice,
-    get_invoice_settlement_allowance, list_invoices, list_payments,
+    ListInvoicesQuery, ListPaymentsQuery, export_invoices_csv, export_ledger_csv,
+    export_payments_csv, get_invoice, get_invoice_settlement_allowance, list_invoices,
+    list_payments,
 };
 use server::services::RedisEVMMonitor;
 use server::state::PgAppState;
@@ -477,6 +478,66 @@ async fn a_key_scoped_to_view_invoices_can_export_payments_csv() {
     assert!(
         result.is_ok(),
         "a key scoped to canviewinvoices must be able to export payments"
+    );
+}
+
+/// A key scoped only to `cancreateinvoice` must not be able to export the
+/// store's whole bookkeeping ledger either: the ledger is the payments CSV
+/// with more columns, so it is the same `canviewinvoices` grant, not a new one.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_create_invoice_is_refused_export_ledger_csv() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+    let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
+    pg.create_store_owned_by(&store, UserId(owner))
+        .await
+        .expect("seed store owned by user");
+
+    let state = app_state(Arc::new(pg));
+
+    let result = export_ledger_csv(
+        StoreScopedUser(
+            user_info(owner),
+            Some(vec![Policies::STORE_CREATE_INVOICE.to_string()]),
+        ),
+        State(state),
+        Query(payments_query(store.id.0)),
+    )
+    .await;
+
+    let Err(err) = result else {
+        panic!("a key not scoped to canviewinvoices must be refused the ledger export");
+    };
+    assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+}
+
+/// The admitting direction for the ledger export.
+#[tokio::test]
+#[ignore]
+async fn a_key_scoped_to_view_invoices_can_export_ledger_csv() {
+    let pg = pg_service().await;
+    let owner = seed_user(pg.pool()).await;
+    let store = Store::new(format!("store-{}", Uuid::new_v4()), UserId(owner));
+    pg.create_store_owned_by(&store, UserId(owner))
+        .await
+        .expect("seed store owned by user");
+
+    let state = app_state(Arc::new(pg));
+
+    let result = export_ledger_csv(
+        StoreScopedUser(
+            user_info(owner),
+            Some(vec![Policies::STORE_VIEW_INVOICES.to_string()]),
+        ),
+        State(state),
+        Query(payments_query(store.id.0)),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a key scoped to canviewinvoices must be able to export the ledger"
     );
 }
 

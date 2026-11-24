@@ -6,6 +6,7 @@
 mod cancel;
 mod crud;
 mod csv_export;
+mod ledger_export;
 mod list;
 mod lookup;
 mod payment_options;
@@ -19,6 +20,7 @@ mod tests;
 pub use cancel::*;
 pub use crud::*;
 pub use csv_export::*;
+pub use ledger_export::*;
 pub use list::*;
 pub use lookup::*;
 pub use payments::*;
