@@ -18,8 +18,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use uuid::Uuid;
 
+use server::api::StoreScopedUser;
 use server::api::payouts::{CreatePayoutRequest, SettlePayoutRequest};
-use server::api::{AuthenticatedUser, StoreScopedUser};
 use types::ChainId;
 
 use crate::support::{

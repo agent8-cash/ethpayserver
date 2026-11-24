@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use auth::UserId;
 
 use crate::support::{
-    app_state, authenticate_via_bearer, authenticate_via_bearer_scoped, seed_payout, seed_refund,
-    seed_tenant, seed_webhook_delivery, service,
+    app_state, authenticate_via_bearer_scoped, seed_payout, seed_refund, seed_tenant,
+    seed_webhook_delivery, service,
 };
 
 #[tokio::test]
