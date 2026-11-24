@@ -52,10 +52,10 @@ not that anything deployed — which is what the health gate below is for.
 
 For **testnet**, the `Verify testnet deploy` job runs
 `scripts/health-gate.sh` against
-`https://testnet.random.cash/api/health/deep` after the dispatch, polling
+`https://testnet.agent8.cash/api/health/deep` after the dispatch, polling
 for up to 900 seconds (`HEALTH_TIMEOUT`).
 
-The `/api` prefix matters: `testnet.random.cash` serves the client, whose
+The `/api` prefix matters: `testnet.agent8.cash` serves the client, whose
 SPA fallback answers `/health/deep` with HTTP 200 and a page of HTML. A
 gate pointed at the bare host would pass against a server that never
 restarted.

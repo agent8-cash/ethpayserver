@@ -22,7 +22,7 @@
  * payment, payout or refund, so this script cannot use it to destroy
  * financial history even by mistake.
  *
- *   E2E_API_URL=https://testnet.random.cash E2E_REMOTE=true \
+ *   E2E_API_URL=https://testnet.agent8.cash E2E_REMOTE=true \
  *   E2E_API_TOKEN=ak_... node scripts/sweep-e2e-accounts.mjs [--execute]
  *
  * The token must belong to a ServerAdmin - the admin endpoints this script
@@ -58,7 +58,7 @@ const execute = process.argv.slice(2).includes('--execute');
 
 const apiUrl = requireEnv(
   'E2E_API_URL',
-  'the server to sweep, e.g. https://testnet.random.cash',
+  'the server to sweep, e.g. https://testnet.agent8.cash',
 ).replace(/\/$/, '');
 const token = requireEnv('E2E_API_TOKEN', 'a ServerAdmin bearer token or API key');
 // Same rule as fixtures/api.ts: the deployed client's nginx proxies /api/ to the

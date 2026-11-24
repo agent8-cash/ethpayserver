@@ -6,7 +6,7 @@
  *
  * - local:  `E2E_API_URL=http://localhost:3000` — routes are mounted at the
  *           root, so `/stores` is `/stores`.
- * - remote: `E2E_API_URL=https://testnet.random.cash` — the client container's
+ * - remote: `E2E_API_URL=https://testnet.agent8.cash` — the client container's
  *           nginx proxies `/api/` to the backend and strips the prefix
  *           (its nginx config, which now ships inside the payserver-client
  *           image), so `/stores` is `/api/stores`.
@@ -22,7 +22,7 @@
 const REMOTE = process.env.E2E_REMOTE === 'true';
 
 export const API_URL = (
-  process.env.E2E_API_URL || (REMOTE ? 'https://testnet.random.cash' : 'http://localhost:3000')
+  process.env.E2E_API_URL || (REMOTE ? 'https://testnet.agent8.cash' : 'http://localhost:3000')
 ).replace(/\/$/, '');
 
 export const API_PREFIX = (

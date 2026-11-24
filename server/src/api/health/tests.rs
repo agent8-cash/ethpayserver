@@ -87,8 +87,8 @@ fn deep_health_response_serialization() {
             data_fresh: true,
         },
         webauthn: Some(api_types::WebAuthnHealth {
-            rp_id: "testnet.random.cash".to_string(),
-            rp_origin: "https://testnet.random.cash".to_string(),
+            rp_id: "testnet.agent8.cash".to_string(),
+            rp_origin: "https://testnet.agent8.cash".to_string(),
         }),
     };
 
@@ -98,8 +98,8 @@ fn deep_health_response_serialization() {
     // contract - not just the values. This is what replaces scraping the log
     // line, where `rp_id` and `=` arrive in separate ANSI escape sequences and a
     // literal `rp_id=` matches nothing.
-    assert_eq!(json["webauthn"]["rp_id"], "testnet.random.cash");
-    assert_eq!(json["webauthn"]["rp_origin"], "https://testnet.random.cash");
+    assert_eq!(json["webauthn"]["rp_id"], "testnet.agent8.cash");
+    assert_eq!(json["webauthn"]["rp_origin"], "https://testnet.agent8.cash");
 
     assert_eq!(json["build_sha"], "abc1234");
     assert_eq!(json["version"], "0.1.0");

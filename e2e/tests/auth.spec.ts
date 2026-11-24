@@ -7,7 +7,7 @@ import { resetDatabase } from '../fixtures/db';
 // ("localhost") could not match a remote domain, but
 // `WebAuthn.addVirtualAuthenticator` has no RP ID parameter - it comes from the
 // page's origin at credentials.create() time. The server agrees, logging
-// `rp_id=testnet.random.cash` at startup, and a single registration against live
+// `rp_id=testnet.agent8.cash` at startup, and a single registration against live
 // testnet completes end to end: start -> complete -> /auth/me all 200, session
 // stored. Verified 2026-09-06.
 //
