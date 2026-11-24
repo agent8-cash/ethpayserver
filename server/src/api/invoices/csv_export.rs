@@ -22,10 +22,10 @@ use crate::api::extractors::StoreScopedUser;
 use crate::state::PgAppState;
 
 /// Maximum number of rows allowed in a CSV export.
-const MAX_EXPORT_ROWS: i64 = 50_000;
+pub(crate) const MAX_EXPORT_ROWS: i64 = 50_000;
 
 /// Page size for streaming CSV data from the database.
-const EXPORT_PAGE_SIZE: i64 = 1000;
+pub(crate) const EXPORT_PAGE_SIZE: i64 = 1000;
 
 /// Escape a field value for RFC 4180 CSV output.
 pub(crate) fn csv_escape_field(field: &str) -> String {
