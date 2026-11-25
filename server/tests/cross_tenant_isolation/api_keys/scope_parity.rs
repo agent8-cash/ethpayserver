@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use auth::UserId;
 
 use crate::support::{
-    app_state, authenticate_via_bearer, authenticate_via_bearer_scoped, seed_payout, seed_refund,
-    seed_tenant, seed_webhook_delivery, service,
+    app_state, authenticate_via_bearer_scoped, seed_payout, seed_refund, seed_tenant,
+    seed_webhook_delivery, service,
 };
 
 #[tokio::test]
@@ -145,7 +145,7 @@ async fn an_api_keys_own_payouts_refunds_and_deliveries_remain_reachable() {
             .expect("an API key must be able to list its owner's own payouts");
     assert!(own_payouts.payouts.iter().any(|p| p.id == a_payout));
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let own_refunds = server::api::refunds::list_refunds(
         a_via_key,
         State(state.clone()),
@@ -155,7 +155,7 @@ async fn an_api_keys_own_payouts_refunds_and_deliveries_remain_reachable() {
     .expect("an API key must be able to list its owner's own refunds");
     assert!(own_refunds.iter().any(|r| r.id == a_refund));
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let own_invoice_deliveries = server::api::webhook_deliveries::list_deliveries_for_invoice(
         a_via_key,
         State(state.clone()),
@@ -170,7 +170,7 @@ async fn an_api_keys_own_payouts_refunds_and_deliveries_remain_reachable() {
             .any(|d| d.id == a_delivery)
     );
 
-    let a_via_key = authenticate_via_bearer(&state, &a.api_key_raw).await;
+    let a_via_key = authenticate_via_bearer_scoped(&state, &a.api_key_raw).await;
     let own_store_deliveries = server::api::webhook_deliveries::list_deliveries_for_store(
         a_via_key,
         State(state),

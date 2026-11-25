@@ -335,6 +335,16 @@ pub(crate) async fn seed_webhook_delivery(pg: &PgDataService, tenant: &Tenant) -
     .await
     .expect("seed store webhook");
 
+    // Built the same way production code builds it, not a hand-rolled
+    // JSON fragment: replay_delivery deserializes this back into
+    // WebhookPayload, whose required fields (event_id, timestamp, status,
+    // amount, ...) a bare {"event_type": ...} object doesn't satisfy -
+    // that gap was invisible until a test actually deserialized it.
+    let payload = server::services::webhook::WebhookPayload::invoice_event(
+        server::services::webhook::WebhookEventType::InvoiceExpired,
+        &tenant.invoice,
+    );
+
     let delivery_id = Uuid::new_v4();
     WebhookDeliveryWriter::upsert_delivery(
         pg,
@@ -347,7 +357,7 @@ pub(crate) async fn seed_webhook_delivery(pg: &PgDataService, tenant: &Tenant) -
             attempts: 1,
             max_attempts: 7,
             last_error: None,
-            payload: serde_json::json!({"event_type": "invoice_expired"}),
+            payload: serde_json::to_value(&payload).expect("WebhookPayload serializes"),
         },
     )
     .await
