@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-data-service = { path = "../data-service" }
+data-service = { path = "../data-service", features = ["kms"] }
 auth = { workspace = true }
 types = { workspace = true }
 evm = { path = "../evm", features = ["redis"] }

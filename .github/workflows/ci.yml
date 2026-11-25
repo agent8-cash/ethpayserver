@@ -503,9 +503,13 @@ jobs:
         # ran them.
         run: |
           DATABASE_URL="postgres://test:test@127.0.0.1:5432/ethpayserver_test" \
+          XPUB_ENCRYPTION_PROVIDER="static" \
+          XPUB_ENCRYPTION_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
             cargo run --release --bin migrate_postgres
           DATABASE_URL="postgres://test:test@127.0.0.1:5432/ethpayserver_test" \
           TEST_REDIS_URL="redis://127.0.0.1:6379" \
+          XPUB_ENCRYPTION_PROVIDER="static" \
+          XPUB_ENCRYPTION_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
             cargo nextest run -p data-service -p server --no-fail-fast --run-ignored only -j 1
 
       # `evm`'s `redis` feature is off by default, so evm/tests/redis_bridge.rs
@@ -840,6 +844,8 @@ jobs:
       - name: Run migrations
         env:
           DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
+          XPUB_ENCRYPTION_PROVIDER: static
+          XPUB_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         run: ./target/release/migrate_postgres
 
       # Before the server starts, deliberately. The host instantiates plugins
@@ -864,6 +870,8 @@ jobs:
       - name: Start server
         env:
           DATABASE_URL: postgres://test:test@127.0.0.1:5432/ethpayserver_e2e
+          XPUB_ENCRYPTION_PROVIDER: static
+          XPUB_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
           # Where the seed step wrote the fixture's artifact. Absolute,
           # because the server's working directory is not this step's.
           ETHPAY_PLUGIN_DIR: ${{ github.workspace }}/e2e-plugins

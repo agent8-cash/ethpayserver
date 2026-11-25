@@ -360,7 +360,7 @@ impl StorePaymentMethodWriter for PgDataService {
             WHERE pm.id = $1
               AND w.id = {}
               AND w.namespace = {METHOD_NAMESPACE}
-            RETURNING w.id AS wallet_id, w.namespace, w.xpub,
+            RETURNING w.id AS wallet_id, w.namespace, w.xpub_ciphertext, w.xpub_iv, w.xpub_mac,
                       w.derivation_index - 1 AS current_index
             "#,
             method_wallet()
@@ -371,12 +371,25 @@ impl StorePaymentMethodWriter for PgDataService {
         .map_err(sqlx_to_repo_error)?;
 
         match row {
-            Some(r) => Ok(DerivationAllocation {
-                wallet_id: r.get("wallet_id"),
-                namespace: r.get("namespace"),
-                xpub: r.get("xpub"),
-                index: r.get("current_index"),
-            }),
+            Some(r) => {
+                // Encrypted at rest (#581): the row carries ciphertext, not
+                // the xpub this struct's field has always meant - decrypt
+                // here so this is the one and only place that difference is
+                // visible. Every caller still gets the plaintext it always
+                // derived addresses from.
+                let blob = crypto::types::EncryptedBlob::new(
+                    r.get("xpub_ciphertext"),
+                    r.get("xpub_iv"),
+                    r.get("xpub_mac"),
+                );
+                let xpub = crate::xpub_encryption::decrypt(&blob).await?;
+                Ok(DerivationAllocation {
+                    wallet_id: r.get("wallet_id"),
+                    namespace: r.get("namespace"),
+                    xpub,
+                    index: r.get("current_index"),
+                })
+            }
             // Either the method is gone, or resolution found nothing for this
             // method's chain family: no pin, no store override, no account
             // primary in that namespace. All of them mean there is no key to

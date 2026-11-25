@@ -62,6 +62,11 @@ async fn main() -> Result<()> {
     // Initialize Prometheus metrics
     metrics::init_metrics()?;
 
+    // xpub encryption at rest (#581). Fail-closed like SENTRY_DSN above: a
+    // missing or broken key provider must abort boot, never fall back to
+    // storing a merchant's xpub in the clear.
+    data_service::xpub_encryption::init(data_service::xpub_encryption::provider_from_env().await?);
+
     tracing::info!("Starting ETHPayServer v{}", env!("CARGO_PKG_VERSION"));
 
     if config.safe_mode {

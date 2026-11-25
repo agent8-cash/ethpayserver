@@ -94,7 +94,16 @@ pub async fn pool_for(url: &str, max_connections: u32) -> PgPool {
 
 /// A pool on the test database. Panics when `DATABASE_URL` is unset or the
 /// database cannot be reached.
+///
+/// Also installs the test-only xpub encryption key
+/// (`xpub_encryption::init_insecure_test_default`), idempotently: any test
+/// that reaches a real database by this route and then touches a wallet
+/// needs a key provider installed first, same as the real server does at
+/// startup, and this is the one place in the test harness nearly all of them
+/// pass through. Never do this outside a test binary - production startup
+/// installs the real provider itself, before this would ever run.
 pub async fn pg_pool(max_connections: u32) -> PgPool {
+    crate::xpub_encryption::init_insecure_test_default();
     pool_for(&database_url(), max_connections).await
 }
 

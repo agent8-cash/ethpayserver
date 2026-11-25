@@ -51,6 +51,13 @@ async fn main() -> Result<()> {
 
     tracing::info!("Starting ethpay-mcp server");
 
+    // xpub encryption at rest. Fail-closed like the real server's own
+    // startup check: invoice creation here goes through the same
+    // `allocate_derivation` -> decrypt path, so this binary needs the same
+    // key provider or every invoice-creation tool call fails at the first
+    // wallet it touches.
+    data_service::xpub_encryption::init(data_service::xpub_encryption::provider_from_env().await?);
+
     // Required: database
     let database_url =
         std::env::var("DATABASE_URL").context("DATABASE_URL environment variable required")?;

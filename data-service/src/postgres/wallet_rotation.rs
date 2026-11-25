@@ -139,11 +139,21 @@ impl PgDataService {
         // `wallet` uses. Taking the wallet row lock first (as this used to)
         // inverts it against `create_wallet` and `set_primary_wallet`, both of
         // which hold the account lock before touching a wallet row.
+        let (new_xpub_blob, new_xpub_fingerprint) =
+            crate::xpub_encryption::encrypt_and_fingerprint(new_xpub).await?;
         lock_account(&mut tx, owner_id).await?;
-        lock_xpub(&mut tx, new_xpub).await?;
-        reject_if_another_account_holds(&mut tx, owner_id, new_xpub).await?;
+        lock_xpub(&mut tx, &new_xpub_fingerprint).await?;
+        reject_if_another_account_holds(&mut tx, owner_id, &new_xpub_fingerprint).await?;
 
-        let new_wallet = upsert_wallet(&mut tx, owner_id, namespace, new_xpub, None).await?;
+        let new_wallet = upsert_wallet(
+            &mut tx,
+            owner_id,
+            namespace,
+            &new_xpub_blob,
+            &new_xpub_fingerprint,
+            None,
+        )
+        .await?;
 
         let methods =
             Self::methods_to_rotate(&mut tx, store_id, only, namespace, new_wallet.id).await?;
@@ -247,7 +257,9 @@ impl PgDataService {
             r#"
             SELECT pm.id AS payment_method_id,
                    pm.wallet_id IS NOT NULL AS pinned,
-                   w.xpub,
+                   w.xpub_ciphertext,
+                   w.xpub_iv,
+                   w.xpub_mac,
                    w.derivation_index
             FROM store_payment_methods pm
             JOIN stores s ON s.id = pm.store_id
@@ -270,15 +282,27 @@ impl PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        Ok(rows
-            .iter()
-            .map(|row| MethodToRotate {
+        // Decrypted here, not left as ciphertext in `MethodToRotate.xpub`:
+        // this feeds `wallet_rotations.previous_xpub` (#581 scoped this
+        // change to `wallets.xpub` only - that audit column is still
+        // plaintext, a residual gap, but it can only ever be given the
+        // plaintext this call already has).
+        let mut methods = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let blob = crypto::types::EncryptedBlob::new(
+                row.get("xpub_ciphertext"),
+                row.get("xpub_iv"),
+                row.get("xpub_mac"),
+            );
+            let xpub = crate::xpub_encryption::decrypt(&blob).await?;
+            methods.push(MethodToRotate {
                 payment_method_id: row.get("payment_method_id"),
-                xpub: row.get("xpub"),
+                xpub,
                 derivation_index: row.get("derivation_index"),
                 pinned: row.get("pinned"),
-            })
-            .collect())
+            });
+        }
+        Ok(methods)
     }
 
     /// Distinct rotation events for a store since `since`. `rotated_at` is
