@@ -1857,3 +1857,52 @@ async fn promoting_a_wallet_only_demotes_its_own_family() {
         "promoting a tron wallet demoted the account's ethereum primary"
     );
 }
+
+/// #581: `wallets.xpub` is encrypted at rest. A round-trip test (write it,
+/// read it back through the repository, compare) would pass even if the
+/// implementation stored the plaintext - the acceptance criterion this test
+/// exists for is explicit that it has to assert about a direct `SELECT`
+/// instead.
+#[tokio::test]
+#[ignore]
+async fn the_stored_column_is_not_readable_as_an_xpub() {
+    let service = create_test_service().await;
+    let user = seed_user(&service).await;
+    let xpub = unique_xpub("not-readable");
+
+    let wallet = WalletWriter::create_wallet(&service, user, EVM, &xpub, None)
+        .await
+        .expect("create wallet");
+
+    let row = sqlx::query("SELECT xpub_ciphertext, xpub_fingerprint FROM wallets WHERE id = $1")
+        .bind(wallet.id)
+        .fetch_one(service.pool())
+        .await
+        .expect("read the raw row");
+
+    let ciphertext: Vec<u8> = row.get("xpub_ciphertext");
+    let fingerprint: Vec<u8> = row.get("xpub_fingerprint");
+
+    assert_ne!(
+        ciphertext,
+        xpub.as_bytes(),
+        "the stored ciphertext must not be the plaintext xpub"
+    );
+    assert!(
+        !String::from_utf8_lossy(&ciphertext).contains(&xpub),
+        "the plaintext must not even appear as a substring of the stored bytes"
+    );
+    assert_ne!(
+        fingerprint,
+        xpub.as_bytes(),
+        "the fingerprint is a keyed HMAC, not the plaintext either"
+    );
+
+    // The repository-level read still returns the real plaintext - the
+    // column is opaque, not the data.
+    let read_back = WalletReader::get_wallet(&service, wallet.id)
+        .await
+        .unwrap()
+        .expect("wallet exists");
+    assert_eq!(read_back.xpub, xpub);
+}

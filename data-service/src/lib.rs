@@ -34,6 +34,7 @@ pub mod store_invites;
 pub mod watch_reconciliation;
 pub mod webhook_delivery;
 pub mod webhook_outbox;
+pub mod xpub_encryption;
 
 pub use account_deletion::{AccountDeletionBlockers, AccountDeletionReader};
 pub use account_standing::{

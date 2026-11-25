@@ -913,12 +913,16 @@ Unique indexes:
 |---|---|---|---|
 | `id` | UUID | no | `uuid_generate_v4()` |
 | `user_id` | UUID | no |  |
-| `xpub` | VARCHAR(120) | no |  |
+| `xpub` | VARCHAR(120) | yes |  |
 | `derivation_index` | INTEGER | no | `0` |
 | `name` | VARCHAR(100) | yes |  |
 | `is_primary` | BOOLEAN | no | `FALSE` |
 | `created_at` | TIMESTAMPTZ | no | `NOW()` |
 | `namespace` | CAIP2_NAMESPACE | no | `'eip155'` |
+| `xpub_ciphertext` | BYTEA | yes |  |
+| `xpub_iv` | BYTEA | yes |  |
+| `xpub_mac` | BYTEA | yes |  |
+| `xpub_fingerprint` | BYTEA | yes |  |
 
 Constraints:
 
@@ -929,7 +933,7 @@ Unique indexes:
 
 - `idx_account_wallets_id_namespace`: UNIQUE (id, namespace)
 - `idx_account_wallets_one_primary`: UNIQUE (user_id, namespace) WHERE is_primary
-- `idx_account_wallets_user_xpub`: UNIQUE (user_id, namespace, xpub)
+- `idx_account_wallets_user_xpub_fingerprint`: UNIQUE (user_id, namespace, xpub_fingerprint)
 
 ### `watched_addresses`
 

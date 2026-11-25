@@ -17,7 +17,7 @@ path = "src/bin/migrate_postgres.rs"
 # Internal crates
 auth = { workspace = true, features = ["metrics", "captcha"] }
 crypto = { workspace = true }
-data-service = { path = "../data-service", features = ["redis"] }
+data-service = { path = "../data-service", features = ["redis", "kms"] }
 evm = { path = "../evm", features = ["api", "redis", "sentry-scrub"] }
 rates = { workspace = true }
 api-types = { workspace = true, features = ["openapi"] }

@@ -5,18 +5,26 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 use super::PgDataService;
+use crate::xpub_encryption;
 use crate::{
     RepositoryError, RepositoryResult, Wallet, WalletReader, WalletWriter, sqlx_to_repo_error,
 };
 
 /// Every column of `wallets`, in the order `row_to_wallet` reads them.
-const WALLET_COLUMNS: &str =
-    "id, user_id, namespace, xpub, derivation_index, name, is_primary, created_at";
+///
+/// `xpub` itself is encrypted at rest (#581): `xpub_ciphertext`/`xpub_iv`/
+/// `xpub_mac` are what `row_to_wallet` actually decrypts, and
+/// `xpub_fingerprint` is the deterministic stand-in every uniqueness check
+/// and advisory lock below uses in place of the plaintext - encryption uses
+/// a random IV, so the same key never produces the same ciphertext twice,
+/// and nothing here can compare ciphertexts for equality.
+const WALLET_COLUMNS: &str = "id, user_id, namespace, xpub_ciphertext, xpub_iv, xpub_mac, \
+     derivation_index, name, is_primary, created_at";
 
 /// The same list, aliased. `stores` also has an `id`, so an unqualified list
 /// in a query that joins the two is ambiguous and Postgres rejects it.
-const WALLET_COLUMNS_W: &str = "w.id, w.user_id, w.namespace, w.xpub, w.derivation_index, \
-     w.name, w.is_primary, w.created_at";
+const WALLET_COLUMNS_W: &str = "w.id, w.user_id, w.namespace, w.xpub_ciphertext, w.xpub_iv, \
+     w.xpub_mac, w.derivation_index, w.name, w.is_primary, w.created_at";
 
 /// The chain family of a payment method aliased `pm`, as SQL.
 ///
@@ -81,16 +89,39 @@ impl PgDataService {
     }
 }
 
-fn row_to_wallet(row: &sqlx::postgres::PgRow) -> Wallet {
-    Wallet {
+async fn row_to_wallet(row: &sqlx::postgres::PgRow) -> RepositoryResult<Wallet> {
+    let blob = crypto::types::EncryptedBlob::new(
+        row.get("xpub_ciphertext"),
+        row.get("xpub_iv"),
+        row.get("xpub_mac"),
+    );
+    let xpub = xpub_encryption::decrypt(&blob).await?;
+    Ok(Wallet {
         id: row.get("id"),
         user_id: row.get("user_id"),
         namespace: row.get("namespace"),
-        xpub: row.get("xpub"),
+        xpub,
         derivation_index: row.get("derivation_index"),
         name: row.get("name"),
         is_primary: row.get("is_primary"),
         created_at: row.get("created_at"),
+    })
+}
+
+async fn rows_to_wallets(rows: &[sqlx::postgres::PgRow]) -> RepositoryResult<Vec<Wallet>> {
+    let mut wallets = Vec::with_capacity(rows.len());
+    for row in rows {
+        wallets.push(row_to_wallet(row).await?);
+    }
+    Ok(wallets)
+}
+
+async fn optional_row_to_wallet(
+    row: Option<sqlx::postgres::PgRow>,
+) -> RepositoryResult<Option<Wallet>> {
+    match row {
+        Some(r) => Ok(Some(row_to_wallet(&r).await?)),
+        None => Ok(None),
     }
 }
 
@@ -120,14 +151,24 @@ pub(super) async fn lock_account(conn: &mut PgConnection, user_id: Uuid) -> Repo
 /// check alone races: two accounts registering the same key at once would both
 /// find it free. This closes that window.
 ///
+/// Takes the fingerprint, not the plaintext: the lock only needs to
+/// distinguish one key from another, which the fingerprint already does
+/// deterministically, and callers that have already computed one (every
+/// write path has, to populate the row) do not need to derive the stretched
+/// key a second time just to take this lock. `encode(..., 'hex')` rather than
+/// a Rust-side hex crate - `hashtext` takes `text`, and the fingerprint is
+/// `bytea`.
+///
 /// Always taken AFTER `lock_account`, so the two never deadlock against each
 /// other.
-pub(super) async fn lock_xpub(conn: &mut PgConnection, xpub: &str) -> RepositoryResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('wallet:xpub'), hashtext($1))")
-        .bind(xpub)
-        .execute(conn)
-        .await
-        .map_err(sqlx_to_repo_error)?;
+pub(super) async fn lock_xpub(conn: &mut PgConnection, fingerprint: &[u8]) -> RepositoryResult<()> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtext('wallet:xpub'), hashtext(encode($1, 'hex')))",
+    )
+    .bind(fingerprint)
+    .execute(conn)
+    .await
+    .map_err(sqlx_to_repo_error)?;
     Ok(())
 }
 
@@ -156,20 +197,26 @@ async fn lock_store_account(conn: &mut PgConnection, store_id: Uuid) -> Reposito
 /// Two accounts deriving from one key is the same collision as two counters on
 /// one key, reached from the other direction: each counts independently and
 /// both issue index 0, 1, 2 to different merchants' customers. Within an
-/// account `idx_account_wallets_user_xpub` makes it impossible; across accounts
-/// this is the enforcement, and it only holds because the caller is holding
-/// `lock_xpub`.
+/// account `idx_account_wallets_user_xpub_fingerprint` makes it impossible;
+/// across accounts this is the enforcement, and it only holds because the
+/// caller is holding `lock_xpub`.
+///
+/// Takes the fingerprint for the same reason `lock_xpub` does: it is what the
+/// column holds now that the plaintext is encrypted, and it is what the
+/// caller already has in hand.
 pub(super) async fn reject_if_another_account_holds(
     conn: &mut PgConnection,
     user_id: Uuid,
-    xpub: &str,
+    fingerprint: &[u8],
 ) -> RepositoryResult<()> {
-    let taken = sqlx::query("SELECT 1 AS x FROM wallets WHERE xpub = $1 AND user_id <> $2 LIMIT 1")
-        .bind(xpub)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await
-        .map_err(sqlx_to_repo_error)?;
+    let taken = sqlx::query(
+        "SELECT 1 AS x FROM wallets WHERE xpub_fingerprint = $1 AND user_id <> $2 LIMIT 1",
+    )
+    .bind(fingerprint)
+    .bind(user_id)
+    .fetch_optional(conn)
+    .await
+    .map_err(sqlx_to_repo_error)?;
 
     if taken.is_some() {
         return Err(RepositoryError::Conflict(
@@ -182,23 +229,43 @@ pub(super) async fn reject_if_another_account_holds(
 /// Find or create the wallet holding `xpub` for `user_id` in `namespace`,
 /// inside a caller's transaction that already holds both locks.
 ///
-/// The conflict target is `(user_id, namespace, xpub)`. The same bytes in two
-/// families are two wallets with two counters, which is safe here in a way it
-/// is not within one family: the addresses those counters produce live on
-/// different chains, so no customer can be handed an address another customer
-/// already has. Keyed on `(user_id, xpub)` this would hand a merchant asking
-/// to register a Tron key their existing Ethereum wallet, and every Tron
+/// The conflict target is `(user_id, namespace, xpub_fingerprint)` - the
+/// fingerprint standing in for the plaintext for the same reason `lock_xpub`
+/// uses it. The same bytes in two families are two wallets with two
+/// counters, which is safe here in a way it is not within one family: the
+/// addresses those counters produce live on different chains, so no customer
+/// can be handed an address another customer already has. Keyed on
+/// `(user_id, xpub_fingerprint)` alone this would hand a merchant asking to
+/// register a Tron key their existing Ethereum wallet, and every Tron
 /// address they then quoted would be derived at coin type 60.
+///
+/// Takes the already-encrypted blob and fingerprint rather than the
+/// plaintext: every caller has just computed both anyway, to take
+/// `lock_xpub`/`reject_if_another_account_holds` before reaching here, and
+/// re-deriving the stretched key a second call later would cost a second
+/// provider round trip (and, for `KmsKeyProvider`, be the one place that
+/// stays cheap specifically because the key is unwrapped once at startup
+/// and reused - see `xpub_encryption::kms`) for no reason.
 pub(super) async fn upsert_wallet(
     conn: &mut PgConnection,
     user_id: Uuid,
     namespace: &str,
-    xpub: &str,
+    blob: &crypto::types::EncryptedBlob,
+    fingerprint: &[u8],
     name: Option<&str>,
 ) -> RepositoryResult<Wallet> {
     // `DO UPDATE` rather than `DO NOTHING`: the latter returns no row on
     // conflict and the caller would see a spurious "not found" for a wallet
     // that plainly exists.
+    //
+    // The conflict target is the fingerprint, not the ciphertext just
+    // computed above - encryption uses a random IV, so that ciphertext would
+    // never equal a row's existing one even for the identical plaintext, and
+    // `ON CONFLICT` would never fire. The `DO UPDATE` deliberately does not
+    // touch any of the xpub_* columns: a fingerprint match already means the
+    // existing row holds the same plaintext, so there is nothing to
+    // re-encrypt, and overwriting it would mean this transaction wrote a
+    // ciphertext it then immediately discarded.
     //
     // `is_primary` is decided per namespace, so the first Tron key an account
     // registers becomes its Tron primary even though it already has an
@@ -207,23 +274,27 @@ pub(super) async fn upsert_wallet(
     // they have no reason to look for.
     let row = sqlx::query(&format!(
         r#"
-        INSERT INTO wallets (user_id, namespace, xpub, name, is_primary)
-        VALUES ($1, $2, $3, $4,
+        INSERT INTO wallets (user_id, namespace, xpub_ciphertext, xpub_iv, xpub_mac,
+                              xpub_fingerprint, name, is_primary)
+        VALUES ($1, $2, $3, $4, $5, $6, $7,
                 NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1 AND namespace = $2))
-        ON CONFLICT (user_id, namespace, xpub) DO UPDATE
+        ON CONFLICT (user_id, namespace, xpub_fingerprint) DO UPDATE
             SET name = COALESCE(EXCLUDED.name, wallets.name)
         RETURNING {WALLET_COLUMNS}
         "#
     ))
     .bind(user_id)
     .bind(namespace)
-    .bind(xpub)
+    .bind(&blob.ciphertext)
+    .bind(&blob.iv)
+    .bind(&blob.mac)
+    .bind(fingerprint)
     .bind(name)
     .fetch_one(conn)
     .await
     .map_err(sqlx_to_repo_error)?;
 
-    Ok(row_to_wallet(&row))
+    row_to_wallet(&row).await
 }
 
 impl PgDataService {
@@ -254,11 +325,12 @@ impl PgDataService {
             .ok_or_else(|| RepositoryError::NotFound("store not found".into()))?;
         let owner_id: Uuid = owner.get("owner_id");
 
+        let (blob, fingerprint) = xpub_encryption::encrypt_and_fingerprint(xpub).await?;
         lock_account(&mut tx, owner_id).await?;
-        lock_xpub(&mut tx, xpub).await?;
-        reject_if_another_account_holds(&mut tx, owner_id, xpub).await?;
+        lock_xpub(&mut tx, &fingerprint).await?;
+        reject_if_another_account_holds(&mut tx, owner_id, &fingerprint).await?;
 
-        let wallet = upsert_wallet(&mut tx, owner_id, namespace, xpub, None).await?;
+        let wallet = upsert_wallet(&mut tx, owner_id, namespace, &blob, &fingerprint, None).await?;
         tx.commit().await.map_err(sqlx_to_repo_error)?;
         Ok(wallet.id)
     }
@@ -275,7 +347,7 @@ impl WalletReader for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        Ok(row.as_ref().map(row_to_wallet))
+        optional_row_to_wallet(row).await
     }
 
     async fn list_wallets(&self, user_id: Uuid) -> RepositoryResult<Vec<Wallet>> {
@@ -288,7 +360,7 @@ impl WalletReader for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        Ok(rows.iter().map(row_to_wallet).collect())
+        rows_to_wallets(&rows).await
     }
 
     async fn get_primary_wallet(
@@ -306,7 +378,7 @@ impl WalletReader for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        Ok(row.as_ref().map(row_to_wallet))
+        optional_row_to_wallet(row).await
     }
 
     async fn resolve_store_wallet(
@@ -332,7 +404,7 @@ impl WalletReader for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        Ok(row.as_ref().map(row_to_wallet))
+        optional_row_to_wallet(row).await
     }
 
     async fn get_store_wallet_override(
@@ -364,9 +436,10 @@ impl WalletWriter for PgDataService {
     ) -> RepositoryResult<Wallet> {
         let mut tx = self.pool.begin().await.map_err(sqlx_to_repo_error)?;
 
+        let (blob, fingerprint) = xpub_encryption::encrypt_and_fingerprint(xpub).await?;
         lock_account(&mut tx, user_id).await?;
-        lock_xpub(&mut tx, xpub).await?;
-        reject_if_another_account_holds(&mut tx, user_id, xpub).await?;
+        lock_xpub(&mut tx, &fingerprint).await?;
+        reject_if_another_account_holds(&mut tx, user_id, &fingerprint).await?;
 
         // Re-adding an xpub the account already holds IN THIS FAMILY returns
         // the existing row. A second row would be a second counter on one key,
@@ -374,7 +447,7 @@ impl WalletWriter for PgDataService {
         // wallet an account registers in a family becomes that family's
         // primary, so a merchant with one wallet per chain never has to meet
         // the concept.
-        let wallet = upsert_wallet(&mut tx, user_id, namespace, xpub, name).await?;
+        let wallet = upsert_wallet(&mut tx, user_id, namespace, &blob, &fingerprint, name).await?;
 
         tx.commit().await.map_err(sqlx_to_repo_error)?;
         Ok(wallet)
@@ -390,9 +463,10 @@ impl WalletWriter for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        row.as_ref()
-            .map(row_to_wallet)
-            .ok_or_else(|| RepositoryError::NotFound("wallet not found".into()))
+        match row {
+            Some(r) => row_to_wallet(&r).await,
+            None => Err(RepositoryError::NotFound("wallet not found".into())),
+        }
     }
 
     async fn set_primary_wallet(&self, user_id: Uuid, wallet_id: Uuid) -> RepositoryResult<Wallet> {
@@ -434,10 +508,10 @@ impl WalletWriter for PgDataService {
         .await
         .map_err(sqlx_to_repo_error)?;
 
-        let wallet = row
-            .as_ref()
-            .map(row_to_wallet)
-            .ok_or_else(|| RepositoryError::NotFound("wallet not found".into()))?;
+        let wallet = match row {
+            Some(r) => row_to_wallet(&r).await?,
+            None => return Err(RepositoryError::NotFound("wallet not found".into())),
+        };
 
         tx.commit().await.map_err(sqlx_to_repo_error)?;
         Ok(wallet)

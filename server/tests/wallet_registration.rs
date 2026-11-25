@@ -47,7 +47,7 @@ use server::api::AuthenticatedUser;
 use server::api::stores::{VERIFICATION_ADDRESS_COUNT, create_wallet};
 use server::services::email::NoopEmailSender;
 use server::state::{AppState, PgAppState};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use types::NAMESPACE_EIP155;
 use uuid::Uuid;
 
@@ -327,11 +327,23 @@ async fn a_ypub_or_zpub_is_stored_as_the_equivalent_xpub() {
             "0x78839f6054d7ed13918bae0473ba31b1ca9d7265"
         );
 
-        let stored: String = sqlx::query_scalar("SELECT xpub FROM wallets WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        // Encrypted at rest (#581): decrypt the stored row rather than
+        // reading a plaintext `xpub` column that no longer exists, so this
+        // still proves what it always proved - the normalized form, not the
+        // pasted ypub/zpub, is what a direct read of storage yields.
+        let row = sqlx::query(
+            "SELECT xpub_ciphertext, xpub_iv, xpub_mac FROM wallets WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let blob = crypto::types::EncryptedBlob::new(
+            row.get("xpub_ciphertext"),
+            row.get("xpub_iv"),
+            row.get("xpub_mac"),
+        );
+        let stored = data_service::xpub_encryption::decrypt(&blob).await.unwrap();
         assert_eq!(
             stored, TEST_ACCOUNT_XPUB,
             "must store the xpub, not {pasted}"

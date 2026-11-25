@@ -502,21 +502,37 @@ async fn seed_handler_test_store(pool: &sqlx::PgPool, owner: Uuid) -> Uuid {
 }
 
 /// So the create call's xpub-less branch resolves to something, without a
-/// real BIP-32 key: the `wallets.xpub` column is text the repository never
-/// parses (see `data-service/src/postgres/integration_tests/wallet.rs`'s
+/// real BIP-32 key: the stored value is text the repository never parses
+/// (see `data-service/src/postgres/integration_tests/wallet.rs`'s
 /// `unique_xpub`) - only `create_payment_method`'s own `validate_xpub` check
 /// parses the request body's xpub, and this bypasses that by seeding the
 /// store's resolution directly. Unique per call so repeated runs against the
 /// shared fixture don't collide on the account-uniqueness constraint that
 /// `wallet_for_store_xpub` enforces on this same table.
+///
+/// Goes through `xpub_encryption::encrypt_and_fingerprint` rather than a
+/// bare INSERT of the plaintext (#581): `wallets.xpub` is encrypted at rest,
+/// and every reader decrypts `xpub_ciphertext`/`xpub_iv`/`xpub_mac`, so a row
+/// seeded without them is unreadable by anything that later resolves this
+/// wallet.
 async fn seed_handler_test_primary_wallet(pool: &sqlx::PgPool, owner: Uuid) {
-    sqlx::query("INSERT INTO wallets (id, user_id, xpub, is_primary) VALUES ($1, $2, $3, true)")
-        .bind(Uuid::new_v4())
-        .bind(owner)
-        .bind(format!("xpub-test-{}", Uuid::new_v4()))
-        .execute(pool)
+    let fake_xpub = format!("xpub-test-{}", Uuid::new_v4());
+    let (blob, fingerprint) = data_service::xpub_encryption::encrypt_and_fingerprint(&fake_xpub)
         .await
-        .expect("seed wallet");
+        .expect("encrypt seeded test xpub");
+    sqlx::query(
+        "INSERT INTO wallets (id, user_id, xpub_ciphertext, xpub_iv, xpub_mac, \
+         xpub_fingerprint, is_primary) VALUES ($1, $2, $3, $4, $5, $6, true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(owner)
+    .bind(&blob.ciphertext)
+    .bind(&blob.iv)
+    .bind(&blob.mac)
+    .bind(&fingerprint)
+    .execute(pool)
+    .await
+    .expect("seed wallet");
 }
 
 fn handler_test_state(service: data_service::PgDataService) -> PgAppState<NoAuthSessionService> {
