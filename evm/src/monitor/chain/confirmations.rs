@@ -10,7 +10,19 @@ use tracing::{info, warn};
 
 impl<S: BlockSource + 'static> ChainMonitor<S> {
     /// Check confirmation status of pending payments.
+    ///
+    /// Skips the RPC call entirely when nothing is pending - a quiet chain
+    /// with no in-flight payments otherwise paid for `eth_blockNumber` on
+    /// every tick forever, for a result nothing would use. Gated on
+    /// `pending`, not on `watched`: a payment can still be awaiting
+    /// confirmation after its address has been unwatched (the invoice's
+    /// grace-period unwatch can land before confirmation finishes), and
+    /// gating on `watched` instead would silently stop confirming it.
     pub(super) async fn check_confirmations(&self) -> EvmResult<()> {
+        if self.pending.read().await.is_empty() {
+            return Ok(());
+        }
+
         let current_block = self.source.get_block_number().await?;
         let mut confirmed: Vec<(B256, i32)> = Vec::new();
 
