@@ -19,7 +19,7 @@ use super::{InvoiceResponse, customer_email_of};
 /// Only works for pending/processing invoices.
 #[utoipa::path(
     post,
-    path = "/admin/invoices/{invoice_id}/cancel",
+    path = "/invoices/{invoice_id}/cancel",
     tag = "admin",
     security(("bearer_auth" = [])),
     params(
