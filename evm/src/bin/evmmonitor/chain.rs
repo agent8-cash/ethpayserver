@@ -26,7 +26,13 @@ pub(crate) async fn create_chain_monitor(
         None => {
             RpcSourceConfig::http_only(rpc_config.rpc_http.expose_secret(), rpc_config.chain_id)
         }
-    };
+    }
+    .with_http_fallbacks(
+        rpc_config
+            .rpc_http_fallbacks
+            .iter()
+            .map(|url| url.expose_secret().to_string()),
+    );
 
     let source = RpcBlockSource::new(source_config).await?;
     let monitor_config = ChainMonitorConfig::from_chain(chain_config);
