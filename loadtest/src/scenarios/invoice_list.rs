@@ -14,7 +14,7 @@ pub async fn list_invoices(user: &mut GooseUser) -> TransactionResult {
     let limit = 20;
     let offset = (rand::random::<u32>() % 5) * limit;
     let path = format!(
-        "/invoices?store_id={}&limit={limit}&offset={offset}",
+        "/api/invoices?store_id={}&limit={limit}&offset={offset}",
         session.store_id,
     );
 

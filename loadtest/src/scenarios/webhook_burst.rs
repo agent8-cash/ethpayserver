@@ -26,7 +26,7 @@ pub async fn create_invoice_with_webhook(user: &mut GooseUser) -> TransactionRes
     });
 
     let builder = user
-        .get_request_builder(&GooseMethod::Post, "/invoices")?
+        .get_request_builder(&GooseMethod::Post, "/api/invoices")?
         .header("Authorization", format!("Bearer {}", session.api_key))
         .header("Content-Type", "application/json")
         .body(serde_json::to_string(&body).unwrap());

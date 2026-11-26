@@ -18,8 +18,12 @@ pub async fn create_invoice(user: &mut GooseUser) -> TransactionResult {
         "expiration_seconds": 900,
     });
 
+    // Full path, not relative to --host's own path segment: an absolute
+    // path here replaces --host's path entirely (standard URL-join
+    // behavior), so a bare "/invoices" silently drops "/api" and hits the
+    // client's SPA route instead of the server.
     let builder = user
-        .get_request_builder(&GooseMethod::Post, "/invoices")?
+        .get_request_builder(&GooseMethod::Post, "/api/invoices")?
         .header("Authorization", format!("Bearer {}", session.api_key))
         .header("Content-Type", "application/json")
         .body(serde_json::to_string(&body).unwrap());
