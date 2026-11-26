@@ -184,8 +184,17 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
     /// Runs on the confirmation-check timer because that is the one thing
     /// already on a clock here.
     async fn resubscribe_if_stalled(&self, block_stream: &mut BlockStream) -> EvmResult<()> {
-        let health = self.get_health().await;
-
+        // `self.source.status()` is a plain atomic read - unlike
+        // `self.get_health().await`, which also calls `get_block_number()`
+        // over RPC to fill in `current_block`, a field this function only
+        // ever uses for the diagnostic logs below. Reading it unconditionally
+        // meant every confirmation tick, on every chain, cost a billed RPC
+        // call whether or not anything was actually wrong - the common case
+        // is a healthy chain with nothing pending, where this function has
+        // nothing to report. `get_health()` is still called, but only once
+        // something below has already decided there's a problem worth
+        // logging.
+        //
         // `is_healthy` is the wrong question here. It is false whenever the
         // chain is lagging more than a few blocks, and lagging is what ordinary
         // catch-up looks like: after a restart, or a brief outage, the monitor
@@ -198,7 +207,8 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
         // delivering: a half-open WebSocket that yields no blocks and no error,
         // with nothing to select! on. That is a liveness question, not a
         // progress one, so ask it of the stream rather than of the lag.
-        let disconnected = health.status != SourceStatus::Connected;
+        let status = self.source.status();
+        let disconnected = status != SourceStatus::Connected;
         let silent_for = self.last_block_at.read().await.elapsed();
         let stalled = silent_for >= self.stall_timeout();
 
@@ -206,6 +216,15 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
             return Ok(());
         }
 
+        // Fetched only now that something below is actually wrong, and only
+        // for `current_block`/`last_processed_block` - `status` is logged as
+        // the same `status` the decision above was already made from, not
+        // re-read here. A second, later read could disagree with it (the
+        // source could reconnect in between), which would print a `status:
+        // Connected` right next to `reason: disconnected` - correct for the
+        // instant it was taken, but a contradiction to whoever is reading
+        // the log to find out what actually happened.
+        let health = self.get_health().await;
         let resubscribes = self
             .resubscribes_without_block
             .fetch_add(1, Ordering::Relaxed)
@@ -213,7 +232,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
         if resubscribes >= SUSTAINED_STALL_RESUBSCRIBES {
             error!(
                 chain_id = self.chain_id(),
-                status = ?health.status,
+                status = ?status,
                 current_block = ?health.current_block,
                 last_processed_block = ?health.last_processed_block,
                 silent_for_secs = silent_for.as_secs(),
@@ -224,7 +243,7 @@ impl<S: BlockSource + 'static> ChainMonitor<S> {
         } else {
             warn!(
                 chain_id = self.chain_id(),
-                status = ?health.status,
+                status = ?status,
                 current_block = ?health.current_block,
                 last_processed_block = ?health.last_processed_block,
                 silent_for_secs = silent_for.as_secs(),
