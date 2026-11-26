@@ -14,8 +14,9 @@ use alloy::rpc::types::{Block, BlockNumberOrTag, BlockTransactionsKind, Filter, 
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
@@ -61,6 +62,10 @@ pub struct RpcSourceConfig {
     pub ws_url: Option<SecretString>,
     /// HTTP URL for RPC calls (required). Secret: carries the provider API key.
     pub http_url: SecretString,
+    /// Additional HTTP providers tried, in order, when `http_url` is down,
+    /// rate-limited or out of quota. Empty by default, so a single-provider
+    /// config behaves exactly as before.
+    pub http_fallback_urls: Vec<SecretString>,
     /// Chain ID (verified on connection).
     pub chain_id: u64,
     /// Maximum reconnection attempts (0 = infinite).
@@ -83,6 +88,7 @@ impl RpcSourceConfig {
         Self {
             ws_url: Some(SecretString::from(ws_url.into())),
             http_url: SecretString::from(http_url.into()),
+            http_fallback_urls: Vec::new(),
             chain_id,
             max_reconnect_attempts: 0, // infinite
             reconnect_delay_ms: 5000,
@@ -96,12 +102,220 @@ impl RpcSourceConfig {
         Self {
             ws_url: None,
             http_url: SecretString::from(http_url.into()),
+            http_fallback_urls: Vec::new(),
             chain_id,
             max_reconnect_attempts: 0,
             reconnect_delay_ms: 5000,
             fallback_to_polling: true,
             polling_interval_ms: 12000,
         }
+    }
+
+    /// Add ordered HTTP fallback providers, tried after `http_url` on
+    /// failure. Primary/fallback, not weighted: the pool sticks with the
+    /// last provider that worked rather than round-robining every call.
+    pub fn with_http_fallbacks(mut self, urls: impl IntoIterator<Item = String>) -> Self {
+        self.http_fallback_urls = urls.into_iter().map(SecretString::from).collect();
+        self
+    }
+
+    /// All configured HTTP providers, primary first.
+    fn all_http_urls(&self) -> Vec<SecretString> {
+        std::iter::once(self.http_url.clone())
+            .chain(self.http_fallback_urls.iter().cloned())
+            .collect()
+    }
+}
+
+/// How long a provider sits out after a failed call before it's tried again
+/// as the *first* choice. It still gets tried sooner than that if every
+/// other provider has also failed in the same round - see `with_failover`.
+const PROVIDER_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// One configured HTTP provider in a [`HttpProviderPool`]: its URL plus a
+/// lazily-built, reusable connection and its own cooldown clock.
+struct ProviderSlot {
+    url: SecretString,
+    /// `None` until first used - a fallback that's never needed is never
+    /// connected to.
+    provider: RwLock<Option<RootProvider>>,
+    cooldown_until: Mutex<Option<Instant>>,
+}
+
+/// An ordered set of HTTP RPC providers for one chain, with failover.
+///
+/// Calls try the last-known-good provider first (`current`), then the rest
+/// in configured order, skipping any still in `PROVIDER_COOLDOWN` unless
+/// every provider is - at that point cooldowns are ignored rather than
+/// failing outright, since a real outage must still get *a* chance, not a
+/// guaranteed failure. Exhausting or losing one provider must not take the
+/// chain down by itself (that's the whole point: this is what replaced a
+/// single hardcoded URL after testnet burned through one provider's free
+/// tier and went down with it).
+struct HttpProviderPool {
+    chain_id: u64,
+    slots: Vec<ProviderSlot>,
+    current: AtomicUsize,
+}
+
+impl HttpProviderPool {
+    /// Connect to the first URL that succeeds, in order. The rest are left
+    /// unconnected until failover actually needs them. Fails only if every
+    /// URL fails - with a single URL configured this is exactly the
+    /// all-or-nothing behavior this pool replaced.
+    async fn connect(urls: Vec<SecretString>, chain_id: u64) -> EvmResult<Self> {
+        let pool = Self {
+            chain_id,
+            slots: urls
+                .into_iter()
+                .map(|url| ProviderSlot {
+                    url,
+                    provider: RwLock::new(None),
+                    cooldown_until: Mutex::new(None),
+                })
+                .collect(),
+            current: AtomicUsize::new(0),
+        };
+
+        let mut last_err = None;
+        for idx in 0..pool.slots.len() {
+            match pool.get_or_connect(idx).await {
+                Ok(_) => {
+                    pool.current.store(idx, Ordering::SeqCst);
+                    return Ok(pool);
+                }
+                Err(e) => {
+                    warn!(
+                        chain_id,
+                        provider = %pool.redacted_url(idx),
+                        error = %e,
+                        "HTTP provider unavailable at startup, trying next"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| EvmError::Connection("no HTTP provider configured".to_string())))
+    }
+
+    fn redacted_url(&self, idx: usize) -> String {
+        redact_url(self.slots[idx].url.expose_secret())
+    }
+
+    fn scrub(&self, idx: usize, e: &str) -> String {
+        redact_err(e, self.slots[idx].url.expose_secret())
+    }
+
+    fn is_in_cooldown(&self, idx: usize) -> bool {
+        self.slots[idx]
+            .cooldown_until
+            .lock()
+            .unwrap()
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    fn set_cooldown(&self, idx: usize) {
+        *self.slots[idx].cooldown_until.lock().unwrap() = Some(Instant::now() + PROVIDER_COOLDOWN);
+    }
+
+    fn clear_cooldown(&self, idx: usize) {
+        *self.slots[idx].cooldown_until.lock().unwrap() = None;
+    }
+
+    /// Return this slot's provider, connecting and verifying its chain ID
+    /// first if it hasn't been used yet.
+    async fn get_or_connect(&self, idx: usize) -> EvmResult<RootProvider> {
+        if let Some(p) = self.slots[idx].provider.read().await.as_ref() {
+            return Ok(p.clone());
+        }
+
+        let url = self.slots[idx].url.expose_secret();
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .connect(url)
+            .await
+            .map_err(|e| {
+                EvmError::Connection(format!("HTTP connection failed: {}", redact_err(e, url)))
+            })?;
+
+        let chain_id = provider.get_chain_id().await.map_err(|e| {
+            EvmError::Connection(format!("failed to get chain ID: {}", redact_err(e, url)))
+        })?;
+        if chain_id != self.chain_id {
+            return Err(EvmError::InvalidChainConfig(format!(
+                "chain ID mismatch: expected {}, got {}",
+                self.chain_id, chain_id
+            )));
+        }
+
+        *self.slots[idx].provider.write().await = Some(provider.clone());
+        Ok(provider)
+    }
+
+    /// Run `op` against providers in priority order until one succeeds.
+    ///
+    /// `op` must be reusable (`Fn`, not `FnOnce`): it may run once per
+    /// provider in a single call. On success the pool remembers that
+    /// provider as `current` so the next call tries it first. On failure
+    /// every provider tried gets a cooldown, and the first pass skips any
+    /// provider already cooling down from an earlier failure; a second pass
+    /// ignores cooldowns so a total outage still gets retried rather than
+    /// failing immediately forever.
+    async fn with_failover<T, Fut>(
+        &self,
+        op_name: &str,
+        op: impl Fn(RootProvider) -> Fut,
+    ) -> EvmResult<T>
+    where
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let n = self.slots.len();
+        let start = self.current.load(Ordering::SeqCst);
+        let mut last_err: Option<String> = None;
+
+        for pass in 0..2 {
+            for i in 0..n {
+                let idx = (start + i) % n;
+                if pass == 0 && self.is_in_cooldown(idx) {
+                    continue;
+                }
+
+                let provider = match self.get_or_connect(idx).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_cooldown(idx);
+                        last_err = Some(e.to_string());
+                        continue;
+                    }
+                };
+
+                match op(provider).await {
+                    Ok(v) => {
+                        self.current.store(idx, Ordering::SeqCst);
+                        self.clear_cooldown(idx);
+                        return Ok(v);
+                    }
+                    Err(e) => {
+                        let scrubbed = self.scrub(idx, &e);
+                        warn!(
+                            chain_id = self.chain_id,
+                            provider = %self.redacted_url(idx),
+                            op = op_name,
+                            error = %scrubbed,
+                            "RPC call failed, failing over to next provider"
+                        );
+                        self.set_cooldown(idx);
+                        last_err = Some(scrubbed);
+                    }
+                }
+            }
+        }
+
+        Err(EvmError::Rpc(format!(
+            "{op_name} failed on all {n} configured HTTP provider(s): {}",
+            last_err.unwrap_or_else(|| "unknown error".to_string())
+        )))
     }
 }
 
@@ -111,8 +325,8 @@ impl RpcSourceConfig {
 /// Automatically reconnects on connection failures.
 pub struct RpcBlockSource {
     config: RpcSourceConfig,
-    /// HTTP provider for RPC calls.
-    http_provider: RootProvider,
+    /// Ordered HTTP providers for this chain, with failover.
+    http_providers: Arc<HttpProviderPool>,
     /// Current status.
     status: AtomicU8,
     /// Error message if failed.
@@ -170,39 +384,20 @@ impl RpcBlockSource {
             })?;
         }
 
-        // Create HTTP provider
-        let http_provider = ProviderBuilder::new()
-            .disable_recommended_fillers()
-            .connect(config.http_url.expose_secret())
-            .await
-            .map_err(|e| {
-                EvmError::Connection(format!(
-                    "HTTP connection failed: {}",
-                    redact_err(e, config.http_url.expose_secret())
-                ))
-            })?;
-
-        // Verify chain ID
-        let chain_id = http_provider.get_chain_id().await.map_err(|e| {
-            EvmError::Connection(format!("failed to get chain ID: {}", config.scrub(e)))
-        })?;
-
-        if chain_id != config.chain_id {
-            return Err(EvmError::InvalidChainConfig(format!(
-                "chain ID mismatch: expected {}, got {}",
-                config.chain_id, chain_id
-            )));
-        }
+        let chain_id = config.chain_id;
+        let urls = config.all_http_urls();
+        let provider_count = urls.len();
+        let http_providers = HttpProviderPool::connect(urls, chain_id).await?;
 
         info!(
             chain_id,
-            http_url = %redact_url(config.http_url.expose_secret()),
+            http_providers = provider_count,
             "RPC block source created"
         );
 
         Ok(Self {
             config,
-            http_provider,
+            http_providers: Arc::new(http_providers),
             status: AtomicU8::new(STATUS_DISCONNECTED),
             error_message: RwLock::new(None),
         })
@@ -288,26 +483,11 @@ impl RpcBlockSource {
 
     /// Create a polling-based block stream (fallback).
     fn create_polling_stream(&self) -> BlockStream {
-        let http_url = self.config.http_url.clone();
+        let pool = Arc::clone(&self.http_providers);
         let interval = self.config.polling_interval_ms;
         let chain_id = self.config.chain_id;
 
         let stream = async_stream::stream! {
-            let provider = match ProviderBuilder::new()
-                .disable_recommended_fillers()
-                .connect(http_url.expose_secret())
-                .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    yield Err(EvmError::Connection(format!(
-                        "polling connection failed: {}",
-                        redact_err(e, http_url.expose_secret())
-                    )));
-                    return;
-                }
-            };
-
             let mut last_block: Option<u64> = None;
             let mut interval_timer = tokio::time::interval(
                 tokio::time::Duration::from_millis(interval)
@@ -318,7 +498,16 @@ impl RpcBlockSource {
             loop {
                 interval_timer.tick().await;
 
-                match provider.get_block_by_number(BlockNumberOrTag::Latest).await {
+                let result = pool
+                    .with_failover("poll_latest_block", |provider| async move {
+                        provider
+                            .get_block_by_number(BlockNumberOrTag::Latest)
+                            .await
+                            .map_err(|e| e.to_string())
+                    })
+                    .await;
+
+                match result {
                     Ok(Some(block)) => {
                         let block_num = block.header.number;
 
@@ -333,7 +522,7 @@ impl RpcBlockSource {
                     }
                     Err(e) => {
                         error!(chain_id, error = %e, "polling error");
-                        yield Err(EvmError::Rpc(format!("polling error: {}", e)));
+                        yield Err(e);
                     }
                 }
             }
@@ -423,11 +612,18 @@ impl BlockSource for RpcBlockSource {
         }
 
         let chain_id = self.config.chain_id;
-        rpc_metrics::timed_rpc(chain_id, "get_logs", async {
-            self.http_provider
-                .get_logs(&alloy_filter)
-                .await
-                .map_err(|e| EvmError::Rpc(format!("get_logs failed: {}", self.config.scrub(e))))
+        let pool = Arc::clone(&self.http_providers);
+        rpc_metrics::timed_rpc(chain_id, "get_logs", async move {
+            pool.with_failover("get_logs", move |provider| {
+                let alloy_filter = alloy_filter.clone();
+                async move {
+                    provider
+                        .get_logs(&alloy_filter)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+            })
+            .await
         })
         .await
     }
@@ -438,33 +634,43 @@ impl BlockSource for RpcBlockSource {
             .unwrap_or(BlockNumberOrTag::Latest);
 
         let chain_id = self.config.chain_id;
-        rpc_metrics::timed_rpc(chain_id, "get_balance", async {
-            self.http_provider
-                .get_balance(address)
-                .block_id(block_id.into())
-                .await
-                .map_err(|e| EvmError::Rpc(format!("get_balance failed: {}", self.config.scrub(e))))
+        let pool = Arc::clone(&self.http_providers);
+        rpc_metrics::timed_rpc(chain_id, "get_balance", async move {
+            pool.with_failover("get_balance", move |provider| async move {
+                provider
+                    .get_balance(address)
+                    .block_id(block_id.into())
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await
         })
         .await
     }
 
     async fn get_block_number(&self) -> EvmResult<u64> {
         let chain_id = self.config.chain_id;
-        rpc_metrics::timed_rpc(chain_id, "get_block_number", async {
-            self.http_provider.get_block_number().await.map_err(|e| {
-                EvmError::Rpc(format!("get_block_number failed: {}", self.config.scrub(e)))
+        let pool = Arc::clone(&self.http_providers);
+        rpc_metrics::timed_rpc(chain_id, "get_block_number", async move {
+            pool.with_failover("get_block_number", |provider| async move {
+                provider.get_block_number().await.map_err(|e| e.to_string())
             })
+            .await
         })
         .await
     }
 
     async fn get_block(&self, number: u64) -> EvmResult<Option<Block>> {
         let chain_id = self.config.chain_id;
-        rpc_metrics::timed_rpc(chain_id, "get_block", async {
-            self.http_provider
-                .get_block_by_number(BlockNumberOrTag::Number(number))
-                .await
-                .map_err(|e| EvmError::Rpc(format!("get_block failed: {}", self.config.scrub(e))))
+        let pool = Arc::clone(&self.http_providers);
+        rpc_metrics::timed_rpc(chain_id, "get_block", async move {
+            pool.with_failover("get_block", move |provider| async move {
+                provider
+                    .get_block_by_number(BlockNumberOrTag::Number(number))
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await
         })
         .await
     }
@@ -483,17 +689,16 @@ impl BlockSource for RpcBlockSource {
 
         // Fetch block with full transactions (instrumented)
         let chain_id = self.config.chain_id;
-        let block = rpc_metrics::timed_rpc(chain_id, "get_block_with_txs", async {
-            self.http_provider
-                .get_block_by_number(BlockNumberOrTag::Number(block_number))
-                .kind(BlockTransactionsKind::Full)
-                .await
-                .map_err(|e| {
-                    EvmError::Rpc(format!(
-                        "get_block_with_txs failed: {}",
-                        self.config.scrub(e)
-                    ))
-                })
+        let pool = Arc::clone(&self.http_providers);
+        let block = rpc_metrics::timed_rpc(chain_id, "get_block_with_txs", async move {
+            pool.with_failover("get_block_with_txs", move |provider| async move {
+                provider
+                    .get_block_by_number(BlockNumberOrTag::Number(block_number))
+                    .kind(BlockTransactionsKind::Full)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await
         })
         .await?;
 

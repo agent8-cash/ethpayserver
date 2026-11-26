@@ -81,6 +81,11 @@ pub(crate) struct ChainRpcConfig {
     /// `SecretString` keeps the derived `Debug` above from printing it.
     pub rpc_http: SecretString,
     pub rpc_ws: Option<SecretString>,
+    /// Additional HTTP providers tried, in order, if `rpc_http` is down,
+    /// rate-limited, or out of quota. Empty by default, so configs that
+    /// only set `rpc_http` are unaffected.
+    #[serde(default)]
+    pub rpc_http_fallbacks: Vec<SecretString>,
 }
 
 pub(crate) fn load_config(args: &Args) -> anyhow::Result<Config> {
@@ -119,12 +124,25 @@ pub(crate) fn get_chain_configs(
 
             let http_key = format!("EVMMONITOR_CHAIN_{}_RPC_HTTP", chain_id);
             let ws_key = format!("EVMMONITOR_CHAIN_{}_RPC_WS", chain_id);
+            let fallbacks_key = format!("EVMMONITOR_CHAIN_{}_RPC_HTTP_FALLBACKS", chain_id);
 
             if let Ok(rpc_http) = std::env::var(&http_key) {
+                let rpc_http_fallbacks = std::env::var(&fallbacks_key)
+                    .ok()
+                    .map(|v| {
+                        v.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(SecretString::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 configs.push(ChainRpcConfig {
                     chain_id,
                     rpc_http: SecretString::from(rpc_http),
                     rpc_ws: std::env::var(&ws_key).ok().map(SecretString::from),
+                    rpc_http_fallbacks,
                 });
             } else {
                 warn!(
