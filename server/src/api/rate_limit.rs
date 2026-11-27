@@ -172,17 +172,28 @@ fn classify(path: &str, method: &Method) -> Tier {
 }
 
 /// Extract client IP from proxy headers, falling back to peer address.
+///
+/// `X-Real-IP` is checked first because it's the one header our own origin
+/// nginx sets *from its own `$remote_addr`* rather than echoing a client
+/// value - and nginx's `real_ip` module has already rewritten `$remote_addr`
+/// from the trusted `CF-Connecting-IP` Cloudflare provides, so a client can't
+/// forge it. `X-Forwarded-For` is attacker-controlled: nginx only appends to
+/// whatever the client sent, it never strips prior entries, so reading the
+/// *first* entry (the old behavior) let any caller rotate through arbitrary
+/// IPs on every request and get a fresh rate-limit bucket each time - a
+/// complete bypass of the 30rpm auth-tier limit. Kept as a fallback, last
+/// entry only, for the case nginx's X-Real-IP is ever missing.
 pub(crate) fn client_ip(headers: &axum::http::HeaderMap, fallback: IpAddr) -> IpAddr {
-    if let Some(xff) = headers.get("x-forwarded-for")
-        && let Ok(s) = xff.to_str()
-        && let Some(first) = s.split(',').next()
-        && let Ok(ip) = first.trim().parse::<IpAddr>()
-    {
-        return ip;
-    }
     if let Some(xri) = headers.get("x-real-ip")
         && let Ok(s) = xri.to_str()
         && let Ok(ip) = s.trim().parse::<IpAddr>()
+    {
+        return ip;
+    }
+    if let Some(xff) = headers.get("x-forwarded-for")
+        && let Ok(s) = xff.to_str()
+        && let Some(last) = s.split(',').next_back()
+        && let Ok(ip) = last.trim().parse::<IpAddr>()
     {
         return ip;
     }
@@ -286,6 +297,41 @@ mod tests {
     #[test]
     fn classify_websocket() {
         assert!(matches!(classify("/ws", &Method::GET), Tier::WebSocket));
+    }
+
+    #[test]
+    fn client_ip_prefers_x_real_ip_over_spoofable_x_forwarded_for() {
+        // X-Forwarded-For is attacker-controlled (nginx only ever appends to
+        // it, never strips prior entries), so a caller who sets a fresh
+        // first entry on every request used to get a fresh rate-limit bucket
+        // every time - a full bypass of the auth-tier limit. X-Real-IP is
+        // nginx's own value, built from the Cloudflare-verified real_ip, and
+        // must win whenever both are present.
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "6.6.6.6".parse().unwrap());
+        headers.insert("x-real-ip", "9.9.9.9".parse().unwrap());
+        let fallback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, fallback),
+            "9.9.9.9".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_last_x_forwarded_for_entry() {
+        // Without X-Real-IP, fall back to X-Forwarded-For - but the LAST
+        // entry, the one nginx itself appended from $remote_addr, not the
+        // first, which a client can set to anything.
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "6.6.6.6, 7.7.7.7, 8.8.8.8".parse().unwrap(),
+        );
+        let fallback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, fallback),
+            "8.8.8.8".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]

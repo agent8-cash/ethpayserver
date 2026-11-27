@@ -111,7 +111,7 @@ fn wallet_reauth_challenge_message(
     created_at: DateTime<Utc>,
 ) -> String {
     format!(
-        "Confirm this wallet change on random.cash:\n\nChallenge: {challenge}\nTimestamp: {}\nAddress: {address}",
+        "Confirm this wallet change on agent8.cash:\n\nChallenge: {challenge}\nTimestamp: {}\nAddress: {address}",
         created_at.to_rfc3339()
     )
 }
