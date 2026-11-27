@@ -74,6 +74,18 @@ fn refund_unsupported() -> ApiErr {
 
 /// Refuse to create a refund. See the module docs: refunds are the merchant's
 /// job, done from their own wallet, because this server holds no spending key.
+#[utoipa::path(
+    post,
+    path = "/invoices/{invoice_id}/refund",
+    tag = "refunds",
+    security(("bearer_auth" = [])),
+    params(
+        ("invoice_id" = String, Path, description = "Invoice ID")
+    ),
+    responses(
+        (status = 501, description = "Always refused — this server holds no spending key and cannot send funds. Refund the payer from your own wallet."),
+    )
+)]
 pub async fn create_refund<A>(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(_state): State<PgAppState<A>>,
@@ -86,6 +98,21 @@ where
 }
 
 /// List refunds for an invoice.
+#[utoipa::path(
+    get,
+    path = "/invoices/{invoice_id}/refunds",
+    tag = "refunds",
+    security(("bearer_auth" = [])),
+    params(
+        ("invoice_id" = String, Path, description = "Invoice ID")
+    ),
+    responses(
+        (status = 200, description = "Refunds recorded for this invoice", body = Vec<RefundResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Invoice not found"),
+    )
+)]
 pub async fn list_refunds<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

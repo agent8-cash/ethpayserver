@@ -72,7 +72,7 @@ const DEFAULT_LIMIT: i64 = 50;
 /// client trying to reach it, produced - attacker-influenced from the
 /// subscriber's point of view. It travels here as a plain JSON string field;
 /// nothing in this crate renders it as HTML, and nothing downstream should.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct WebhookDeliveryResponse {
     pub id: Uuid,
     pub invoice_id: String,
@@ -101,7 +101,7 @@ impl From<WebhookDeliveryData> for WebhookDeliveryResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct WebhookDeliveryListResponse {
     pub total: i64,
     pub deliveries: Vec<WebhookDeliveryResponse>,
@@ -150,6 +150,21 @@ where
 }
 
 /// List recent webhook deliveries for an invoice.
+#[utoipa::path(
+    get,
+    path = "/invoices/{invoice_id}/webhook-deliveries",
+    tag = "webhook-deliveries",
+    security(("bearer_auth" = [])),
+    params(
+        ("invoice_id" = String, Path, description = "Invoice ID")
+    ),
+    responses(
+        (status = 200, description = "Recent deliveries for this invoice", body = WebhookDeliveryListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Invoice not found"),
+    )
+)]
 pub async fn list_deliveries_for_invoice<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -183,6 +198,20 @@ where
 }
 
 /// List recent webhook deliveries for a store.
+#[utoipa::path(
+    get,
+    path = "/stores/{store_id}/webhook-deliveries",
+    tag = "webhook-deliveries",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 200, description = "Recent deliveries for this store", body = WebhookDeliveryListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+    )
+)]
 pub async fn list_deliveries_for_store<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -215,6 +244,22 @@ where
 /// a fresh `event_id` - a replay is a new *delivery* of the same *event*.
 /// `idempotency_key` is derived from the event's identity and is not touched,
 /// so a subscriber that dedupes correctly sees no new event.
+#[utoipa::path(
+    post,
+    path = "/stores/{store_id}/webhook-deliveries/{delivery_id}/replay",
+    tag = "webhook-deliveries",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID"),
+        ("delivery_id" = Uuid, Path, description = "Delivery ID to replay")
+    ),
+    responses(
+        (status = 200, description = "Replay queued", body = WebhookDeliveryResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Delivery not found"),
+    )
+)]
 pub async fn replay_delivery<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

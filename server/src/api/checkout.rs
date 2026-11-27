@@ -26,6 +26,18 @@ pub use api_types::{CheckoutPaymentInfo, CheckoutResponse};
 /// Get public checkout data for an invoice.
 ///
 /// No authentication required. Returns payment-relevant fields only.
+#[utoipa::path(
+    get,
+    path = "/checkout/{invoice_id}",
+    tag = "checkout",
+    params(
+        ("invoice_id" = String, Path, description = "Invoice ID")
+    ),
+    responses(
+        (status = 200, description = "Public checkout data", body = CheckoutResponse),
+        (status = 404, description = "Invoice not found"),
+    )
+)]
 pub async fn get_checkout<A>(
     State(state): State<PgAppState<A>>,
     Path(invoice_id): Path<String>,

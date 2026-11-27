@@ -304,7 +304,7 @@ where
 
 /// The shortfall a settlement tolerance accepted on an invoice, and the
 /// setting that allowed it.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SettlementAllowanceResponse {
     pub invoice_id: String,
     pub shortfall: String,
@@ -315,6 +315,21 @@ pub struct SettlementAllowanceResponse {
 }
 
 /// Get the tolerance allowance recorded for an invoice, if it settled short.
+#[utoipa::path(
+    get,
+    path = "/invoices/{invoice_id}/settlement-allowance",
+    tag = "invoices",
+    security(("bearer_auth" = [])),
+    params(
+        ("invoice_id" = String, Path, description = "Invoice ID")
+    ),
+    responses(
+        (status = 200, description = "The recorded allowance, or null if the invoice settled in full", body = Option<SettlementAllowanceResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Invoice not found"),
+    )
+)]
 pub async fn get_invoice_settlement_allowance<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

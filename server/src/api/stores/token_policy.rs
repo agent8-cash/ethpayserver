@@ -20,6 +20,21 @@ use crate::state::PgAppState;
 pub use api_types::{SetTokenPolicyRequest, TokenPolicyEntryPayload, TokenPolicyResponse};
 
 /// Get store token policy.
+#[utoipa::path(
+    get,
+    path = "/stores/{store_id}/token-policy",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 200, description = "Token policy, or null if the store accepts every whitelisted token", body = Option<TokenPolicyResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn get_token_policy<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -62,6 +77,23 @@ where
 }
 
 /// Set (upsert) store token policy.
+#[utoipa::path(
+    put,
+    path = "/stores/{store_id}/token-policy",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    request_body = SetTokenPolicyRequest,
+    responses(
+        (status = 200, description = "Policy set", body = TokenPolicyResponse),
+        (status = 400, description = "Invalid mode, asset symbol, or token address"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn set_token_policy<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -132,6 +164,21 @@ where
 }
 
 /// Delete store token policy (revert to accept-all).
+#[utoipa::path(
+    delete,
+    path = "/stores/{store_id}/token-policy",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 204, description = "Reverted to accept-all"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn delete_token_policy<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

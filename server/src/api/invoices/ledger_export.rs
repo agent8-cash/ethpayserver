@@ -351,6 +351,19 @@ where
 /// and payment option by id; a missing option leaves the scale columns empty
 /// rather than blocking the row, because a payment that cannot be scaled is
 /// exactly the row a bookkeeper needs to see.
+#[utoipa::path(
+    get,
+    path = "/payments/ledger.csv",
+    tag = "payments",
+    security(("bearer_auth" = [])),
+    params(ListPaymentsQuery),
+    responses(
+        (status = 200, description = "CSV file (text/csv) streamed as an attachment"),
+        (status = 400, description = "Invalid status filter"),
+        (status = 401, description = "Unauthorized"),
+        (status = 413, description = "More rows matched than the export cap allows"),
+    )
+)]
 pub async fn export_ledger_csv<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

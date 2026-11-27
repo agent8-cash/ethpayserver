@@ -119,6 +119,19 @@ pub(crate) fn build_payment_filter_params(
 ///
 /// Accepts the same query parameters as `list_invoices`. Streams results
 /// in pages of 1000 rows to avoid full-result buffering.
+#[utoipa::path(
+    get,
+    path = "/invoices/export.csv",
+    tag = "invoices",
+    security(("bearer_auth" = [])),
+    params(ListInvoicesQuery),
+    responses(
+        (status = 200, description = "CSV file (text/csv) streamed as an attachment"),
+        (status = 400, description = "Invalid status filter"),
+        (status = 401, description = "Unauthorized"),
+        (status = 413, description = "More rows matched than the export cap allows"),
+    )
+)]
 #[allow(clippy::too_many_lines)] // CSV export: filter assembly + paged stream + row serialization
 pub async fn export_invoices_csv<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
@@ -255,6 +268,19 @@ where
 ///
 /// Accepts the same query parameters as `list_payments`. Streams results
 /// in pages of 1000 rows to avoid full-result buffering.
+#[utoipa::path(
+    get,
+    path = "/payments/export.csv",
+    tag = "payments",
+    security(("bearer_auth" = [])),
+    params(ListPaymentsQuery),
+    responses(
+        (status = 200, description = "CSV file (text/csv) streamed as an attachment"),
+        (status = 400, description = "Invalid status filter"),
+        (status = 401, description = "Unauthorized"),
+        (status = 413, description = "More rows matched than the export cap allows"),
+    )
+)]
 #[allow(clippy::too_many_lines)] // CSV export: filter assembly + paged stream + row serialization
 pub async fn export_payments_csv<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
