@@ -60,7 +60,7 @@
 set -u
 set -o pipefail
 
-: "${HEALTH_URL:?HEALTH_URL required — e.g. https://api.random.cash/health/deep}"
+: "${HEALTH_URL:?HEALTH_URL required — e.g. https://api.agent8.cash/health/deep}"
 : "${HEALTH_TIMEOUT:=60}"
 : "${EXPECTED_SHA:=}"
 

@@ -78,7 +78,7 @@ All defaults can be overridden explicitly:
 
 ```bash
 E2E_REMOTE=true \
-E2E_BASE_URL=https://staging.random.cash \
+E2E_BASE_URL=https://staging.agent8.cash \
 E2E_SKIP_AUTH=false \
   npx playwright test
 ```

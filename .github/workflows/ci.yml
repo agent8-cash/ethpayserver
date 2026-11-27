@@ -586,6 +586,16 @@ jobs:
       - name: advisory ignores still needed
         if: always()
         run: ./scripts/check-advisory-ignores.sh
+      # A waiver with an EXPIRES date is a stopgap, not a permanent ignore -
+      # this is what actually enforces that date. Previously written but never
+      # called from any workflow, same class of gap as scripts/health-gate.sh
+      # before it was finally wired in.
+      - name: advisory expires self-test
+        if: always()
+        run: ./scripts/check-advisory-expires.test.sh
+      - name: advisory EXPIRES dates not elapsed
+        if: always()
+        run: ./scripts/check-advisory-expires.sh
       - name: cargo deny
         if: always()
         run: cargo deny check licenses sources

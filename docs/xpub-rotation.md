@@ -119,7 +119,7 @@ for how to actually generate one. The key must be a valid `xpub` (base58).
 ### 2. Rotate via API
 
 ```bash
-curl -X POST https://pay.random.cash/api/stores/<STORE_ID>/wallet/rotate \
+curl -X POST https://pay.agent8.cash/api/stores/<STORE_ID>/wallet/rotate \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"xpub": "<NEW_XPUB>", "reason": "scheduled rotation"}'
