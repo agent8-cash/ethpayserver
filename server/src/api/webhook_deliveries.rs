@@ -161,8 +161,7 @@ where
     responses(
         (status = 200, description = "Recent deliveries for this invoice", body = WebhookDeliveryListResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Invoice not found"),
+        (status = 404, description = "Invoice not found, or insufficient permissions"),
     )
 )]
 pub async fn list_deliveries_for_invoice<A>(
@@ -209,7 +208,7 @@ where
     responses(
         (status = 200, description = "Recent deliveries for this store", body = WebhookDeliveryListResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found, or insufficient permissions"),
     )
 )]
 pub async fn list_deliveries_for_store<A>(
@@ -256,8 +255,7 @@ where
     responses(
         (status = 200, description = "Replay queued", body = WebhookDeliveryResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Delivery not found"),
+        (status = 404, description = "Delivery not found, or insufficient permissions"),
     )
 )]
 pub async fn replay_delivery<A>(

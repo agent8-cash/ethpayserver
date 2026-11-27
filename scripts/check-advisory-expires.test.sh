@@ -71,4 +71,38 @@ else
     echo "Test 4 PASS: One expired advisory correctly rejected"
 fi
 
+# Test 5: EXPIRES exactly today should still pass (today = EXPIRES passes,
+# not fail - the exact boundary case this script used to disagree with
+# check-advisory-ignores.sh on).
+cat > "$temp_audit" << 'EOF'
+[advisories]
+ignore = [
+    # Some issue. EXPIRES 2026-06-15
+    "RUSTSEC-2024-0001",
+]
+EOF
+
+if AUDIT_FILE="$temp_audit" AUDIT_TODAY="2026-06-15" AUDIT_TODAY_OK=1 ./scripts/check-advisory-expires.sh; then
+    echo "Test 5 PASS: EXPIRES dated today is still accepted"
+else
+    echo "Test 5 FAIL: EXPIRES dated today should pass, not fail"
+    exit 1
+fi
+
+# Test 6: the day after EXPIRES should fail
+cat > "$temp_audit" << 'EOF'
+[advisories]
+ignore = [
+    # Some issue. EXPIRES 2026-06-15
+    "RUSTSEC-2024-0001",
+]
+EOF
+
+if AUDIT_FILE="$temp_audit" AUDIT_TODAY="2026-06-16" AUDIT_TODAY_OK=1 ./scripts/check-advisory-expires.sh; then
+    echo "Test 6 FAIL: the day after EXPIRES should cause failure"
+    exit 1
+else
+    echo "Test 6 PASS: the day after EXPIRES correctly rejected"
+fi
+
 echo "All tests passed"

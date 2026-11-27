@@ -96,7 +96,7 @@ deploy-triggered, not continuous:
 
 Between deploys, coverage is `.github/workflows/health-monitor.yml`: it runs
 `scripts/check-health-deep.sh` against both `testnet.agent8.cash` and
-`pay.random.cash` every 5 minutes on a GitHub-hosted runner, asserts
+`pay.agent8.cash` every 5 minutes on a GitHub-hosted runner, asserts
 `postgres`, `redis`, `monitor.data_fresh` and every `rpcs.*.status`, and checks
 in to a Sentry Cron Monitor (`SENTRY_CRON_HEALTH_TESTNET_URL` /
 `SENTRY_CRON_HEALTH_MAINNET_URL`), intended so that a missed or failing check pages through

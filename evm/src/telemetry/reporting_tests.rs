@@ -232,7 +232,7 @@ fn parity_with_shared_scrubber() {
         "GET https://eth-mainnet.g.alchemy.com/v2/9f8e7d6c5b4a3210zz failed",
         "wss://polygon-mainnet.infura.io:443/ws/v3/0123456789abcdefzz closed",
         "https://api.coingecko.com/api/v3/simple/price?ids=ethereum",
-        "https://telemetry.example.com/api/random.cash/envelope/",
+        "https://telemetry.example.com/api/agent8.cash/envelope/",
         "no store for merchant@example.com or a@b.co.uk or bad@b.c",
         "Authorization: Bearer rc_live_opaque123",
         "authorization=eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig; token: abc, secret = \"s3cr3t\"",

@@ -1,4 +1,4 @@
-# Verifying random.cash Releases
+# Verifying agent8.cash Releases
 
 Docker images published by CI are cryptographically signed, so you can check
 that the image you are about to run was built by this repository's pipeline from
@@ -120,5 +120,5 @@ the assumption that everything is covered.
 | Artifact | Status |
 |----------|--------|
 | Docker images | **Signed** (keyless cosign, GitHub Actions OIDC) |
-| Binary tarballs | **Not published.** Releases ship images only. Any tarball claiming to be a random.cash release binary did not come from this pipeline. |
+| Binary tarballs | **Not published.** Releases ship images only. Any tarball claiming to be a agent8.cash release binary did not come from this pipeline. |
 | Git tags | **Not signed.** Tags are lightweight and carry no GPG signature. Verify the commit through the image signature instead. |

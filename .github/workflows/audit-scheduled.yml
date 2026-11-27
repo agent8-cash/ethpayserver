@@ -55,6 +55,7 @@ jobs:
           zip=$(./scripts/check-zip-ignores.sh 2>&1); zip_rc=$?
           graph=$(./scripts/audit-build-graph.sh 2>&1); graph_rc=$?
           ignores=$(./scripts/check-advisory-ignores.sh 2>&1); ignores_rc=$?
+          expires=$(./scripts/check-advisory-expires.sh 2>&1); expires_rc=$?
           deny=$(cargo deny check licenses sources 2>&1); deny_rc=$?
           set -e
 
@@ -76,6 +77,10 @@ jobs:
             echo '```'
             echo "$ignores" | tail -20
             echo '```'
+            echo "### advisory EXPIRES dates (exit $expires_rc)"
+            echo '```'
+            echo "$expires" | tail -20
+            echo '```'
             echo "### cargo deny (exit $deny_rc)"
             echo '```'
             echo "$deny" | tail -30
@@ -85,7 +90,7 @@ jobs:
 
           echo "$graph" | tail -40
           [ "$wasmtime_rc" -eq 0 ] && [ "$zip_rc" -eq 0 ] && [ "$graph_rc" -eq 0 ] \
-            && [ "$ignores_rc" -eq 0 ] && [ "$deny_rc" -eq 0 ] || exit 1
+            && [ "$ignores_rc" -eq 0 ] && [ "$expires_rc" -eq 0 ] && [ "$deny_rc" -eq 0 ] || exit 1
 
       - name: File an issue on findings
         if: failure()

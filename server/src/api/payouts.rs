@@ -225,8 +225,7 @@ where
         (status = 200, description = "Payout recorded (Pending)", body = PayoutResponse),
         (status = 400, description = "Invalid chain id or asset"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Store not found, or an invoice id does not belong to it"),
+        (status = 404, description = "Store not found, an invoice id does not belong to it, or insufficient permissions"),
         (status = 409, description = "An invoice is already claimed by another payout"),
     )
 )]
@@ -335,8 +334,7 @@ where
     responses(
         (status = 200, description = "Payouts for this store", body = PayoutListResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Store not found"),
+        (status = 404, description = "Store not found, or insufficient permissions"),
     )
 )]
 pub async fn list_payouts<A>(
@@ -382,8 +380,7 @@ where
     responses(
         (status = 200, description = "Payout details", body = PayoutResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Store or payout not found"),
+        (status = 404, description = "Store or payout not found, or insufficient permissions"),
     )
 )]
 pub async fn get_payout<A>(
@@ -451,8 +448,7 @@ pub struct AbandonPayoutRequest {
     responses(
         (status = 200, description = "Payout settled (Confirmed)", body = PayoutResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Store or payout not found"),
+        (status = 404, description = "Store or payout not found, or insufficient permissions"),
         (status = 409, description = "Payout is not Pending (already settled or abandoned)"),
     )
 )]
@@ -540,8 +536,7 @@ where
     responses(
         (status = 200, description = "Payout abandoned (Failed), invoice claim released", body = PayoutResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Insufficient permissions"),
-        (status = 404, description = "Store or payout not found"),
+        (status = 404, description = "Store or payout not found, or insufficient permissions"),
         (status = 409, description = "Payout is not Pending"),
     )
 )]

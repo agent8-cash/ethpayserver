@@ -402,6 +402,10 @@ where
 #[utoipa::path(
     post,
     path = "/plugins/{id}/page-actions/{path}",
+    params(
+        ("id" = String, Path, description = "Plugin id or slug"),
+        ("path" = String, Path, description = "Action-bearing page path within the plugin")
+    ),
     responses((status = 200, body = PageActionResponse)),
     tag = "plugins"
 )]

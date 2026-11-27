@@ -1,6 +1,6 @@
 //! Error-telemetry scrubbing for a Sentry-protocol error telemetry backend.
 //!
-//! random.cash is a crypto payment processor, so error payloads must **never**
+//! agent8.cash is a crypto payment processor, so error payloads must **never**
 //! carry secrets or customer data: wallet/private keys, mnemonics, API keys,
 //! JWTs, bearer tokens, emails, on-chain addresses/hashes, HTTP request bodies,
 //! or per-user identity. [`scrub_event`] is installed as the Sentry

@@ -1,6 +1,6 @@
 # Verifying Releases
 
-random.cash signs its Docker images with [Sigstore cosign](https://docs.sigstore.dev/)
+agent8.cash signs its Docker images with [Sigstore cosign](https://docs.sigstore.dev/)
 in keyless mode. No long-lived signing key exists: the GitHub Actions job's OIDC
 identity is the signer.
 
@@ -108,7 +108,7 @@ or that whoever pushed it was authorised. It binds artifact to pipeline.
 | Artifact | Status |
 |----------|--------|
 | Docker images | **Signed** — keyless cosign, GitHub Actions OIDC |
-| Binary tarballs | **Not published.** Releases ship images only. Anything presented as a random.cash release binary did not come from this pipeline. |
+| Binary tarballs | **Not published.** Releases ship images only. Anything presented as a agent8.cash release binary did not come from this pipeline. |
 | Git tags | **Not signed.** Tags are lightweight and carry no GPG signature. Verify the commit through the image signature instead. |
 
 ## Supply chain summary

@@ -1,6 +1,6 @@
 # Local development docker-compose with all services
 #
-# Build and run from parent directory (random.cash):
+# Build and run from parent directory (agent8.cash):
 #   docker compose -f ethpayserver/docker/docker-compose.local.yml up --build
 #
 # Required: Create .env file with RPC URLs (copy from .env.example)

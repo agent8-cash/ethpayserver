@@ -8,10 +8,31 @@
 # Advisories without an EXPIRES date are allowed - they are treated as permanent
 # waivers. This check only enforces those that explicitly have an expiration.
 #
-# Test hooks: AUDIT_FILE replaces .cargo/audit.toml
+# The date is checked lexicographically, as a YYYY-MM-DD string against
+# today's UTC date, exactly like check-advisory-ignores.sh's own EXPIRES
+# check: a waiver fails only when today > EXPIRES (today = EXPIRES passes).
+# An earlier version compared `date +%s` (current moment, with a
+# time-of-day component) against midnight of the EXPIRES date, which made
+# every waiver read as already expired for the entire day it was due to
+# expire - the exact same-day boundary this script must agree with the
+# other check on, not merely resemble.
+#
+# Test hooks: AUDIT_FILE replaces .cargo/audit.toml. AUDIT_TODAY overrides
+# the current date (requires AUDIT_TODAY_OK=1, same guard as
+# check-advisory-ignores.sh, so a fixture date can't silently substitute).
 set -uo pipefail
 
 AUDIT="${AUDIT_FILE:-.cargo/audit.toml}"
+
+if [ -n "${AUDIT_TODAY:-}" ]; then
+  if [ "${AUDIT_TODAY_OK:-}" != 1 ]; then
+    echo "ERROR: AUDIT_TODAY is set but AUDIT_TODAY_OK is not 1 - refusing to use a non-system date without explicit consent. COULD NOT RUN (not a pass)." >&2
+    exit 2
+  fi
+  today="$AUDIT_TODAY"
+else
+  today="$(date -u +%F)"
+fi
 
 temp_parsed=$(mktemp)
 trap 'rm -f "$temp_parsed"' EXIT
@@ -60,24 +81,20 @@ python3 "$temp_parsed.py" "$AUDIT" > "$temp_parsed" 2>/dev/null || true
 rm -f "$temp_parsed.py"
 
 failed=0
-today=$(date +%s)
 
 while IFS=$'\t' read -r id expires_date; do
     if [ -z "$id" ] || [ -z "$expires_date" ]; then
         continue
     fi
 
-    expires_epoch=$(date -d "$expires_date" +%s 2>/dev/null || echo "")
-
-    if [ -z "$expires_epoch" ]; then
+    if ! date -u -d "$expires_date" +%F >/dev/null 2>&1; then
         echo "ERROR: $id has unparseable EXPIRES date: $expires_date"
         failed=1
         continue
     fi
 
-    if [ "$today" -gt "$expires_epoch" ]; then
-        days_ago=$(( (today - expires_epoch) / 86400 ))
-        echo "EXPIRED  $id  expires on $expires_date (expired $days_ago days ago)"
+    if [ "$today" \> "$expires_date" ]; then
+        echo "EXPIRED  $id  expires on $expires_date (today is $today)"
         failed=1
     fi
 done < "$temp_parsed"
