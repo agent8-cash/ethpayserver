@@ -24,7 +24,7 @@ use super::require_store_settings_permission;
 use crate::services::settlement::parse_tolerance_percent;
 use crate::state::PgAppState;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SettlementToleranceResponse {
     pub store_id: Uuid,
     /// The percentage in force: the store's own, or the server default.
@@ -34,7 +34,7 @@ pub struct SettlementToleranceResponse {
     pub max_tolerance_percent: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SetSettlementToleranceRequest {
     /// Percent of the invoice amount, as a decimal string (e.g. `"0.01"`).
     pub tolerance_percent: String,
@@ -74,6 +74,21 @@ where
 }
 
 /// Get the settlement tolerance in force for a store.
+#[utoipa::path(
+    get,
+    path = "/stores/{store_id}/settlement-tolerance",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 200, description = "Tolerance in force", body = SettlementToleranceResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn get_settlement_tolerance<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -90,6 +105,23 @@ where
 }
 
 /// Set the store's settlement tolerance. Refuses values above the ceiling.
+#[utoipa::path(
+    put,
+    path = "/stores/{store_id}/settlement-tolerance",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    request_body = SetSettlementToleranceRequest,
+    responses(
+        (status = 200, description = "Tolerance set", body = SettlementToleranceResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+        (status = 422, description = "Value above the ceiling, or not a valid percentage"),
+    )
+)]
 pub async fn set_settlement_tolerance<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -114,6 +146,21 @@ where
 }
 
 /// Revert the store to the server default tolerance.
+#[utoipa::path(
+    delete,
+    path = "/stores/{store_id}/settlement-tolerance",
+    tag = "stores",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 204, description = "Reverted to the server default"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn delete_settlement_tolerance<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,

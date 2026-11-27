@@ -7,7 +7,7 @@
 //! one of the groupings above, along the same lines as `admin::deletion`.
 
 pub(crate) mod api_keys;
-mod deletion;
+pub(crate) mod deletion;
 pub(crate) mod devices;
 pub(crate) mod email;
 mod key_material;

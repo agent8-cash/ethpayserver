@@ -212,6 +212,24 @@ where
 /// This writes a payout row and nothing else. No transaction is signed or
 /// broadcast anywhere in this deployment: the server holds only public xpubs, so
 /// the record stays `Pending` until something outside this process acts on it.
+#[utoipa::path(
+    post,
+    path = "/stores/{store_id}/payouts",
+    tag = "payouts",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    request_body = CreatePayoutRequest,
+    responses(
+        (status = 200, description = "Payout recorded (Pending)", body = PayoutResponse),
+        (status = 400, description = "Invalid chain id or asset"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found, or an invoice id does not belong to it"),
+        (status = 409, description = "An invoice is already claimed by another payout"),
+    )
+)]
 pub async fn create_payout<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -306,6 +324,21 @@ where
 }
 
 /// List payouts for a store.
+#[utoipa::path(
+    get,
+    path = "/stores/{store_id}/payouts",
+    tag = "payouts",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID")
+    ),
+    responses(
+        (status = 200, description = "Payouts for this store", body = PayoutListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store not found"),
+    )
+)]
 pub async fn list_payouts<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -337,6 +370,22 @@ where
 }
 
 /// Get a specific payout.
+#[utoipa::path(
+    get,
+    path = "/stores/{store_id}/payouts/{payout_id}",
+    tag = "payouts",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID"),
+        ("payout_id" = Uuid, Path, description = "Payout ID")
+    ),
+    responses(
+        (status = 200, description = "Payout details", body = PayoutResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store or payout not found"),
+    )
+)]
 pub async fn get_payout<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -362,14 +411,14 @@ where
 }
 
 /// What a merchant sends when recording a payout they made themselves.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct SettlePayoutRequest {
     /// The transaction the merchant broadcast from their own wallet.
     pub tx_hash: String,
 }
 
 /// Why a payout is being abandoned.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, utoipa::ToSchema)]
 pub struct AbandonPayoutRequest {
     /// Free text, stored on the payout so the next reader knows why.
     pub reason: Option<String>,
@@ -389,6 +438,24 @@ pub struct AbandonPayoutRequest {
 ///
 /// Only a `Pending` payout can be settled. Settling one twice is refused
 /// rather than silently overwriting the first transaction hash.
+#[utoipa::path(
+    post,
+    path = "/stores/{store_id}/payouts/{payout_id}/settle",
+    tag = "payouts",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID"),
+        ("payout_id" = Uuid, Path, description = "Payout ID")
+    ),
+    request_body = SettlePayoutRequest,
+    responses(
+        (status = 200, description = "Payout settled (Confirmed)", body = PayoutResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store or payout not found"),
+        (status = 409, description = "Payout is not Pending (already settled or abandoned)"),
+    )
+)]
 pub async fn settle_payout<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
@@ -460,6 +527,24 @@ where
 ///
 /// Moves the payout to `Failed`, which is what the claim query already treats
 /// as released.
+#[utoipa::path(
+    post,
+    path = "/stores/{store_id}/payouts/{payout_id}/abandon",
+    tag = "payouts",
+    security(("bearer_auth" = [])),
+    params(
+        ("store_id" = Uuid, Path, description = "Store ID"),
+        ("payout_id" = Uuid, Path, description = "Payout ID")
+    ),
+    request_body = AbandonPayoutRequest,
+    responses(
+        (status = 200, description = "Payout abandoned (Failed), invoice claim released", body = PayoutResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Store or payout not found"),
+        (status = 409, description = "Payout is not Pending"),
+    )
+)]
 pub async fn abandon_payout<A>(
     StoreScopedUser(user, key_scope): StoreScopedUser,
     State(state): State<PgAppState<A>>,
