@@ -156,7 +156,7 @@ where
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let notice = AccountNotice {
-        subject: format!("You have been invited to {} on random.cash", store.name),
+        subject: format!("You have been invited to {} on agent8.cash", store.name),
         body: format!(
             "You have been invited to join the store \"{store}\" as {role_name}.\n\
              \n\

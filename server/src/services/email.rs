@@ -158,7 +158,7 @@ impl EmailService {
              Explorer:    {explorer}\n\
              Paid at:     {paid_at}\n\
              \n\
-             This is an automated receipt from {merchant} powered by random.cash.\n\
+             This is an automated receipt from {merchant} powered by agent8.cash.\n\
              If you did not make this payment, please contact the merchant.\n",
             merchant = data.merchant_name,
             invoice = data.invoice_id,
@@ -218,7 +218,7 @@ impl EmailService {
         let subject = "Confirm your new email address".to_string();
 
         let body = format!(
-            "We received a request to use this address for a random.cash account.\n\
+            "We received a request to use this address for an agent8.cash account.\n\
              \n\
              Verification code: {token}\n\
              \n\
