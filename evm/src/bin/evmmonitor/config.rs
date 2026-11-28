@@ -55,6 +55,14 @@ pub(crate) struct Args {
     /// Log level
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_level: String,
+
+    /// Metrics listener host (loopback only, unauthenticated `/metrics`)
+    #[arg(long, env = "EVMMONITOR_METRICS_HOST", default_value = "127.0.0.1")]
+    pub metrics_host: String,
+
+    /// Metrics listener port
+    #[arg(long, env = "EVMMONITOR_METRICS_PORT", default_value = "9102")]
+    pub metrics_port: u16,
 }
 
 /// Configuration file structure.

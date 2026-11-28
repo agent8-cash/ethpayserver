@@ -118,6 +118,21 @@ async fn main() -> anyhow::Result<()> {
     // must not also be silently unreported.
     evm::telemetry::report_reporting_status(sentry_dsn_configured, &sentry_environment)?;
 
+    // Install the Prometheus recorder before any RPC call runs, so
+    // `evm::metrics::record_rpc_ok`/`record_rpc_err` (called from every
+    // chain RPC this process makes) land somewhere instead of silently
+    // no-op'ing against an uninstalled global recorder.
+    evm::metrics::monitor_recorder::init()?;
+    let metrics_bind_addr = format!("{}:{}", args.metrics_host, args.metrics_port);
+    let metrics_listener = tokio::net::TcpListener::bind(&metrics_bind_addr).await?;
+    info!("metrics listener bound to http://{}", metrics_bind_addr);
+    tokio::spawn(async move {
+        let service = evm::metrics::monitor_recorder::router().into_make_service();
+        if let Err(e) = axum::serve(metrics_listener, service).await {
+            tracing::error!(error = %e, "metrics listener error");
+        }
+    });
+
     // Load configuration
     let config = load_config(&args)?;
 

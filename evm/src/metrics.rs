@@ -89,6 +89,97 @@ where
     result
 }
 
+/// Installs a Prometheus recorder and serves it, for `evmmonitor` only.
+///
+/// `evmmonitor` is the process that actually makes the chain RPC calls
+/// `record_rpc_ok`/`record_rpc_err` above count, but - unlike `server`,
+/// which installs its own recorder in `server::metrics::init_metrics` - it
+/// never installed any global `metrics` recorder, so every one of those
+/// counters was a silent no-op in production. No Sentry fanout here: that
+/// alerting path is `server`'s own concern, not needed just to make these
+/// counters observable for the RPC-volume benchmark.
+#[cfg(feature = "monitor-bin")]
+pub mod monitor_recorder {
+    use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+    use std::sync::OnceLock;
+
+    static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+    /// Installs the global recorder. Call once, before any RPC call.
+    pub fn init() -> anyhow::Result<()> {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::set_global_recorder(recorder)
+            .map_err(|_| anyhow::anyhow!("metrics recorder already installed"))?;
+        METRICS_HANDLE
+            .set(handle)
+            .map_err(|_| anyhow::anyhow!("monitor_recorder::init called twice"))?;
+        Ok(())
+    }
+
+    pub(crate) fn render() -> Option<String> {
+        METRICS_HANDLE.get().map(PrometheusHandle::render)
+    }
+
+    /// Loopback-only router: unauthenticated `/metrics`, nothing else -
+    /// mirrors `server::api::metrics_router`.
+    pub fn router() -> axum::Router {
+        axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(|| async {
+                match render() {
+                    Some(body) => (
+                        axum::http::StatusCode::OK,
+                        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+                        body,
+                    ),
+                    None => (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        [("content-type", "text/plain")],
+                        "Metrics not initialized".to_string(),
+                    ),
+                }
+            }),
+        )
+    }
+}
+
+#[cfg(all(test, feature = "monitor-bin"))]
+mod monitor_recorder_tests {
+    use super::monitor_recorder;
+    use crate::error::EvmError;
+    use std::time::Duration;
+
+    /// Proves the gap this module closes: before `init()`, a recorded RPC
+    /// call really did go nowhere (no global recorder => no renderable
+    /// handle); after it, the same call site's counter shows up in
+    /// `/metrics` output.
+    #[test]
+    fn init_makes_rpc_counters_observable() {
+        super::record_rpc_ok(11155111, "eth_getLogs", Duration::from_millis(5));
+        assert!(
+            monitor_recorder::render().is_none(),
+            "no recorder installed yet - this call must still be a no-op"
+        );
+
+        monitor_recorder::init().expect("first init in this process must succeed");
+
+        super::record_rpc_ok(11155111, "eth_getLogs", Duration::from_millis(5));
+        let rendered = monitor_recorder::render().expect("handle set by init()");
+        assert!(
+            rendered.contains("ethpayserver_rpc_requests_total"),
+            "rendered metrics missing the RPC counter: {rendered}"
+        );
+        assert!(rendered.contains("chain_id=\"11155111\""));
+        assert!(rendered.contains("method=\"eth_getLogs\""));
+
+        let err = EvmError::Rpc("boom".into());
+        super::record_rpc_err(1, "eth_call", Duration::from_millis(1), &err);
+        let rendered = monitor_recorder::render().expect("handle still set");
+        assert!(rendered.contains("ethpayserver_rpc_errors_total"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

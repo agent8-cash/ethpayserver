@@ -108,11 +108,13 @@ cargo test --test rpc_volume_benchmark measure_rpc_volume_one_address -- --nocap
 
 **Status: no measured sample is included.** This change ships the harness only. The 7-day testnet sample, the per-chain and per-method counts it produces, and the provider cost projection built from it are not in this change. They need a separate ticket, run from an environment with testnet RPC access.
 
+**Until the `evmmonitor` metrics fix below, there was nothing to scrape even once deployed.** `evm::rpc_metrics::timed_rpc()` (the instrumentation this harness documents) is called from `evm/src/monitor/source/rpc.rs`, which runs inside `evmmonitor`, not `server` — but only `server` ever installed a global `metrics` recorder. Every one of those counters was a silent no-op in production. `evmmonitor` now installs its own bare Prometheus recorder and serves it on a loopback `/metrics` (`EVMMONITOR_METRICS_HOST`/`EVMMONITOR_METRICS_PORT`, default `127.0.0.1:9102`), mirroring `server`'s own pattern — see `evm::metrics::monitor_recorder`.
+
 To collect real RPC volume data:
 
 1. **Deploy monitor to production** with production RPC endpoints
 2. **Run for 7 days** on one chain to collect steady-state data
-3. **Export metrics** from monitoring system (Prometheus/Sentry)
+3. **Scrape `evmmonitor`'s `/metrics`** before and after the window and diff `ethpayserver_rpc_requests_total{chain_id,method}` counters
 4. **Analyze results** using `RpcVolume::new()` with collected method counts
 5. **Project costs** using `alchemy_cost_monthly()` and `quicknode_cost_monthly()`
 
