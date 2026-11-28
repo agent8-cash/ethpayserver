@@ -123,15 +123,34 @@ async fn main() -> anyhow::Result<()> {
     // chain RPC this process makes) land somewhere instead of silently
     // no-op'ing against an uninstalled global recorder.
     evm::metrics::monitor_recorder::init()?;
+
+    // A bind failure here must not take payment monitoring down with it:
+    // this module's own doc (top of file) says multiple evmmonitor
+    // instances can run in parallel on one host, each on a subset of
+    // chains, and `server`'s own default METRICS_PORT is the same 9102 -
+    // so without separate network namespaces, two processes racing for the
+    // same loopback port is a real way to lose this purely observational
+    // feature. Log and continue instead of `?`.
     let metrics_bind_addr = format!("{}:{}", args.metrics_host, args.metrics_port);
-    let metrics_listener = tokio::net::TcpListener::bind(&metrics_bind_addr).await?;
-    info!("metrics listener bound to http://{}", metrics_bind_addr);
-    tokio::spawn(async move {
-        let service = evm::metrics::monitor_recorder::router().into_make_service();
-        if let Err(e) = axum::serve(metrics_listener, service).await {
-            tracing::error!(error = %e, "metrics listener error");
+    let metrics_handle = match tokio::net::TcpListener::bind(&metrics_bind_addr).await {
+        Ok(metrics_listener) => {
+            info!("metrics listener bound to http://{}", metrics_bind_addr);
+            Some(tokio::spawn(async move {
+                let service = evm::metrics::monitor_recorder::router().into_make_service();
+                if let Err(e) = axum::serve(metrics_listener, service).await {
+                    tracing::error!(error = %e, "metrics listener error");
+                }
+            }))
         }
-    });
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                addr = %metrics_bind_addr,
+                "failed to bind metrics listener - continuing without /metrics"
+            );
+            None
+        }
+    };
 
     // Load configuration
     let config = load_config(&args)?;
@@ -293,6 +312,9 @@ async fn main() -> anyhow::Result<()> {
         Ok(Ok(())) => {}
     }
     health_handle.abort();
+    if let Some(handle) = metrics_handle {
+        handle.abort();
+    }
 
     // No equivalent handle exists here for the *events* subscription
     // (`redis.rs`'s `subscribe`, as opposed to `subscribe_commands` above):

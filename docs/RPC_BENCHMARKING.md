@@ -114,7 +114,7 @@ To collect real RPC volume data:
 
 1. **Deploy monitor to production** with production RPC endpoints
 2. **Run for 7 days** on one chain to collect steady-state data
-3. **Scrape `evmmonitor`'s `/metrics`** before and after the window and diff `ethpayserver_rpc_requests_total{chain_id,method}` counters
+3. **Scrape `evmmonitor`'s `/metrics`** before and after the window and diff `ethpayserver_rpc_requests_total{chain_id,method}` counters. These are raw Prometheus counters, not rates: a mid-window restart/redeploy resets them to zero, which a naive before/after diff would read as undercounting (or a negative delta) rather than a restart. Check deploy history for the window first, or scrape periodically and sum only the non-negative deltas between consecutive samples.
 4. **Analyze results** using `RpcVolume::new()` with collected method counts
 5. **Project costs** using `alchemy_cost_monthly()` and `quicknode_cost_monthly()`
 

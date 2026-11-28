@@ -1,7 +1,10 @@
 //! RPC metrics recording helpers.
 //!
-//! Uses the `metrics` crate's global recorder (installed by the server at startup)
-//! to emit per-RPC-call counters and histograms.
+//! Uses the `metrics` crate's global recorder to emit per-RPC-call counters
+//! and histograms. `server` installs its own recorder at startup
+//! (`server::metrics::init_metrics`); `evmmonitor` - the process that
+//! actually makes these RPC calls - installs its own, see
+//! [`monitor_recorder`] below.
 
 use crate::error::EvmError;
 use metrics::{counter, histogram};

@@ -491,6 +491,17 @@ jobs:
         # separately below.
         run: cargo nextest run --workspace --no-fail-fast -j 2
 
+      - name: Unit tests (monitor-bin feature)
+        # `--workspace` above builds `evm` with its default features, so
+        # anything gated behind `monitor-bin` (the only feature the real
+        # `evmmonitor` binary ships with - see `cargo build --release --bin
+        # evmmonitor --features monitor-bin` below) compiles in neither this
+        # step nor clippy's. A test gated the same way is invisible to CI
+        # the same way the binary's own clippy lints are - this step closes
+        # that gap for tests without pulling the binary's clippy lints (a
+        # separate, pre-existing gap) into this PR.
+        run: cargo nextest run -p evm --features monitor-bin --lib --no-fail-fast -j 2
+
       - name: Integration tests
         # Gating. These were non-blocking and 18 of 27 had been failing
         # unnoticed on an FK the fixtures never satisfied, so CI reported green

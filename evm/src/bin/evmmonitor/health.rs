@@ -10,8 +10,10 @@ const HEALTH_KEY: &str = "evmmonitor:health";
 
 /// Redis key for publishing the compiled `SENTRY_RELEASE`.
 ///
-/// evmmonitor has no HTTP surface of its own, so this reuses the same
-/// Redis-relay channel as `HEALTH_KEY` to make its compiled release
+/// evmmonitor's only HTTP surface is the loopback Prometheus `/metrics`
+/// added for RPC-volume benchmarking, which exposes counters/histograms,
+/// not arbitrary values like this - so this reuses the same Redis-relay
+/// channel as `HEALTH_KEY` to make its compiled release
 /// observable from the API server's `/health/deep`, the same way the
 /// server's own `SENTRY_RELEASE` is exposed as a response header - rather
 /// than trusting the CI build log for a binary evmmonitor also feeds Sentry
