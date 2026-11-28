@@ -16,7 +16,7 @@ path = "src/bin/derive-xpub.rs"
 
 [features]
 default = []
-api = ["axum", "utoipa", "types", "data-service", "auth"]
+api = ["dep:axum", "utoipa", "types", "data-service", "auth"]
 redis = ["dep:redis"]
 test-utils = []
 # Compiles evm::transaction, which can sign and broadcast outbound transfers
@@ -29,7 +29,7 @@ hot-wallet = []
 # Sentry `before_send` PII scrubber and tracing event filter. Shared by the
 # `server` and `evmmonitor` binaries so both run one audited implementation.
 sentry-scrub = ["dep:sentry", "dep:sentry-tracing", "dep:tracing-subscriber", "dep:regex", "dep:anyhow", "dep:scrub"]
-monitor-bin = ["redis", "types", "data-service", "data-service/redis", "dep:toml", "dep:tracing-subscriber", "dep:dotenvy", "dep:clap", "dep:anyhow", "dep:sentry", "dep:sentry-tracing", "sentry-scrub", "tokio/full"]
+monitor-bin = ["redis", "types", "data-service", "data-service/redis", "dep:toml", "dep:tracing-subscriber", "dep:dotenvy", "dep:clap", "dep:anyhow", "dep:sentry", "dep:sentry-tracing", "sentry-scrub", "tokio/full", "dep:axum", "dep:metrics-exporter-prometheus"]
 
 [dependencies]
 # Ethereum/EVM - alloy ecosystem
@@ -76,6 +76,8 @@ tracing = "0.1"
 
 # Metrics
 metrics = "0.24"
+# Same pin as server/Cargo.toml - only evmmonitor (monitor-bin feature) uses it.
+metrics-exporter-prometheus = { version = "0.16", optional = true }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }

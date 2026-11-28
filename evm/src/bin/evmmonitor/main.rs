@@ -118,6 +118,40 @@ async fn main() -> anyhow::Result<()> {
     // must not also be silently unreported.
     evm::telemetry::report_reporting_status(sentry_dsn_configured, &sentry_environment)?;
 
+    // Install the Prometheus recorder before any RPC call runs, so
+    // `evm::metrics::record_rpc_ok`/`record_rpc_err` (called from every
+    // chain RPC this process makes) land somewhere instead of silently
+    // no-op'ing against an uninstalled global recorder.
+    evm::metrics::monitor_recorder::init()?;
+
+    // A bind failure here must not take payment monitoring down with it:
+    // this module's own doc (top of file) says multiple evmmonitor
+    // instances can run in parallel on one host, each on a subset of
+    // chains, and `server`'s own default METRICS_PORT is the same 9102 -
+    // so without separate network namespaces, two processes racing for the
+    // same loopback port is a real way to lose this purely observational
+    // feature. Log and continue instead of `?`.
+    let metrics_bind_addr = format!("{}:{}", args.metrics_host, args.metrics_port);
+    let metrics_handle = match tokio::net::TcpListener::bind(&metrics_bind_addr).await {
+        Ok(metrics_listener) => {
+            info!("metrics listener bound to http://{}", metrics_bind_addr);
+            Some(tokio::spawn(async move {
+                let service = evm::metrics::monitor_recorder::router().into_make_service();
+                if let Err(e) = axum::serve(metrics_listener, service).await {
+                    tracing::error!(error = %e, "metrics listener error");
+                }
+            }))
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                addr = %metrics_bind_addr,
+                "failed to bind metrics listener - continuing without /metrics"
+            );
+            None
+        }
+    };
+
     // Load configuration
     let config = load_config(&args)?;
 
@@ -278,6 +312,9 @@ async fn main() -> anyhow::Result<()> {
         Ok(Ok(())) => {}
     }
     health_handle.abort();
+    if let Some(handle) = metrics_handle {
+        handle.abort();
+    }
 
     // No equivalent handle exists here for the *events* subscription
     // (`redis.rs`'s `subscribe`, as opposed to `subscribe_commands` above):

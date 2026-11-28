@@ -3291,6 +3291,7 @@ dependencies = [
  "hex",
  "k256",
  "metrics",
+ "metrics-exporter-prometheus",
  "rand 0.9.4",
  "redis",
  "regex",

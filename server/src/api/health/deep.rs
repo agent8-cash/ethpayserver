@@ -123,8 +123,10 @@ pub(super) fn sentry_release_header(compiled: Option<&'static str>) -> &'static 
 ///
 /// evmmonitor is a second binary that tags its own Sentry events from the
 /// same `SENTRY_RELEASE`, compiled in a separate CI build step from the same
-/// commit sha - and it has no HTTP surface of its own to observe directly.
-/// Its release is relayed here from the health channel it already reports
+/// commit sha - and its only HTTP surface (a loopback Prometheus
+/// `/metrics` for RPC-volume benchmarking) has no way to expose a value
+/// like this one directly. Its release is relayed here from the health
+/// channel it already reports
 /// through, rather than trusted from the build that produced it. Absent (not
 /// configured, or not yet observed) rather than an empty string, so a deploy
 /// check can tell "no evmmonitor to check" from "evmmonitor reported an
